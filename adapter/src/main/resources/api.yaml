@@ -1,0 +1,1418 @@
+openapi: 3.0.3
+info:
+  title: Route Service API
+  version: 1.0.0
+  description: |
+    Route planning: brouter proxy (semaphore-protected), draft persistence,
+    elevation profile (Copernicus DEM). Plus admin endpoints to manage BRouter
+    segments (.rd5) and profiles.
+
+servers:
+  - url: http://localhost:8085
+    description: Local development server
+
+paths:
+  /route/calculate:
+    post:
+      summary: Calculate route geometry via BRouter (2D, no elevation)
+      description: |
+        Proxies to brouter container with Semaphore guard. Returns 2D LineString
+        plus distance. Elevation is **not** returned from brouter — use
+        POST /route/elevation separately (Copernicus DEM source).
+      operationId: calculateRoute
+      tags: [Routing]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalculateRouteRequest'
+      responses:
+        '200':
+          description: Route calculated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalculateRouteResponse'
+        '400':
+          description: Bad request (invalid waypoints, unknown profile)
+        '401':
+          description: Unauthorized
+        '429':
+          description: Brouter workers saturated, retry later
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                description: Seconds to wait before retry
+        '502':
+          description: Brouter upstream error
+
+  /route/elevation:
+    post:
+      summary: Calculate elevation profile for a LineString (Copernicus DEM)
+      description: |
+        Samples Copernicus DEM GLO-30 along the provided coordinates and returns
+        elevation profile + gain/loss. Coordinates beyond max-samples are downsampled.
+      operationId: calculateElevation
+      tags: [Elevation]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ElevationRequest'
+      responses:
+        '200':
+          description: Elevation profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ElevationResponse'
+        '400':
+          description: Bad request (invalid coordinates)
+        '401':
+          description: Unauthorized
+        '502':
+          description: DEM source error
+
+  /route/drafts:
+    get:
+      summary: List authenticated user's route drafts
+      operationId: listRouteDrafts
+      tags: [Drafts]
+      security: []
+      responses:
+        '200':
+          description: List of drafts (without geometry — call /route/drafts/{id} for full data)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RouteDraftSummary'
+        '401':
+          description: Unauthorized
+    post:
+      summary: Create a new draft
+      operationId: createRouteDraft
+      tags: [Drafts]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouteDraftRequest'
+      responses:
+        '201':
+          description: Draft created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteDraftResponse'
+        '400':
+          description: Limit exceeded (max 50 per user) or invalid data
+        '401':
+          description: Unauthorized
+        '409':
+          description: Name already in use by this user
+
+  /route/drafts/{draftId}:
+    get:
+      summary: Get full draft with geometry
+      operationId: getRouteDraft
+      tags: [Drafts]
+      security: []
+      parameters:
+        - name: draftId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Draft details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteDraftResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Not found or not owned by this user
+    put:
+      summary: Update draft (name + geometry + metadata)
+      operationId: updateRouteDraft
+      tags: [Drafts]
+      security: []
+      parameters:
+        - name: draftId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouteDraftRequest'
+      responses:
+        '200':
+          description: Draft updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteDraftResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Not found
+        '409':
+          description: Name conflict
+    delete:
+      summary: Delete draft
+      operationId: deleteRouteDraft
+      tags: [Drafts]
+      security: []
+      parameters:
+        - name: draftId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          description: Unauthorized
+        '404':
+          description: Not found
+
+  /route/drafts/{draftId}/export/gpx:
+    get:
+      summary: Export single draft (day) as GPX
+      operationId: exportRouteDraftGpx
+      tags: [Drafts]
+      security: []
+      parameters:
+        - name: draftId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: GPX file content
+          content:
+            application/gpx+xml:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized
+        '404':
+          description: Not found
+
+  /route/drafts/group/{groupId}/export/gpx:
+    get:
+      summary: Export whole expedition (all days of a group) as GPX
+      operationId: exportRouteGroupGpx
+      tags: [Drafts]
+      security: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: GPX file content
+          content:
+            application/gpx+xml:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized
+        '404':
+          description: Not found
+
+  /route/drafts/group/{groupId}/geometries:
+    get:
+      summary: Bulk fetch all day geometries of an expedition (Polyline3DCodec encoded)
+      description: |
+        Zwraca wszystkie geometrie dni grupy w JEDNYM żądaniu, kodowane jako Polyline3DCodec
+        (frontend dekoduje przez decodePolyline3D). Zastępuje N×GET /route/drafts/{id} przy ładowaniu
+        całej wyprawy na mapie (2000+ dni). Sortowane po dayNumber rosnąco.
+      operationId: getRouteDraftGroupGeometries
+      tags: [Drafts]
+      security: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Bulk encoded geometries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteDraftGroupGeometriesResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Not found
+
+
+  /admin/elevation/tiles:
+    get:
+      summary: List installed + available Copernicus DEM tiles (EU bbox by default)
+      operationId: listDemTiles
+      tags: [ElevationTiles]
+      security: []
+      parameters:
+        - name: includeWorld
+          in: query
+          required: false
+          description: If true, return all globe tiles. Default false = EU only.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Catalog of DEM tiles + installed flags
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DemTileResponse'
+
+  /admin/elevation/tiles/download:
+    post:
+      summary: Start async download of a Copernicus DEM tile
+      operationId: downloadDemTile
+      tags: [ElevationTiles]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DownloadDemTileRequest'
+      responses:
+        '202':
+          description: Task accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DemTileTaskResponse'
+
+  /admin/elevation/tiles/{name}:
+    delete:
+      summary: Delete an installed DEM tile (.tif)
+      operationId: deleteDemTile
+      tags: [ElevationTiles]
+      security: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Tile name without .tif (e.g. "N50E020")
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Deleted
+
+  /admin/route/segments:
+    get:
+      summary: List installed + available segments (filtered to Europe by default)
+      operationId: listSegments
+      tags: [Segments]
+      parameters:
+        - name: includeWorld
+          in: query
+          required: false
+          description: If true, return all globe segments. Default false = Europe only.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Catalog of all known segments + flags which are installed
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SegmentResponse'
+
+  /admin/route/segments/download:
+    post:
+      summary: Start async download of a segment
+      operationId: downloadSegment
+      tags: [Segments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DownloadSegmentRequest'
+      responses:
+        '202':
+          description: Task accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SegmentTaskResponse'
+
+  /admin/route/segments/{name}:
+    delete:
+      summary: Delete an installed segment (.rd5)
+      operationId: deleteSegment
+      tags: [Segments]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Segment name without .rd5 (e.g. "E20_N50")
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Deleted (workers will be rolling-restarted)
+
+  /admin/route/status:
+    get:
+      summary: BRouter worker status (proxies brouter container's control-api)
+      operationId: getBrouterStatus
+      tags: [Status]
+      responses:
+        '200':
+          description: Per-worker state
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WorkerStatusResponse'
+
+  /admin/route/rolling-restart:
+    post:
+      summary: Rolling restart of all BRouter workers
+      operationId: rollingRestart
+      tags: [Status]
+      responses:
+        '204':
+          description: Triggered
+
+  /admin/route/logs:
+    get:
+      summary: List available BRouter log sources
+      operationId: listLogs
+      tags: [Status]
+      responses:
+        '200':
+          description: Available log sources
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogSourceResponse'
+
+  /admin/route/logs/{name}:
+    get:
+      summary: Tail the last N lines of a log file (plain text)
+      operationId: tailLog
+      tags: [Status]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Log source name from /admin/route/logs (e.g. worker-0, nginx-access)
+          schema:
+            type: string
+        - name: lines
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 200
+            minimum: 1
+            maximum: 5000
+      responses:
+        '200':
+          description: Tail content
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /admin/route/workers/{index}/restart:
+    post:
+      summary: Restart a single BRouter worker
+      operationId: restartWorker
+      tags: [Status]
+      parameters:
+        - name: index
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        '204':
+          description: Triggered
+
+  /admin/route/profiles:
+    get:
+      summary: List BRouter profiles available on disk (filesystem)
+      operationId: listProfiles
+      tags: [Profiles]
+      responses:
+        '200':
+          description: Profile names + metadata
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProfileSummary'
+
+  /admin/route/profiles/{name}:
+    get:
+      summary: Read profile content (plain text .brf)
+      operationId: getProfile
+      tags: [Profiles]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Profile filename without .brf suffix
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Profile content
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileContent'
+    put:
+      summary: Save profile content (atomic write, no worker restart needed)
+      operationId: saveProfile
+      tags: [Profiles]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveProfileRequest'
+      responses:
+        '204':
+          description: Saved
+    delete:
+      summary: Delete a profile
+      operationId: deleteProfile
+      tags: [Profiles]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Deleted
+
+  # ===================== Planning (asystent tras) =====================
+
+  /planning/session:
+    get:
+      summary: Get current planning session (intent + preferences + days)
+      operationId: getPlanningSession
+      tags: [Planning]
+      responses:
+        '200':
+          description: Active session for authenticated user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanningSessionResponse'
+        '204':
+          description: No session yet (user never entered the assistant)
+        '401':
+          description: Unauthorized
+    delete:
+      summary: Reset session ("Start over") — clears intent, preferences, days
+      operationId: resetPlanningSession
+      tags: [Planning]
+      responses:
+        '204':
+          description: Session reset
+        '401':
+          description: Unauthorized
+
+  /planning/session/intent:
+    put:
+      summary: Set or change intent (COVERAGE / AB / FREESTYLE) — clears preferences + days
+      operationId: setPlanningIntent
+      tags: [Planning]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPlanningIntentRequest'
+      responses:
+        '200':
+          description: Updated session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanningSessionResponse'
+        '400':
+          description: Invalid intent
+        '401':
+          description: Unauthorized
+
+  /planning/session/form:
+    put:
+      summary: Patch form preferences (non-null fields are merged in)
+      operationId: updatePlanningForm
+      tags: [Planning]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoutePreferences'
+      responses:
+        '200':
+          description: Updated session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanningSessionResponse'
+        '401':
+          description: Unauthorized
+
+  /planning/calculate:
+    post:
+      summary: Submit async PLAN_ROUTE task — returns taskId for SSE/polling
+      operationId: calculatePlan
+      tags: [Planning]
+      responses:
+        '202':
+          description: Task accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalculatePlanResponse'
+        '400':
+          description: Form incomplete (missing fields for the chosen intent)
+        '401':
+          description: Unauthorized
+        '409':
+          description: Plan task already running / queue full
+
+  /planning/cancel:
+    post:
+      summary: Cancel active PLAN_ROUTE task (no-op if none)
+      operationId: cancelPlan
+      tags: [Planning]
+      responses:
+        '204':
+          description: Cancellation signal sent
+        '401':
+          description: Unauthorized
+
+  /planning/task/{taskId}:
+    get:
+      summary: Get current status of a planning task (polling endpoint for frontend progress)
+      operationId: getPlanningTask
+      tags: [Planning]
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Task snapshot (status + phase + progress)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanTask'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Task not found
+
+  /planning/session/days/{dayNumber}:
+    put:
+      summary: Save edited geometry/waypoints for one day (re-routes via BRouter + DEM)
+      operationId: updatePlanningDay
+      tags: [Planning]
+      parameters:
+        - name: dayNumber
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePlanningDayRequest'
+      responses:
+        '200':
+          description: Day re-routed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanningSessionDay'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Day not found
+
+  /planning/session/save-as-expedition:
+    post:
+      summary: Convert all days to route_draft entries with shared group_id
+      operationId: savePlanAsExpedition
+      tags: [Planning]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveAsExpeditionRequest'
+      responses:
+        '200':
+          description: Drafts created (one per day)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SaveAsExpeditionResponse'
+        '401':
+          description: Unauthorized
+
+components:
+  schemas:
+    CalculateRouteRequest:
+      type: object
+      required: [waypoints, profile]
+      properties:
+        waypoints:
+          type: array
+          minItems: 2
+          maxItems: 50
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: number
+              format: double
+          description: Ordered list of [lng, lat] pairs (min 2, max 50)
+          example: [[21.0, 52.2], [21.5, 52.5]]
+        profile:
+          type: string
+          description: BRouter profile name (without .brf suffix)
+          example: fastbike
+
+    CalculateRouteResponse:
+      type: object
+      required: [geometry, distanceKm]
+      properties:
+        geometry:
+          $ref: '#/components/schemas/LineStringGeoJson'
+        distanceKm:
+          type: number
+          format: double
+          description: Total route distance in kilometers
+
+    LineStringGeoJson:
+      type: object
+      required: [type, coordinates]
+      properties:
+        type:
+          type: string
+          enum: [LineString]
+        coordinates:
+          type: array
+          items:
+            type: array
+            minItems: 2
+            maxItems: 3
+            items:
+              type: number
+              format: double
+
+    ElevationRequest:
+      type: object
+      required: [coordinates]
+      properties:
+        coordinates:
+          type: array
+          minItems: 2
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: number
+              format: double
+          description: Ordered list of [lng, lat] pairs along the route
+
+    ElevationResponse:
+      type: object
+      required: [profile, gainM, lossM, minEleM, maxEleM]
+      properties:
+        profile:
+          type: array
+          description: Sampled elevation profile, each entry [distanceFromStartMeters, elevationMeters]
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: number
+              format: double
+        gainM:
+          type: integer
+          description: Total elevation gain in meters
+        lossM:
+          type: integer
+          description: Total elevation loss in meters
+        minEleM:
+          type: integer
+        maxEleM:
+          type: integer
+
+    RouteDraftRequest:
+      type: object
+      required: [name, geometry, profile]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: User-facing draft name, unique per user
+        geometry:
+          $ref: '#/components/schemas/LineStringGeoJson'
+        profile:
+          type: string
+          description: BRouter profile used (snapshot at save time)
+        distanceKm:
+          type: number
+          format: double
+          nullable: true
+        elevationGain:
+          type: integer
+          nullable: true
+        elevationLoss:
+          type: integer
+          nullable: true
+        groupId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Wyprawa (grupa) — wspólny identyfikator dni jednej wyprawy
+        groupName:
+          type: string
+          nullable: true
+        dayNumber:
+          type: integer
+          nullable: true
+        waypoints:
+          type: string
+          nullable: true
+          description: Waypointy (gminy) jako zakodowana polyline (OPAQUE) — do edycji wczytanego szkicu
+
+    RouteDraftSummary:
+      type: object
+      required: [id, name, profile, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        profile:
+          type: string
+        distanceKm:
+          type: number
+          format: double
+          nullable: true
+        elevationGain:
+          type: integer
+          nullable: true
+        elevationLoss:
+          type: integer
+          nullable: true
+        groupId:
+          type: string
+          format: uuid
+          nullable: true
+        groupName:
+          type: string
+          nullable: true
+        dayNumber:
+          type: integer
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    RouteDraftResponse:
+      type: object
+      required: [id, name, geometry, profile, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        geometry:
+          $ref: '#/components/schemas/LineStringGeoJson'
+        profile:
+          type: string
+        distanceKm:
+          type: number
+          format: double
+          nullable: true
+        elevationGain:
+          type: integer
+          nullable: true
+        elevationLoss:
+          type: integer
+          nullable: true
+        groupId:
+          type: string
+          format: uuid
+          nullable: true
+        groupName:
+          type: string
+          nullable: true
+        dayNumber:
+          type: integer
+          nullable: true
+        waypoints:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    RouteDraftGroupGeometriesResponse:
+      type: object
+      required: [groupId, days]
+      properties:
+        groupId:
+          type: string
+          format: uuid
+        days:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteDraftGroupGeometryItem'
+
+    RouteDraftGroupGeometryItem:
+      type: object
+      required: [dayNumber, geometryEncoded]
+      properties:
+        dayNumber:
+          type: integer
+        geometryEncoded:
+          type: string
+          description: Polyline3DCodec encoded geometry (lng,lat,z) — frontend decodes via decodePolyline3D
+        distanceKm:
+          type: number
+          format: double
+          nullable: true
+
+    DemTileResponse:
+      type: object
+      required: [name, lonStart, latStart, installed]
+      properties:
+        name:
+          type: string
+          description: e.g. "N50E020" (no .tif suffix)
+          example: N50E020
+        lonStart:
+          type: integer
+        latStart:
+          type: integer
+        remoteSizeBytes:
+          type: integer
+          format: int64
+          nullable: true
+        installed:
+          type: boolean
+        installedSizeBytes:
+          type: integer
+          format: int64
+          nullable: true
+        installedAt:
+          type: string
+          format: date-time
+          nullable: true
+        outdated:
+          type: boolean
+          nullable: true
+
+    DownloadDemTileRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: N50E020
+
+    DemTileTaskResponse:
+      type: object
+      required: [taskId, tileName, status]
+      properties:
+        taskId:
+          type: string
+        tileName:
+          type: string
+        status:
+          type: string
+          enum: [QUEUED, RUNNING, COMPLETED, FAILED, CANCELLED]
+
+    SegmentResponse:
+      type: object
+      required: [name, lonStart, latStart, installed]
+      properties:
+        name:
+          type: string
+          description: e.g. "E20_N50" (no .rd5 suffix)
+          example: E20_N50
+        lonStart:
+          type: integer
+          description: West longitude of 5°×5° tile (signed)
+          example: 20
+        latStart:
+          type: integer
+          description: South latitude of 5°×5° tile (signed)
+          example: 50
+        remoteSizeBytes:
+          type: integer
+          format: int64
+          nullable: true
+          description: Size from brouter.de (null if remote listing failed)
+        installed:
+          type: boolean
+        installedSizeBytes:
+          type: integer
+          format: int64
+          nullable: true
+        installedAt:
+          type: string
+          format: date-time
+          nullable: true
+        outdated:
+          type: boolean
+          nullable: true
+          description: true if installed file size differs from remote
+
+    DownloadSegmentRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Segment name without .rd5 suffix
+          example: E20_N50
+
+    SegmentTaskResponse:
+      type: object
+      required: [taskId, segmentName, status]
+      properties:
+        taskId:
+          type: string
+        segmentName:
+          type: string
+        status:
+          type: string
+          enum: [QUEUED, RUNNING, COMPLETED, FAILED, CANCELLED]
+
+    LogSourceResponse:
+      type: object
+      required: [name, sizeBytes]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+        modifiedAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: Unix epoch seconds
+
+    WorkerStatusResponse:
+      type: object
+      required: [name, state]
+      properties:
+        name:
+          type: string
+          example: worker-0
+        state:
+          type: string
+          example: RUNNING
+        pid:
+          type: integer
+          nullable: true
+        uptime:
+          type: string
+          nullable: true
+          description: Free-form supervisorctl uptime string
+
+    ProfileSummary:
+      type: object
+      required: [name, sizeBytes]
+      properties:
+        name:
+          type: string
+          description: Without .brf suffix
+        sizeBytes:
+          type: integer
+          format: int64
+        modifiedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    ProfileContent:
+      type: object
+      required: [name, content]
+      properties:
+        name:
+          type: string
+        content:
+          type: string
+          description: Full text content of the .brf file
+        sizeBytes:
+          type: integer
+          format: int64
+        modifiedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    SaveProfileRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+
+    # ===================== Planning DTOs =====================
+
+    PlanningIntent:
+      type: string
+      enum: [COVERAGE, AB, FREESTYLE]
+
+    PlanningRouteStyle:
+      type: string
+      enum: [KRAJOWKI, SCIEZKI, GRAVEL, WZDLUZ_RZEK, PRZEZ_MIASTA]
+
+    PlanningTempo:
+      type: string
+      enum: [TURYSTYCZNIE, SZYBKO]
+
+    Waypoint:
+      type: object
+      required: [lng, lat]
+      properties:
+        lng:
+          type: number
+          format: double
+        lat:
+          type: number
+          format: double
+        name:
+          type: string
+          nullable: true
+
+    RoutePreferences:
+      type: object
+      description: All fields nullable — PATCH semantics. Lists replace in full when provided.
+      properties:
+        countryIds:
+          type: array
+          nullable: true
+          items:
+            type: integer
+        levelIds:
+          type: array
+          nullable: true
+          items:
+            type: integer
+        specialGroupIds:
+          type: array
+          nullable: true
+          items:
+            type: integer
+        start:
+          $ref: '#/components/schemas/Waypoint'
+        end:
+          $ref: '#/components/schemas/Waypoint'
+        via:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/Waypoint'
+        loop:
+          type: boolean
+          nullable: true
+        days:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 20000
+        kmPerDay:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 1000
+        elevationPerDayM:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 10000
+        profile:
+          type: string
+          nullable: true
+          description: Direct BRouter profile name (fastbike/trekking/safety/fastbike-lowtraffic)
+        style:
+          $ref: '#/components/schemas/PlanningRouteStyle'
+        tempo:
+          $ref: '#/components/schemas/PlanningTempo'
+
+    PlanningSessionDay:
+      type: object
+      required: [id, sessionId, dayNumber, geometryEncoded, waypoints, profile, editedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sessionId:
+          type: string
+          format: uuid
+        dayNumber:
+          type: integer
+        geometryEncoded:
+          type: string
+          description: Polyline3DCodec encoded (lng,lat,z)
+        waypoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/Waypoint'
+        distanceKm:
+          type: number
+          format: double
+          nullable: true
+        elevationGain:
+          type: integer
+          nullable: true
+        elevationLoss:
+          type: integer
+          nullable: true
+        profile:
+          type: string
+        editedAt:
+          type: string
+          format: date-time
+
+    PlanningSessionResponse:
+      type: object
+      required: [id, userId, preferences, days, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        intent:
+          $ref: '#/components/schemas/PlanningIntent'
+        preferences:
+          $ref: '#/components/schemas/RoutePreferences'
+        days:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlanningSessionDay'
+        lastTaskId:
+          type: string
+          format: uuid
+          nullable: true
+        summary:
+          $ref: '#/components/schemas/PlanningSummary'
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    SetPlanningIntentRequest:
+      type: object
+      required: [intent]
+      properties:
+        intent:
+          $ref: '#/components/schemas/PlanningIntent'
+
+    CalculatePlanResponse:
+      type: object
+      required: [taskId]
+      properties:
+        taskId:
+          type: string
+          format: uuid
+          description: UUID of submitted PLAN_ROUTE task (poll via GET /planning/task/{taskId})
+
+    UpdatePlanningDayRequest:
+      type: object
+      required: [waypoints]
+      properties:
+        waypoints:
+          type: array
+          minItems: 2
+          items:
+            $ref: '#/components/schemas/Waypoint'
+
+    SaveAsExpeditionRequest:
+      type: object
+      required: [groupName]
+      properties:
+        groupName:
+          type: string
+          minLength: 1
+          maxLength: 200
+
+    SaveAsExpeditionResponse:
+      type: object
+      required: [draftIds, groupId]
+      properties:
+        groupId:
+          type: string
+          format: uuid
+        draftIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    PlanningSummary:
+      type: object
+      description: Podsumowanie policzonej wyprawy. Null gdy sesja jeszcze nie była policzona.
+      required: [totalDistanceKm, totalElevationGain, budgetKm, verdict, surplusKm, poolSize, initialPoolSize, reconcileIters, reconcileTrims, reconcileGrows]
+      properties:
+        totalDistanceKm:    { type: number, format: double }
+        totalElevationGain: { type: integer }
+        budgetKm:           { type: integer, description: "days × kmPerDay" }
+        verdict:
+          type: string
+          enum: [OK, SURPLUS, DEFICIT, BUDGET_IMPOSSIBLE]
+          description: "BUDGET_IMPOSSIBLE = sam baseline (start→via→meta) przekracza budżet — user musi poprawić parametry."
+        surplusKm:          { type: integer }
+        poolSize:           { type: integer, description: "Liczba obszarów po reconcile (finalna pula)" }
+        initialPoolSize:    { type: integer, description: "Liczba obszarów PRZED reconcile (cap MAX_TSP_AREAS)" }
+        reconcileIters:     { type: integer }
+        reconcileTrims:     { type: integer }
+        reconcileGrows:     { type: integer }
+        baselineKm:
+          type: number
+          format: double
+          nullable: true
+          description: "Baseline BRouter (start→via→meta bez gmin). Dolna granica trasy."
+        roadAnchors:
+          type: number
+          format: double
+          nullable: true
+          description: "Współczynnik road/straight dla anchors-only (probe baseline). Diagnostyka."
+        roadAreas:
+          type: number
+          format: double
+          nullable: true
+          description: "Współczynnik road/straight dla gęstej puli obszarów (density probe). Diagnostyka."
+        climbWarning:
+          type: boolean
+          description: "true gdy totalElevationGain > refClimbTotal × 1.10 — user-facing warning, nie blokuje verdict."
+
+    PlanTaskStatus:
+      type: string
+      enum: [RUNNING, COMPLETED, FAILED, CANCELLED]
+
+    PlanTask:
+      type: object
+      required: [id, sessionId, userId, status, startedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sessionId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/PlanTaskStatus'
+        phase:
+          type: string
+          nullable: true
+          description: Current phase name (validating / fetching-areas / ordering-areas / routing-brouter / sampling-elevation / splitting-days / computing-day-N / saving / done)
+        progressCurrent:
+          type: integer
+          nullable: true
+        progressTotal:
+          type: integer
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
