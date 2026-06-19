@@ -9,7 +9,9 @@ import velomarker.port.out.BrouterRoutingClient;
 import velomarker.port.out.ElevationDataSource;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class CalculateRouteService implements CalculateRouteUseCase {
 
@@ -22,9 +24,23 @@ public class CalculateRouteService implements CalculateRouteUseCase {
     private final BrouterRoutingClient brouterClient;
     private final ElevationDataSource elevation;
 
+    // Profilowanie enrichWithElevation — rolling sample, log co 200 calls (osobno od BRouter timing).
+    private static final int TIMING_LOG_EVERY = 200;
+    private static final int TIMING_SAMPLE_SIZE = 200;
+    private final AtomicLong enrichCalls = new AtomicLong();
+    private final long[] enrichMsSample = new long[TIMING_SAMPLE_SIZE];
+    private long lastEnrichLogAt = 0;
+
     public CalculateRouteService(BrouterRoutingClient brouterClient, ElevationDataSource elevation) {
         this.brouterClient = brouterClient;
         this.elevation = elevation;
+    }
+
+    /** v3.17: reset licznika enrich per plan — „Elevation enrichment timing last 200 of N" liczy TEN plan. */
+    @Override
+    public synchronized void resetPlanCounters() {
+        enrichCalls.set(0);
+        lastEnrichLogAt = 0;
     }
 
     @Override
@@ -35,12 +51,40 @@ public class CalculateRouteService implements CalculateRouteUseCase {
         if (command.profile() == null || command.profile().isBlank()) {
             throw new IllegalArgumentException("Profile is required");
         }
-        log.debug("Routing {} waypoints with profile {}", command.waypoints().size(), command.profile());
-        RouteCalculation result = brouterClient.calculate(command.waypoints(), command.profile());
-        // ZAWSZE doliczamy wysokość z (Copernicus) i wpisujemy w geometrię — route-service to JEDYNE źródło elewacji.
-        // Konsument (front ręczny / asystent) bierze z wprost, nikt nie pobiera /elevation osobno (koniec dublowania OTD).
+        log.debug("Routing {} waypoints with profile {} (computeStats={})",
+                command.waypoints().size(), command.profile(), command.computeStats());
+        RouteCalculation result = brouterClient.calculate(command.waypoints(), command.profile(), command.computeStats());
+        // ZAWSZE doliczamy wysokość z DEM (HGT/Copernicus) — ALNS2 cost'uje effort = distance + alpha*ascent,
+        // więc elevation MUSI być w coords nawet dla intermediate probing calls (bez tego climbM byłby
+        // pobierany przez ALNS2 z surowych lng/lat = drogi DEM sample per krawędź zamiast wartości z'ek).
+        // computeStats=false WYŁĄCZA jedynie RouteStats/spans (drogie parsowanie messageList) — elevation NIE.
+        long tEnrichStart = System.currentTimeMillis();
         List<double[]> withZ = enrichWithElevation(result.coordinates(), result.flatSpans());
-        return new RouteCalculation(withZ, result.distanceKm());
+        recordEnrichTiming(System.currentTimeMillis() - tEnrichStart);
+        return new RouteCalculation(withZ, result.distanceKm(), result.flatSpans(), result.stats());
+    }
+
+    private void recordEnrichTiming(long elapsedMs) {
+        long n = enrichCalls.incrementAndGet();
+        int slot = (int) ((n - 1) % TIMING_SAMPLE_SIZE);
+        enrichMsSample[slot] = elapsedMs;
+        if (n - lastEnrichLogAt >= TIMING_LOG_EVERY) {
+            synchronized (this) {
+                if (n - lastEnrichLogAt < TIMING_LOG_EVERY) return;
+                lastEnrichLogAt = n;
+                int sampleSize = (int) Math.min(n, TIMING_SAMPLE_SIZE);
+                long[] copy = Arrays.copyOf(enrichMsSample, sampleSize);
+                Arrays.sort(copy);
+                long min = copy[0];
+                long max = copy[sampleSize - 1];
+                long p50 = copy[sampleSize * 50 / 100];
+                long p95 = copy[Math.min(sampleSize - 1, sampleSize * 95 / 100)];
+                long p99 = copy[Math.min(sampleSize - 1, sampleSize * 99 / 100)];
+                double avg = Arrays.stream(copy).sum() / (double) sampleSize;
+                log.info("Elevation enrichment timing (last {} of {}): min={}ms p50={}ms avg={}ms p95={}ms p99={}ms max={}ms",
+                        new Object[]{sampleSize, n, min, p50, String.format("%.1f", avg), p95, p99, max});
+            }
+        }
     }
 
     /**

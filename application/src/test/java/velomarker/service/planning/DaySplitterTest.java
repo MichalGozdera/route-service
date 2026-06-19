@@ -141,8 +141,12 @@ class DaySplitterTest {
     @Test
     void isRoadProfile_detectsKnownProfiles() {
         assertThat(DaySplitter.isRoadProfile("fastbike")).isTrue();
+        assertThat(DaySplitter.isRoadProfile("fastbike-gminy")).isTrue();
+        assertThat(DaySplitter.isRoadProfile("ultra")).isTrue();
+        assertThat(DaySplitter.isRoadProfile("ultra-gminy")).isTrue();
         assertThat(DaySplitter.isRoadProfile("safety")).isTrue();
         assertThat(DaySplitter.isRoadProfile("trekking")).isFalse();
+        assertThat(DaySplitter.isRoadProfile("trekking-gminy")).isFalse();
         assertThat(DaySplitter.isRoadProfile(null)).isTrue(); // default road
     }
 }

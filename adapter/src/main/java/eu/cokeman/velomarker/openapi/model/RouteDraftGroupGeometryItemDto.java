@@ -5,6 +5,7 @@ import java.util.Objects;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonTypeName;
+import eu.cokeman.velomarker.openapi.model.RouteStatsDto;
 import org.springframework.lang.Nullable;
 import java.time.OffsetDateTime;
 import jakarta.validation.Valid;
@@ -28,6 +29,8 @@ public class RouteDraftGroupGeometryItemDto {
   private String geometryEncoded;
 
   private @Nullable Double distanceKm = null;
+
+  private @Nullable RouteStatsDto stats;
 
   public RouteDraftGroupGeometryItemDto() {
     super();
@@ -96,6 +99,27 @@ public class RouteDraftGroupGeometryItemDto {
     this.distanceKm = distanceKm;
   }
 
+  public RouteDraftGroupGeometryItemDto stats(@Nullable RouteStatsDto stats) {
+    this.stats = stats;
+    return this;
+  }
+
+  /**
+   * Get stats
+   * @return stats
+   */
+  @Valid 
+  @Schema(name = "stats", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
+  @JsonProperty("stats")
+  public @Nullable RouteStatsDto getStats() {
+    return stats;
+  }
+
+  @JsonProperty("stats")
+  public void setStats(@Nullable RouteStatsDto stats) {
+    this.stats = stats;
+  }
+
   @Override
   public boolean equals(Object o) {
     if (this == o) {
@@ -107,12 +131,13 @@ public class RouteDraftGroupGeometryItemDto {
     RouteDraftGroupGeometryItemDto routeDraftGroupGeometryItem = (RouteDraftGroupGeometryItemDto) o;
     return Objects.equals(this.dayNumber, routeDraftGroupGeometryItem.dayNumber) &&
         Objects.equals(this.geometryEncoded, routeDraftGroupGeometryItem.geometryEncoded) &&
-        Objects.equals(this.distanceKm, routeDraftGroupGeometryItem.distanceKm);
+        Objects.equals(this.distanceKm, routeDraftGroupGeometryItem.distanceKm) &&
+        Objects.equals(this.stats, routeDraftGroupGeometryItem.stats);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(dayNumber, geometryEncoded, distanceKm);
+    return Objects.hash(dayNumber, geometryEncoded, distanceKm, stats);
   }
 
   @Override
@@ -122,6 +147,7 @@ public class RouteDraftGroupGeometryItemDto {
     sb.append("    dayNumber: ").append(toIndentedString(dayNumber)).append("\n");
     sb.append("    geometryEncoded: ").append(toIndentedString(geometryEncoded)).append("\n");
     sb.append("    distanceKm: ").append(toIndentedString(distanceKm)).append("\n");
+    sb.append("    stats: ").append(toIndentedString(stats)).append("\n");
     sb.append("}");
     return sb.toString();
   }

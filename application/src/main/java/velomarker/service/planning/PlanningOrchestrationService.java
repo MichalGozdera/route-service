@@ -17,8 +17,11 @@ import velomarker.entity.planning.Waypoint;
 import velomarker.exception.PlanningSessionMissingException;
 import velomarker.exception.PlanningSessionNotReadyException;
 import velomarker.port.in.CalculateRouteUseCase;
+import velomarker.port.out.BrouterRoutingClient;
 import velomarker.port.out.ElevationDataSource;
 import velomarker.port.out.planning.AreaCoverage;
+import velomarker.port.out.planning.AreaCoverageIndex;
+import velomarker.port.out.planning.AreaCoverageIndexFactory;
 import velomarker.port.out.planning.PlanningSessionDayRepository;
 import velomarker.port.out.planning.PlanningSessionRepository;
 import velomarker.port.out.planning.VisitServiceClient;
@@ -76,8 +79,9 @@ public class PlanningOrchestrationService {
      * loop wybiega poza profil). Cap 30000 jako sanity.
      */
     static final int DAY_SPLIT_ELEVATION_SAMPLES = 2000;
-    /** Górny cap dla adaptywnego sample count — żeby ekstremalne days × 3 nie wybuchło (10000d×3=30000). */
-    static final int DAY_SPLIT_ELEVATION_SAMPLES_CAP = 30000;
+    /** Górny cap dla adaptywnego sample count. 200000 = 1.15 km/sample dla Francji (229000 km), pełna
+     *  geometria dla regionalnych tras Pardubice-typu (~50k coords). Memory ~3.2 MB profile array. */
+    static final int DAY_SPLIT_ELEVATION_SAMPLES_CAP = 200000;
     /** Próg climb warning względem refClimbTotal — nie blokuje verdict, tylko user-facing flag. */
     static final double CLIMB_WARNING_RATIO = 1.10;
 
@@ -85,6 +89,8 @@ public class PlanningOrchestrationService {
     private final PlanningSessionDayRepository dayRepository;
     private final VisitServiceClient visitClient;
     private final CalculateRouteUseCase routeUseCase;
+    private final BrouterRoutingClient brouterClient; // v3.16: reset liczników „cumulative" per plan
+    private final AreaCoverageIndexFactory coverageIndexFactory; // v3.18: per-dzień covered area IDs
     private final ElevationDataSource elevation;
     private final WaypointSelector waypointSelector;
     private final ProfileMapper profileMapper;
@@ -99,10 +105,21 @@ public class PlanningOrchestrationService {
     private final velomarker.service.planning.alns2.AlnsCoveragePlanner2 alns2Planner;
     private PlanProgressSink progressSink; // setter-injected by SpringAppConfig (avoids cyclic dep)
 
+    /**
+     * Rejestr brakujących tile'ów BRoutera (.rd5) per task. BRouter zwraca 400
+     * {@code datafile X.rd5 not found} gdy tile DEM dla regionu nie jest pobrane. Algorytm zbiera
+     * te nazwy podczas calculateChunkResilient i raportuje w Plan summary z gotową komendą wget,
+     * by user nie szukał wśród setek warnów „target-island".
+     */
+    private final java.util.concurrent.ConcurrentMap<UUID, java.util.Set<String>> missingTilesPerTask =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     public PlanningOrchestrationService(PlanningSessionRepository sessionRepository,
                                         PlanningSessionDayRepository dayRepository,
                                         VisitServiceClient visitClient,
                                         CalculateRouteUseCase routeUseCase,
+                                        BrouterRoutingClient brouterClient,
+                                        AreaCoverageIndexFactory coverageIndexFactory,
                                         ElevationDataSource elevation,
                                         WaypointSelector waypointSelector,
                                         ProfileMapper profileMapper,
@@ -115,6 +132,8 @@ public class PlanningOrchestrationService {
         this.dayRepository = dayRepository;
         this.visitClient = visitClient;
         this.routeUseCase = routeUseCase;
+        this.brouterClient = brouterClient;
+        this.coverageIndexFactory = coverageIndexFactory;
         this.elevation = elevation;
         this.waypointSelector = waypointSelector;
         this.profileMapper = profileMapper;
@@ -143,6 +162,7 @@ public class PlanningOrchestrationService {
      * @param bearerToken  JWT do propagacji visit-service
      */
     public void executePlan(UUID taskId, UUID userId, String bearerToken) {
+        missingTilesPerTask.put(taskId, java.util.concurrent.ConcurrentHashMap.newKeySet());
         try {
             PlanningSession session = sessionRepository.findByUserId(userId)
                     .orElseThrow(() -> new PlanningSessionMissingException(userId));
@@ -158,6 +178,16 @@ public class PlanningOrchestrationService {
             checkCancel(taskId);
 
             String profile = resolveProfile(prefs);
+            // Parametry wejściowe planu — jedna linia na starcie (diagnostyka: z czym wystartował dany run).
+            Waypoint startWp = prefs.start();
+            brouterClient.resetPlanCounters(); // v3.16: licznik „BRouter cumulative" liczy TEN plan, nie od startu serwisu
+            routeUseCase.resetPlanCounters();  // v3.17: licznik „Elevation enrichment timing" też per plan
+            log.info("PLAN START: task={} intent={} profile={} days={} kmPerDay={} elevPerDay={} start={} via={} loop={} (style={}, tempo={})",
+                    new Object[]{taskId, session.intent(), profile, prefs.days(), prefs.kmPerDay(),
+                            prefs.elevationPerDayM(),
+                            startWp == null ? "null" : String.format(java.util.Locale.ROOT, "%.5f,%.5f", startWp.lng(), startWp.lat()),
+                            prefs.via() == null ? 0 : prefs.via().size(), prefs.loop(),
+                            prefs.style(), prefs.tempo()});
             RoadFactorCalibrator calibrator = new RoadFactorCalibrator();
 
             CoverageBuildInfo coverageInfo = null;
@@ -179,13 +209,19 @@ public class PlanningOrchestrationService {
                         checkCancel(taskId);
                         java.util.function.BiFunction<List<Waypoint>, String, RouteCalculation> brouterFn =
                                 (wps, prof) -> calculateRouteChunked(taskId,
-                                        wps.stream().map(Waypoint::toLngLat).toList(), prof);
+                                        wps.stream().map(Waypoint::toLngLat).toList(), prof, false);
+                        // brouterFinal — TYLKO dla finalnego recompute przed return z plannera.
+                        // computeStats=true → zwracany RouteCalculation ma pelne stats (surface/road/
+                        // smoothness + spans) potrzebne dla per-day slicing w orchestratorze.
+                        java.util.function.BiFunction<List<Waypoint>, String, RouteCalculation> brouterFinal =
+                                (wps, prof) -> calculateRouteChunked(taskId,
+                                        wps.stream().map(Waypoint::toLngLat).toList(), prof, true);
                         // Climb-aware GROW: TspCoveragePlanner moze rozszerzyc km budget jesli wznios
                         // nie jest wykorzystany. Callback zwraca gainM dla geometrii.
                         java.util.function.Function<List<double[]>, Integer> elevationGainFn =
                                 geom -> elevation.sample(geom).gainM();
                         tspResult = tspPlanner.plan(taskId, coverageInfo, prefs, profile,
-                                calibrator, brouterFn, this::checkCancel, elevationGainFn);
+                                calibrator, brouterFn, brouterFinal, this::checkCancel, elevationGainFn);
                         if (tspResult != null) {
                             log.info("TSP done: picked={} waypoints={} realKm={}",
                                     new Object[]{tspResult.picked().size(), tspResult.finalWaypoints().size(),
@@ -203,9 +239,12 @@ public class PlanningOrchestrationService {
                         final String alnsProfile = profile;
                         java.util.function.BiFunction<List<Waypoint>, String, RouteCalculation> brouterFn =
                                 (wps, prof) -> calculateRouteChunked(taskId,
-                                        wps.stream().map(Waypoint::toLngLat).toList(), prof);
+                                        wps.stream().map(Waypoint::toLngLat).toList(), prof, false);
+                        java.util.function.BiFunction<List<Waypoint>, String, RouteCalculation> brouterFinal =
+                                (wps, prof) -> calculateRouteChunked(taskId,
+                                        wps.stream().map(Waypoint::toLngLat).toList(), prof, true);
                         alnsResult = alnsPlanner.optimize(taskId, coverageInfo, prefs, profile,
-                                calibrator, brouterFn, this::checkCancel);
+                                calibrator, brouterFn, brouterFinal, this::checkCancel);
                         if (alnsResult != null) {
                             log.info("ALNS branch: bypassing routeWithTrimAndDedup, using ALNS result directly");
                             allWaypoints = alnsResult.finalWaypoints();
@@ -221,7 +260,10 @@ public class PlanningOrchestrationService {
                         checkCancel(taskId);
                         java.util.function.BiFunction<List<Waypoint>, String, RouteCalculation> brouterFn =
                                 (wps, prof) -> calculateRouteChunked(taskId,
-                                        wps.stream().map(Waypoint::toLngLat).toList(), prof);
+                                        wps.stream().map(Waypoint::toLngLat).toList(), prof, false);
+                        java.util.function.BiFunction<List<Waypoint>, String, RouteCalculation> brouterFinal =
+                                (wps, prof) -> calculateRouteChunked(taskId,
+                                        wps.stream().map(Waypoint::toLngLat).toList(), prof, true);
                         // Pool = wszystkie areas z bbox-filtered coverageInfo (picked + reserve)
                         List<UnvisitedArea> alns2Pool = new ArrayList<>();
                         if (coverageInfo.pickedCandidates() != null) {
@@ -231,8 +273,8 @@ public class PlanningOrchestrationService {
                             for (AreaCandidate c : coverageInfo.reserveCandidates()) alns2Pool.add(c.area);
                         }
                         log.info("ALNS2: pool={} areas (z greedy bbox-filtered)", alns2Pool.size());
-                        alns2Result = alns2Planner.plan(taskId, alns2Pool, prefs, profile,
-                                brouterFn, this::checkCancel);
+                        alns2Result = alns2Planner.plan(taskId, alns2Pool, coverageInfo.baselineGeometry(), prefs, profile,
+                                brouterFn, brouterFinal, this::checkCancel);
                         if (alns2Result != null) {
                             log.info("ALNS2 branch: visited={} iters={} brouterCalls={}",
                                     new Object[]{alns2Result.visited().size(),
@@ -283,6 +325,8 @@ public class PlanningOrchestrationService {
                 full = traced.calc;
                 allWaypoints = traced.finalWaypoints;
             }
+            // Stats per-day slicing dziala czysto: TSP/ALNS/ALNS2 same robia final recompute z brouterFinal
+            // przed return (zob. brouterFinal w lambdas powyzej), wiec `full.stats()` ma spans z pelnej trasy.
 
             setPhase(taskId, "sampling-elevation");
             checkCancel(taskId);
@@ -291,9 +335,13 @@ public class PlanningOrchestrationService {
             // Per-day climb potem liczony jest osobno z dayElev (~0.4 km/sample), wiec dni
             // nieproporcjonalnie roznily sie effort'em. 2000 sample = 0.85 km/sample = ~9x
             // dokladniej -> effort split max/min ~1.15x zamiast 1.38x.
-            // ADAPTYWNIE dla dużych days: ≥ days×3 punktów (inaczej dni > samples → pad 0-km).
+            // PEŁNA GRANULACJA: zamiast 2000 evenly-spaced sampli (gubi małe wzgórki → splitter myśli
+            // że dni są równe, a wizualnie km/climb wychodzi 20% spread), bierzemy MIN(coords, CAP).
+            // User: „po ostatnim reconcile weź całą trasę i pociachaj" — splitter widzi każdy coord
+            // BRoutera z elevation. Cap 30000 dla mega-tras Francji (50000+ km).
             int splitSamples = Math.min(DAY_SPLIT_ELEVATION_SAMPLES_CAP,
-                    Math.max(DAY_SPLIT_ELEVATION_SAMPLES, prefs.days() != null ? prefs.days() * 3 : DAY_SPLIT_ELEVATION_SAMPLES));
+                    Math.max(DAY_SPLIT_ELEVATION_SAMPLES,
+                            Math.max(prefs.days() != null ? prefs.days() * 3 : 0, full.coordinates().size())));
             ElevationProfile fullProfile = elevation.sample(full.coordinates(), splitSamples);
 
             setPhase(taskId, "splitting-days");
@@ -316,6 +364,27 @@ public class PlanningOrchestrationService {
             int fullSize = full.coordinates().size();
             double stepFull = sampleCount > 1 ? (fullSize - 1.0) / (sampleCount - 1.0) : 0.0;
 
+            // Mapowanie planning-waypoint → indeks w pełnej geometrii BRoutera (raz, dla wszystkich dni).
+            // Per dzień bierzemy WSZYSTKIE entry-pointy gmin tego dnia jako dayWaypoints (zamiast 48
+            // evenly-spaced z pickDayKnots) — user może edytowac każdą zaplanowaną gminę osobno
+            // bez utraty creditu sąsiednich.
+            int[] wpToFullIdx = mapWaypointsToFullIndices(allWaypoints, full.coordinates());
+            int wpMapped = 0;
+            for (int v : wpToFullIdx) if (v >= 0) wpMapped++;
+            log.info("Waypoint mapping: {}/{} planning waypoints zlokalizowane w pełnej geometrii (reszta = BRouter chunk-fail)",
+                    new Object[]{wpMapped, allWaypoints.size()});
+
+            // v3.18 FIX C: indeks pokrycia nad pulą (kandydaci po bbox) — per-dzień ID gmin ZALICZONYCH
+            // (kryterium kredytu ≥200 m, port JTS) = źródło prawdy dla kolorowania na froncie (kolor=prawda).
+            AreaCoverageIndex coverageIndex = null;
+            if (coverageInfo != null) {
+                List<UnvisitedArea> coveragePool = new ArrayList<>();
+                if (coverageInfo.pickedCandidates() != null)
+                    for (AreaCandidate c : coverageInfo.pickedCandidates()) coveragePool.add(c.area);
+                if (coverageInfo.reserveCandidates() != null)
+                    for (AreaCandidate c : coverageInfo.reserveCandidates()) coveragePool.add(c.area);
+                if (!coveragePool.isEmpty()) coverageIndex = coverageIndexFactory.build(coveragePool);
+            }
             List<PlanningSessionDay> days = new ArrayList<>(boundaries.size());
             for (int i = 0; i < boundaries.size(); i++) {
                 checkCancel(taskId);
@@ -333,11 +402,35 @@ public class PlanningOrchestrationService {
 
                 double realDistKm = fullCumKm[fullEndIdx] - fullCumKm[fullStartIdx];
 
-                List<double[]> dayGeometry = new ArrayList<>(
-                        full.coordinates().subList(fullStartIdx, fullEndIdx + 1));
-                ElevationProfile dayElev = elevation.sample(dayGeometry);
-                List<Waypoint> dayWaypoints = pickDayKnots(dayGeometry);
+                List<double[]> dayGeometry2D = full.coordinates().subList(fullStartIdx, fullEndIdx + 1);
+                // Pełna granulacja sampling per dzień — bez tego default cap 500 dawał ~566m między
+                // próbkami (dla 283 km dnia) → gubił wzgórki, gain spadał z 1967m → 1304m. Frontend
+                // licząc z pełnej geometrii (~23m między coordami) pokazuje prawdziwą wartość.
+                ElevationProfile dayElev = elevation.sample(dayGeometry2D, dayGeometry2D.size());
+                // ENRICH coords z z (wysokością) — by polyline3D miało realne z, NIE 0. Frontend
+                // wtedy używa z BEZPOŚREDNIO (gpsAltitudeAvailable=true) zamiast wołać /route/elevation
+                // → ta sama wartość gain w storage i UI, zero rozjazdu. dayElev.profile() ma 1:1 mapowanie
+                // po pełnej granulacji (downsample no-op, każdy coord ma swój HGT lookup).
+                List<double[]> dayGeometry = new ArrayList<>(dayGeometry2D.size());
+                List<double[]> eleProfile = dayElev.profile();
+                int eleCount = eleProfile.size();
+                for (int p = 0; p < dayGeometry2D.size(); p++) {
+                    double[] c = dayGeometry2D.get(p);
+                    double z = p < eleCount ? eleProfile.get(p)[1] : 0.0;
+                    dayGeometry.add(new double[]{c[0], c[1], z});
+                }
+                List<Waypoint> dayWaypoints = dayWaypointsFromPlanning(
+                        allWaypoints, wpToFullIdx, fullStartIdx, fullEndIdx,
+                        full.coordinates(), dayGeometry);
 
+                // Slice stats całej trasy dla okna [fullStartIdx, fullEndIdx] — daje panel "Typy
+                // nawierzchni / dróg" gotowy do wyświetlenia per dzień na FE, bez ponownego BRouter call.
+                velomarker.entity.RouteStats dayStats = velomarker.service.RouteStatsSlicer.slice(
+                        full.stats(), full.coordinates(), fullStartIdx, fullEndIdx);
+                // v3.18 FIX C: gminy zaliczone przez geometrię tego dnia (kryterium kredytu portu JTS).
+                List<Integer> coveredAreaIds = coverageIndex != null
+                        ? new ArrayList<>(coverageIndex.visitedAreaIds(dayGeometry))
+                        : java.util.List.of();
                 days.add(new PlanningSessionDay(
                         UUID.randomUUID(),
                         session.id(),
@@ -348,7 +441,9 @@ public class PlanningOrchestrationService {
                         (int) Math.round(dayElev.gainM()),
                         (int) Math.round(dayElev.lossM()),
                         profile,
-                        Instant.now()
+                        Instant.now(),
+                        dayStats,
+                        coveredAreaIds
                 ));
             }
 
@@ -364,16 +459,32 @@ public class PlanningOrchestrationService {
                             s.budgetKm(), s.verdict(),
                             s.poolSize(), s.initialPoolSize(),
                             s.reconcileIters(), s.reconcileTrims(), s.reconcileGrows()});
+            // Effort per dzień = km + 0.1 × climb_m (alpha jak ALNS2). Pokazuje czy DaySplitter dobrze
+            // wyrównuje. Idealnie wszystkie dni ≈ totalEffort/N. Spread > 5% = sygnał problemu.
             StringBuilder dayDump = new StringBuilder();
             for (PlanningSessionDay d : days) {
-                dayDump.append(String.format(" d%d=%.1fkm/%dm",
-                        d.dayNumber(),
-                        d.distanceKm() != null ? d.distanceKm() : 0.0,
-                        d.elevationGain() != null ? d.elevationGain() : 0));
+                double km = d.distanceKm() != null ? d.distanceKm() : 0.0;
+                int climb = d.elevationGain() != null ? d.elevationGain() : 0;
+                double effort = km + 0.1 * climb;
+                dayDump.append(String.format(java.util.Locale.ROOT, " d%d=%.1fkm/%dm/eff%.0f",
+                        d.dayNumber(), km, climb, effort));
             }
             log.info("Day distribution:{}", dayDump);
         } catch (RuntimeException e) {
             throw e;
+        } finally {
+            java.util.Set<String> missing = missingTilesPerTask.remove(taskId);
+            if (missing != null && !missing.isEmpty()) {
+                java.util.List<String> sorted = new java.util.ArrayList<>(missing);
+                java.util.Collections.sort(sorted);
+                StringBuilder wgetCmd = new StringBuilder("cd brouter-deploy && ");
+                for (int i = 0; i < sorted.size(); i++) {
+                    if (i > 0) wgetCmd.append(" && ");
+                    wgetCmd.append("wget http://brouter.de/brouter/segments4/").append(sorted.get(i)).append(".rd5");
+                }
+                log.warn("⚠ BRouter brakujące tile DEM ({}): {}", sorted.size(), sorted);
+                log.warn("   Pobierz brakujące: {}", wgetCmd);
+            }
         }
     }
 
@@ -451,7 +562,9 @@ public class PlanningOrchestrationService {
         // poprawić parametry. Inaczej algorytm dalej dobiera obszary do nadkładu.
         setPhase(taskId, "baseline");
         checkCancel(taskId);
+        long tBaselineNs = System.nanoTime();
         BaselineProbe baseline = computeBaseline(prefs, resolveProfile(prefs), calibrator);
+        long baselineMs = (System.nanoTime() - tBaselineNs) / 1_000_000;
         int budgetKm = (prefs.days() != null && prefs.kmPerDay() != null)
                 ? prefs.days() * prefs.kmPerDay() : 0;
         var baselineVerdict = BudgetReconciler.evaluateBaseline(baseline.distanceKm, prefs.days(), prefs.kmPerDay());
@@ -459,6 +572,7 @@ public class PlanningOrchestrationService {
                 new Object[]{Math.round(baseline.distanceKm), Math.round(baseline.climbM),
                         Math.round(baseline.anchorsStraightKm), String.format("%.2f", calibrator.roadAnchors()),
                         baselineVerdict.verdict()});
+        log.info("STARTUP TIMING: baseline (BRouter start→meta, liczony RAZ — reużyty w plannerze) = {} ms", baselineMs);
         if (baselineVerdict.verdict() == BudgetReconciler.Verdict.BUDGET_IMPOSSIBLE) {
             throw new PlanningSessionNotReadyException(
                     "Trasa start→via→meta sama waży " + Math.round(baseline.distanceKm) + " km, " +
@@ -499,10 +613,25 @@ public class PlanningOrchestrationService {
         }
         double surplusForBbox = Math.max(50, budgetKm - baseline.distanceKm);
         double bboxRadiusKm = Math.max(30, Math.min(poolDiagKm, surplusForBbox / 4.0));
-        double bboxMarginDeg = bboxRadiusKm / 100.0; // ~100km/deg (przyblizenie do bbox quick filter)
-        double[] bbox = polylineBbox(baselineGeom, bboxMarginDeg);
-        log.info("Bbox filter radius: {} km (surplus {} km / 4, cap=pool diagonal {} km)",
-                new Object[]{Math.round(bboxRadiusKm), Math.round(surplusForBbox), Math.round(poolDiagKm)});
+        // 1° lat ≈ 111 km zawsze; 1° lng = 111 × cos(lat) km — kurczy się ku biegunom.
+        // Stała 1/100 ignorowała cos(lat) → na 52°N margin lng był liczony 13.4° zamiast prawidłowych
+        // ~9.2°, a właściwie odwrotnie: dawano 9.17° (== km/100) zamiast 13.4° (== km/(111×cos52°)),
+        // skutkiem czego wschodnia PL (lng>22.6°) leciała za bbox mimo że odległość km mieściła się.
+        double centerLat = baselineGeom.stream().mapToDouble(p -> p[1]).average().orElse(52.0);
+        double bboxMarginLatDeg = bboxRadiusKm / 111.0;
+        double bboxMarginLngDeg = bboxRadiusKm / (111.0 * Math.cos(Math.toRadians(centerLat)));
+        double[] bbox = polylineBbox(baselineGeom, bboxMarginLngDeg, bboxMarginLatDeg);
+        log.info("Bbox filter radius: {} km (surplus {} km / 4, cap=pool diagonal {} km, marginLng={}° marginLat={}° @lat={}°)",
+                new Object[]{Math.round(bboxRadiusKm), Math.round(surplusForBbox), Math.round(poolDiagKm),
+                        String.format(java.util.Locale.ROOT, "%.2f", bboxMarginLngDeg),
+                        String.format(java.util.Locale.ROOT, "%.2f", bboxMarginLatDeg),
+                        String.format(java.util.Locale.ROOT, "%.1f", centerLat)});
+        // DEM pre-fault dla bbox planu — best-effort, nigdy nie blokuje planowania.
+        try {
+            elevation.preload(bbox);
+        } catch (RuntimeException e) {
+            log.warn("DEM preload nieudany (ignoruję): {}", e.getMessage());
+        }
         List<UnvisitedArea> nearPool = new ArrayList<>();
         for (UnvisitedArea a : pool) {
             if (a.lng() >= bbox[0] && a.lng() <= bbox[2]
@@ -611,7 +740,9 @@ public class PlanningOrchestrationService {
 
         // ETAP 3: DENSITY PROBE — BRouter na 30 najbliższych gminach do bazowej → roadAreas.
         String coverageProfile = resolveProfile(prefs);
+        long tProbeNs = System.nanoTime();
         densityProbeFromCandidates(taskId, candidates, baselineGeom, coverageProfile, calibrator);
+        log.info("STARTUP TIMING: density-probe (BRouter ~30 obszarów) = {} ms", (System.nanoTime() - tProbeNs) / 1_000_000);
 
         // ETAP 4: GREEDY ADD aż suma detourReal ≈ surplus × 1.0.
         // Już-przecięte gminy są "darmowe" (detour=0), reszta sortowana ASC po koszcie.
@@ -629,9 +760,13 @@ public class PlanningOrchestrationService {
         int paidCount = 0;
 
         // ADAPTIVE FAIRNESS: 2-etapowy greedy.
-        // Etap 1: AFFORDABLE round-robin per kategoria (countryId:levelId:specialGroupId).
-        //   Tylko obszary z detour ≤ median × 2.0 lub intersected. Każda kategoria daje cheapest
-        //   cyklicznie. NATURALNIE balansuje DE+CZ pogranicze; SK 600km detour NIE wymusza turn'u.
+        // Etap 1: AFFORDABLE NN-weighted min-coverage greedy per kategoria (countryId:levelId:specialGroupId).
+        //   Tylko obszary z detour ≤ median × 1.0 lub intersected. Z bucketu kategorii bierzemy
+        //   peekFirst (cheapest po sort detour ASC). Wybór KATEGORII: ta o najmniejszym sumarycznym
+        //   coverageReachKm (= Σ avgNN_cat × picked_count). NIE cykliczny round-robin — wybieramy
+        //   zawsze najbardziej „głodną" kategorię po zasięgu geograficznym. Naturalnie balansuje
+        //   gęste (CZ Obec nn~5km) vs rzadkie (DE Kreissitz nn~55km): rzadkie zbierają więcej
+        //   pozycji proporcjonalnie do reach, niezależnie od fizycznej powierzchni (Kreissitz fix).
         // Etap 2: EXPENSIVE greedy ASC (bez fairness).
         //   Pozostałe (drogie) obszary, dorzucane gdy budget zostaje. SK token area wejdzie tylko
         //   jeśli budżet pozwoli, bez forsowania.
@@ -664,20 +799,36 @@ public class PlanningOrchestrationService {
         }
         log.info("Affordable buckets (detour ≤ {} km, median*2): {} | expensive: {}",
                 new Object[]{String.format("%.1f", affordableThreshold), bucketLog, expensivePool.size()});
-        // AREA-WEIGHTED ROUND-ROBIN: zamiast "po jednym z każdej kategorii cyklicznie",
-        // bierzemy z kategorii ktora ma NAJMNIEJSZA SUMARYCZNA picked areaKm2. DE Kreis (600 km²
-        // each) i CZ Obec (30 km² each) sa balansowane PO POWIERZCHNI -- nie po liczbie. Bez tego:
-        // 50 DE × 30 = trasa rozjedzie sie po Niemczech az do Holandii; 50 CZ × 30 = mikrokorytarz.
-        // Teraz: 1 DE coverage 600 km² <-> ~20 CZ coverage 600 km² = realny balans geograficzny.
-        java.util.Map<String, Double> coverageAreaKm2 = new java.util.HashMap<>();
-        for (String key : bucketed.keySet()) coverageAreaKm2.put(key, 0.0);
+        // NN-WEIGHTED MIN-COVERAGE GREEDY: każdą iterację wybieramy kategorię o NAJMNIEJSZYM
+        // sumarycznym coverageReachKm (= Σ avgNN_cat × picked_count). To NIE jest round-robin
+        // (cykliczne A→B→C→A) — to wybór „najbardziej głodnej" kategorii po geograficznym zasięgu.
+        // Dla par o tej samej powierzchni ale różnej rzadkości (Kreissitz 30 km²/60km NN vs obec
+        // 30 km²/5km NN) Kreissitz dostaje ~12× więcej pozycji = realny balans geograficzny niezależny
+        // od fizycznej powierzchni gminy. Dawniej balansowaliśmy po areaKm² — działało dla Landkreis
+        // (large+sparse) vs obec (small+dense), ale myliło Kreissitz (small+sparse) z obec.
+        // avgNN_cat precomputowane raz, spójne z reward calibration w AlnsCoveragePlanner2 (~linia 1995).
+        java.util.Map<String, Double> avgNNcat = new java.util.HashMap<>();
+        for (var e : bucketed.entrySet()) {
+            List<velomarker.entity.planning.UnvisitedArea> catAreas = e.getValue().stream()
+                    .map(c -> c.area).toList();
+            double nn = velomarker.service.planning.alns2.GminaIndex.avgNearestNeighborDistKm(catAreas);
+            if (nn <= 0) {
+                // Fallback dla kategorii z <2 obszarami (avgNN==0) — sqrt(area) jako proxy spacing,
+                // żeby kategoria nie miała wagi 0 i nie była wieczym min (zawsze wybierana).
+                nn = catAreas.isEmpty() ? 1.0
+                        : Math.max(1.0, Math.sqrt(Math.max(1.0, catAreas.get(0).areaKm2())));
+            }
+            avgNNcat.put(e.getKey(), nn);
+        }
+        java.util.Map<String, Double> coverageReachKm = new java.util.HashMap<>();
+        for (String key : bucketed.keySet()) coverageReachKm.put(key, 0.0);
         while (true) {
-            // Wybierz kategorie z MIN coverage areaKm2 (sposrod tych z niepustym bucketem)
+            // Wybierz kategorię z MIN coverage reach (sposrod tych z niepustym bucketem)
             String pickCat = null;
             double minCoverage = Double.MAX_VALUE;
             for (var entry : bucketed.entrySet()) {
                 if (entry.getValue().isEmpty()) continue;
-                double cov = coverageAreaKm2.get(entry.getKey());
+                double cov = coverageReachKm.get(entry.getKey());
                 if (cov < minCoverage) {
                     minCoverage = cov;
                     pickCat = entry.getKey();
@@ -699,18 +850,21 @@ public class PlanningOrchestrationService {
             bucketed.get(pickCat).pollFirst();
             picked.add(c);
             usedExtra += detourReal;
-            coverageAreaKm2.merge(pickCat, c.area.areaKm2(), Double::sum);
+            coverageReachKm.merge(pickCat, avgNNcat.get(pickCat), Double::sum);
             if (c.intersected) freeCount++; else paidCount++;
         }
         // Drain pozostałe affordable do reserve (przekraczają budget per category)
         for (var bucket : bucketed.values()) reserve.addAll(bucket);
-        // Log per-category coverage area dla diagnostyki
+        // Log per-category NN-reach dla diagnostyki (sumaryczny picked × avgNN; w nawiasie avgNN_cat).
         StringBuilder covLog = new StringBuilder();
-        for (var e : coverageAreaKm2.entrySet()) {
+        for (var e : coverageReachKm.entrySet()) {
             if (covLog.length() > 0) covLog.append(", ");
-            covLog.append(e.getKey()).append("=").append(Math.round(e.getValue())).append("km²");
+            covLog.append(e.getKey())
+                    .append("=").append(Math.round(e.getValue())).append("km")
+                    .append(" (nn=").append(String.format(java.util.Locale.ROOT, "%.1f", avgNNcat.get(e.getKey())))
+                    .append(")");
         }
-        log.info("Area-weighted picks per category: {}", covLog);
+        log.info("NN-reach picks per category: {}", covLog);
         int affordablePicked = picked.size();
         // Etap 2: EXPENSIVE greedy ASC -- dorzuca cheapest gdy budget zostaje
         expensivePool.sort((a, b) -> Double.compare(a.detourStraightKm, b.detourStraightKm));
@@ -929,8 +1083,11 @@ public class PlanningOrchestrationService {
         return best;
     }
 
-    /** Bbox polyline z marginesem (w stopniach). [minLng, minLat, maxLng, maxLat]. */
-    static double[] polylineBbox(List<double[]> poly, double marginDeg) {
+    /**
+     * Bbox polyline z OSOBNYMI marginesami lng/lat (w stopniach). [minLng, minLat, maxLng, maxLat].
+     * Osobne marginesy konieczne bo 1° lng ≠ 1° lat (lng kurczy się ku biegunom przez cos(lat)).
+     */
+    static double[] polylineBbox(List<double[]> poly, double marginLngDeg, double marginLatDeg) {
         double minLng = Double.MAX_VALUE, minLat = Double.MAX_VALUE;
         double maxLng = -Double.MAX_VALUE, maxLat = -Double.MAX_VALUE;
         for (double[] p : poly) {
@@ -939,7 +1096,8 @@ public class PlanningOrchestrationService {
             if (p[1] < minLat) minLat = p[1];
             if (p[1] > maxLat) maxLat = p[1];
         }
-        return new double[]{minLng - marginDeg, minLat - marginDeg, maxLng + marginDeg, maxLat + marginDeg};
+        return new double[]{minLng - marginLngDeg, minLat - marginLatDeg,
+                            maxLng + marginLngDeg, maxLat + marginLatDeg};
     }
 
     /** Indeks punktu w polyline najbliższy zadanej pozycji (lng, lat). */
@@ -974,7 +1132,7 @@ public class PlanningOrchestrationService {
         double straight = waypointSelector.straightLineDistanceKm(probeWp);
         try {
             RouteCalculation r = routeUseCase.calculate(
-                    new CalculateRouteUseCase.CalculateRouteCommand(probeWp, profile));
+                    new CalculateRouteUseCase.CalculateRouteCommand(probeWp, profile, false));
             calibrator.applyAreasProbe(r.distanceKm(), straight);
             log.info("Density probe: {} areas, real={} km, straight={} km → roadAreas={}",
                     new Object[]{sample.size(), Math.round(r.distanceKm()), Math.round(straight),
@@ -1456,7 +1614,7 @@ public class PlanningOrchestrationService {
         double straight = waypointSelector.straightLineDistanceKm(anchors);
         try {
             RouteCalculation r = routeUseCase.calculate(
-                    new CalculateRouteUseCase.CalculateRouteCommand(anchors, profile));
+                    new CalculateRouteUseCase.CalculateRouteCommand(anchors, profile, false));
             ElevationProfile elev = elevation.sample(r.coordinates());
             calibrator.applyAnchorsProbe(r.distanceKm(), straight);
             return new BaselineProbe(r.distanceKm(), elev.gainM(), straight, r.coordinates());
@@ -1840,11 +1998,21 @@ public class PlanningOrchestrationService {
      * Bez tego BRouter zwraca 414 Request-URI Too Large przy >~50 lonlatach.
      */
     RouteCalculation calculateRouteChunked(UUID taskId, List<double[]> waypoints, String profile) {
+        return calculateRouteChunked(taskId, waypoints, profile, true);
+    }
+
+    /**
+     * @param computeStats {@code true} = agreguj per-chunk stats + loguj agregat całej trasy.
+     *        {@code false} = skip stats wszędzie (per-chunk routeUseCase.calculate też dostaje false)
+     *        — używane przez ALNS2/TSP/ALNS3 dla intermediate probing (~10k+ calls per coverage plan)
+     *        gdzie stats nie są używane a logi zalewały konsolę.
+     */
+    RouteCalculation calculateRouteChunked(UUID taskId, List<double[]> waypoints, String profile, boolean computeStats) {
         // GLOBALNY cache bad waypoints (target-island). Thread-safe bo chunki liczone RÓWNOLEGLE.
         java.util.Set<String> badCoordsCache = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
         if (waypoints.size() <= MAX_WAYPOINTS_PER_DAY) {
-            return calculateChunkResilient(taskId, waypoints, profile, badCoordsCache);
+            return calculateChunkResilient(taskId, waypoints, profile, badCoordsCache, computeStats);
         }
         // Granice chunków (≤MAX_WAYPOINTS_PER_DAY, 1-pkt overlap: koniec N = początek N+1).
         List<List<double[]>> chunks = new ArrayList<>();
@@ -1869,7 +2037,7 @@ public class PlanningOrchestrationService {
                 futures.add(exec.submit(() -> {
                     gate.acquireUninterruptibly();
                     try {
-                        results.set(idx, calculateChunkResilient(taskId, chunks.get(idx), profile, badCoordsCache));
+                        results.set(idx, calculateChunkResilient(taskId, chunks.get(idx), profile, badCoordsCache, computeStats));
                     } finally {
                         gate.release();
                     }
@@ -1890,19 +2058,80 @@ public class PlanningOrchestrationService {
         }
         checkCancel(taskId);
         // Sklejanie W KOLEJNOŚCI chunków, pomijając zduplikowany punkt overlapu.
+        // Stats: meters agregujemy przez accumulator + spans łączymy z offsetem per chunk
+        // (indeksy w spans CHUNK'a są lokalne; po sklejaniu mergedCoords muszą być globalne).
         List<double[]> mergedCoords = new ArrayList<>();
         double totalDistKm = 0;
+        velomarker.service.RouteStatsAccumulator statsAcc = new velomarker.service.RouteStatsAccumulator();
+        List<velomarker.entity.RouteSpan> mergedSurfaceSpans = new ArrayList<>();
+        List<velomarker.entity.RouteSpan> mergedRoadSpans = new ArrayList<>();
+        List<velomarker.entity.RouteSpan> mergedSmoothnessSpans = new ArrayList<>();
         for (RouteCalculation r : results) {
+            int offsetIdx = mergedCoords.size() == 0 ? 0 : mergedCoords.size() - 1; // -1 bo następny chunk pomija pierwszy overlap waypoint
+            int skipFirst = mergedCoords.isEmpty() ? 0 : 1;
             if (mergedCoords.isEmpty()) {
                 mergedCoords.addAll(r.coordinates());
             } else {
                 mergedCoords.addAll(r.coordinates().subList(1, r.coordinates().size()));
             }
             totalDistKm += r.distanceKm();
+            statsAcc.add(r.stats());
+
+            velomarker.entity.RouteStats chunkStats = r.stats();
+            if (chunkStats != null) {
+                int baseOffset = offsetIdx;
+                int firstSkip = skipFirst;
+                appendSpansWithOffset(mergedSurfaceSpans, chunkStats.surfaceSpans(), baseOffset, firstSkip);
+                appendSpansWithOffset(mergedRoadSpans, chunkStats.roadSpans(), baseOffset, firstSkip);
+                appendSpansWithOffset(mergedSmoothnessSpans, chunkStats.smoothnessSpans(), baseOffset, firstSkip);
+            }
         }
-        log.info("BRouter chunked (parallel): {} waypoints → {} chunks → {} coords total (badCache size={})",
-                new Object[]{waypoints.size(), chunks.size(), mergedCoords.size(), badCoordsCache.size()});
-        return new RouteCalculation(mergedCoords, totalDistKm);
+        velomarker.entity.RouteStats aggregatedMaps = statsAcc.build();
+        velomarker.entity.RouteStats aggregatedStats = new velomarker.entity.RouteStats(
+                aggregatedMaps.totalMeters(),
+                aggregatedMaps.surfaceMeters(),
+                aggregatedMaps.roadMeters(),
+                aggregatedMaps.smoothnessMeters(),
+                mergedSurfaceSpans,
+                mergedRoadSpans,
+                mergedSmoothnessSpans);
+        if (computeStats) {
+            log.info("BRouter chunked (parallel): {} waypoints → {} chunks → {} coords total (badCache size={})",
+                    new Object[]{waypoints.size(), chunks.size(), mergedCoords.size(), badCoordsCache.size()});
+            // Debug: ile stats z chunks faktycznie dotarło
+            int chunksWithStats = 0;
+            int chunksWithSpans = 0;
+            for (RouteCalculation r : results) {
+                if (r.stats() != null && r.stats().totalMeters() > 0) chunksWithStats++;
+                if (r.stats() != null && !r.stats().surfaceSpans().isEmpty()) chunksWithSpans++;
+            }
+            log.info("Chunks stats debug: {} chunks total, {} z totalMeters>0, {} z surfaceSpans niepuste. Aggregated spans: surface={} road={} smoothness={}, surfaceMeters keys={}, roadMeters keys={}",
+                    new Object[]{results.size(), chunksWithStats, chunksWithSpans,
+                            mergedSurfaceSpans.size(), mergedRoadSpans.size(), mergedSmoothnessSpans.size(),
+                            aggregatedMaps.surfaceMeters().size(), aggregatedMaps.roadMeters().size()});
+            log.info(velomarker.service.RouteStatsFormatter.format(aggregatedStats,
+                    "Statystyki całej trasy (chunked, profil: " + profile + ")"));
+        }
+        return new RouteCalculation(mergedCoords, totalDistKm, java.util.List.of(), aggregatedStats);
+    }
+
+    /**
+     * Przesuwa spans z lokalnych indeksów chunku do globalnych (mergedCoords). {@code baseOffset}
+     * to liczba wierzchołków już sklejonych PRZED tym chunkiem; {@code skipFirst} = 1 dla chunków
+     * po pierwszym (overlap waypoint pomijany). Span [a, b] chunku → [baseOffset + a - skipFirst,
+     * baseOffset + b - skipFirst]. Pierwszy chunk: skipFirst=0, baseOffset=0.
+     */
+    private static void appendSpansWithOffset(List<velomarker.entity.RouteSpan> out,
+                                              List<velomarker.entity.RouteSpan> chunkSpans,
+                                              int baseOffset, int skipFirst) {
+        if (chunkSpans == null || chunkSpans.isEmpty()) return;
+        for (velomarker.entity.RouteSpan sp : chunkSpans) {
+            int s = sp.startIdx() - skipFirst;
+            int e = sp.endIdx() - skipFirst;
+            if (e < 0) continue; // span całkowicie w pomijanym pierwszym wierzchołku
+            if (s < 0) s = 0;
+            out.add(new velomarker.entity.RouteSpan(baseOffset + s, baseOffset + e, sp.code()));
+        }
     }
 
     /** Klucz coords do cache (6 decimal precision = ~10cm; chunkuje float arytmetykę). */
@@ -1937,12 +2166,17 @@ public class PlanningOrchestrationService {
      */
     private RouteCalculation calculateChunkWithIslandRetry(UUID taskId, List<double[]> waypoints, String profile,
                                                             java.util.Set<String> badCoordsCache) {
+        return calculateChunkWithIslandRetry(taskId, waypoints, profile, badCoordsCache, true);
+    }
+
+    private RouteCalculation calculateChunkWithIslandRetry(UUID taskId, List<double[]> waypoints, String profile,
+                                                            java.util.Set<String> badCoordsCache, boolean computeStats) {
         List<double[]> current = new ArrayList<>(waypoints);
         int removedCount = 0;
         for (int attempt = 0; attempt <= MAX_ISLAND_RETRIES; attempt++) {
             checkCancel(taskId);
             try {
-                return routeUseCase.calculate(new CalculateRouteUseCase.CalculateRouteCommand(current, profile));
+                return routeUseCase.calculate(new CalculateRouteUseCase.CalculateRouteCommand(current, profile, computeStats));
             } catch (RuntimeException ex) {
                 String msg = ex.getMessage() != null ? ex.getMessage() : "";
                 var matcher = TARGET_ISLAND_PATTERN.matcher(msg);
@@ -1968,7 +2202,7 @@ public class PlanningOrchestrationService {
         }
         log.error("BRouter target-island: max retries ({}) exhausted after removing {} waypoints",
                 MAX_ISLAND_RETRIES, removedCount);
-        return routeUseCase.calculate(new CalculateRouteUseCase.CalculateRouteCommand(current, profile));
+        return routeUseCase.calculate(new CalculateRouteUseCase.CalculateRouteCommand(current, profile, computeStats));
     }
 
     /** Convenience overload bez cache — dla wywołań nie-chunked (probe, baseline). */
@@ -1985,15 +2219,26 @@ public class PlanningOrchestrationService {
      */
     private RouteCalculation calculateChunkResilient(UUID taskId, List<double[]> chunk, String profile,
                                                      java.util.Set<String> badCoordsCache) {
+        return calculateChunkResilient(taskId, chunk, profile, badCoordsCache, true);
+    }
+
+    private RouteCalculation calculateChunkResilient(UUID taskId, List<double[]> chunk, String profile,
+                                                     java.util.Set<String> badCoordsCache, boolean computeStats) {
         try {
-            return calculateChunkWithIslandRetry(taskId, chunk, profile, badCoordsCache);
+            return calculateChunkWithIslandRetry(taskId, chunk, profile, badCoordsCache, computeStats);
         } catch (TaskCancellationException ce) {
             throw ce;
+        } catch (velomarker.exception.BrouterMissingTileException mte) {
+            recordMissingTile(taskId, mte);   // brak tile = retry/split bezsensowny (ten sam region)
+            throw mte;
         } catch (RuntimeException first) {
             try {
-                return calculateChunkWithIslandRetry(taskId, chunk, profile, badCoordsCache); // 1 retry
+                return calculateChunkWithIslandRetry(taskId, chunk, profile, badCoordsCache, computeStats); // 1 retry
             } catch (TaskCancellationException ce) {
                 throw ce;
+            } catch (velomarker.exception.BrouterMissingTileException mte) {
+                recordMissingTile(taskId, mte);
+                throw mte;
             } catch (RuntimeException second) {
                 if (chunk.size() <= 3) {
                     throw second; // za mały by dzielić — propaguj (rzadkie po bumpie timeoutu)
@@ -2002,9 +2247,9 @@ public class PlanningOrchestrationService {
                 log.warn("BRouter chunk {} wp nie wyrobił ({}) → tnę na pół i routuję po drogach",
                         new Object[]{chunk.size(), second.getMessage()});
                 RouteCalculation left = calculateChunkResilient(taskId,
-                        new java.util.ArrayList<>(chunk.subList(0, mid + 1)), profile, badCoordsCache);
+                        new java.util.ArrayList<>(chunk.subList(0, mid + 1)), profile, badCoordsCache, computeStats);
                 RouteCalculation right = calculateChunkResilient(taskId,
-                        new java.util.ArrayList<>(chunk.subList(mid, chunk.size())), profile, badCoordsCache);
+                        new java.util.ArrayList<>(chunk.subList(mid, chunk.size())), profile, badCoordsCache, computeStats);
                 List<double[]> coords = new java.util.ArrayList<>(left.coordinates());
                 if (!right.coordinates().isEmpty()) {
                     coords.addAll(right.coordinates().subList(1, right.coordinates().size())); // pomiń overlap
@@ -2012,6 +2257,11 @@ public class PlanningOrchestrationService {
                 return new RouteCalculation(coords, left.distanceKm() + right.distanceKm());
             }
         }
+    }
+
+    private void recordMissingTile(UUID taskId, velomarker.exception.BrouterMissingTileException ex) {
+        java.util.Set<String> sink = missingTilesPerTask.get(taskId);
+        if (sink != null) sink.add(ex.tileName());
     }
 
     /** Probe BRouter dla pierwszego odcinka (AB/FREESTYLE). Failed probe → keep fallback. */
@@ -2023,7 +2273,7 @@ public class PlanningOrchestrationService {
             double straight = WaypointSelector.haversineKm(a, b);
             if (straight < 1.0) return;
             RouteCalculation probe = routeUseCase.calculate(
-                    new CalculateRouteUseCase.CalculateRouteCommand(List.of(a, b), profile));
+                    new CalculateRouteUseCase.CalculateRouteCommand(List.of(a, b), profile, false));
             calibrator.applyAnchorsProbe(probe.distanceKm(), straight);
         } catch (RuntimeException e) {
             log.warn("Road factor probe failed ({}) — keeping fallback {}", e.getMessage(), calibrator.roadAnchors());
@@ -2057,6 +2307,75 @@ public class PlanningOrchestrationService {
         RouteStyle style = prefs.style();
         Tempo tempo = prefs.tempo();
         return profileMapper.toBrouterProfile(style, tempo);
+    }
+
+    /**
+     * Mapowanie waypoint-planera → indeks w pełnej geometrii BRoutera. BRouter **SNAPUJE** waypointy
+     * do najbliższego punktu drogi (offset 5-50 m), więc dokładny hash-match nie działa. Poprzednia
+     * iteracja z 2-pointer'em + bounded window kaskadowo failowała: gdy pierwszy wp nie trafił w
+     * okno, j stało, kolejne wp też failowały (stąd 8/348).
+     *
+     * <p>Teraz: {@link SpatialGrid} nad fullCoords → per wp `nearestIndexTo(wp.lng, wp.lat)` = O(1)
+     * per query. Tolerancja 500m → wp z dystansem &gt; 500m oznacza prawdziwy chunk-fail.
+     */
+    private static int[] mapWaypointsToFullIndices(List<Waypoint> wps, List<double[]> fullCoords) {
+        int n = fullCoords.size();
+        int m = wps.size();
+        int[] map = new int[m];
+        if (m == 0 || n == 0) return map;
+        double[][] pts = new double[n][];
+        for (int k = 0; k < n; k++) pts[k] = fullCoords.get(k);
+        SpatialGrid grid = new SpatialGrid(pts);
+        final double TOL_KM = 0.5; // 500 m — BRouter snap typowo &lt; 50m, próg generosa
+        for (int i = 0; i < m; i++) {
+            Waypoint wp = wps.get(i);
+            int idx = grid.nearestIndexTo(wp.lng(), wp.lat());
+            if (idx < 0) {
+                map[i] = -1;
+                continue;
+            }
+            double distKm = grid.distKmFromExternal(idx, wp.lng(), wp.lat());
+            map[i] = distKm <= TOL_KM ? idx : -1;
+        }
+        return map;
+    }
+
+    /** Per dzień: bierze entry-pointy plannera ({@code allWaypoints}) wpadające w zakres dnia
+     *  ({@code [fullStartIdx, fullEndIdx]}). Dla mode AB (brak gmin — `allWaypoints.size() < 5`)
+     *  fallback do evenly-spaced {@link #pickDayKnots}. Granice dnia: jeśli pierwszy/ostatni
+     *  waypoint NIE jest dokładnie na granicy dnia, dorzuca kotwicę z {@code dayGeometry}. */
+    private List<Waypoint> dayWaypointsFromPlanning(List<Waypoint> allWaypoints, int[] wpToFullIdx,
+                                                     int fullStartIdx, int fullEndIdx,
+                                                     List<double[]> fullCoords, List<double[]> dayGeometry) {
+        if (allWaypoints.size() < 5) {
+            return pickDayKnots(dayGeometry); // AB / brak gmin
+        }
+        // ANCHOR-PROXIMITY: jeśli któryś wp mapuje się DOKŁADNIE na fullStartIdx/fullEndIdx
+        // (próg ±3 coords → toleruje snap BRoutera w okolicy granicy dnia), to ten wp pełni rolę kotwicy.
+        // Inaczej dorzucimy syntetyczną Waypoint(startCoord/endCoord). Bez tej proximity-tolerancji
+        // równość po lng/lat dawała duplikaty (planner wp + snapped coord = różne wartości).
+        final int BOUNDARY_TOL_COORDS = 3;
+        List<Waypoint> dayWps = new ArrayList<>();
+        boolean hasStartAnchor = false;
+        boolean hasEndAnchor = false;
+        for (int k = 0; k < allWaypoints.size(); k++) {
+            int idx = wpToFullIdx[k];
+            if (idx < 0) continue;
+            if (idx >= fullStartIdx && idx <= fullEndIdx) {
+                dayWps.add(allWaypoints.get(k));
+                if (idx <= fullStartIdx + BOUNDARY_TOL_COORDS) hasStartAnchor = true;
+                if (idx >= fullEndIdx - BOUNDARY_TOL_COORDS) hasEndAnchor = true;
+            }
+        }
+        if (!hasStartAnchor) {
+            double[] startCoord = fullCoords.get(fullStartIdx);
+            dayWps.add(0, new Waypoint(startCoord[0], startCoord[1], null));
+        }
+        if (!hasEndAnchor) {
+            double[] endCoord = fullCoords.get(fullEndIdx);
+            dayWps.add(new Waypoint(endCoord[0], endCoord[1], null));
+        }
+        return dayWps;
     }
 
     /** „Kotwice" dla edycji dnia — co N-ty punkt geometrii, max MAX_WAYPOINTS_PER_DAY. */

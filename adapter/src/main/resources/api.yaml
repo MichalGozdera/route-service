@@ -755,6 +755,95 @@ components:
           type: number
           format: double
           description: Total route distance in kilometers
+        stats:
+          $ref: '#/components/schemas/RouteStats'
+
+    RouteStats:
+      type: object
+      description: |
+        Statystyki tej trasy (pojedynczy /route/calculate call = jeden "leg" między dwoma waypointami).
+        Klucze map to ZNORMALIZOWANE KODY (stable identifiers), nie ludzkie etykiety — klient
+        tłumaczy je na lokalny język przez własne i18n maps (PL/EN/DE/FR/...). Wartości w metrach.
+        Klient agreguje (sumuje wartości per klucz) dla całej trasy multi-waypoint.
+
+        Spans (surfaceSpans / roadSpans / smoothnessSpans) pozwalają FE kolorować linię na mapie
+        zależnie od aktywnego filtra. Indeksy w spans są LOKALNE dla `coordinates` z tego calle.
+      required: [totalMeters, surfaceMeters, roadMeters, smoothnessMeters, surfaceSpans, roadSpans, smoothnessSpans]
+      properties:
+        totalMeters:
+          type: integer
+          format: int64
+          description: Suma długości segmentów (≈ distanceKm * 1000)
+        surfaceMeters:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+          description: |
+            Typy nawierzchni → metry. Klucze to raw OSM tagi lowercase
+            (asphalt, paving_stones, sett, cobblestone, concrete, gravel, fine_gravel, compacted,
+            unpaved, ground, dirt, grass, sand, ...) lub "unknown" dla segmentów bez surface=*.
+        roadMeters:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+          description: |
+            Typy dróg → metry. Klucze to znormalizowane kody:
+            - Drogi publiczne: motorway, trunk, primary, secondary, tertiary, unclassified,
+              residential, living_street, service.
+            - Z optymalnym suffixem: _with_cycleway_lane, _use_sidepath.
+            - Z optymalnym refem po dwukropku: ":REF" (np. "primary:DK7", "secondary:D38",
+              "primary_with_cycleway_lane:N7"). Działa dla DK7 (PL), D38 (FR), N100 (CH), A1 (UK).
+            - Ścieżki/chodniki: cycleway, cycleway_shared_foot, path_bike_foot, path_bike,
+              path_foot, path, footway, footway_bike_allowed, pedestrian, pedestrian_bike_allowed,
+              track, bridleway, steps.
+            - "unknown" dla segmentów bez highway=*.
+        smoothnessMeters:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+          description: |
+            Jakość nawierzchni → metry. Klucze to raw OSM tagi lowercase: excellent, good,
+            intermediate, bad, very_bad, horrible, very_horrible, impassable, lub "unknown".
+        surfaceSpans:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteSpan'
+          description: |
+            Zakresy [startIdx, endIdx] wierzchołków `coordinates` z tym samym surface code. Consecutive
+            spans z tym samym kodem są zmergowane. Lista pusta gdy stats agregowane z wielu calls
+            (accumulator) — indeksy nie mają wtedy sensu.
+        roadSpans:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteSpan'
+          description: Jak surfaceSpans, dla road code.
+        smoothnessSpans:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteSpan'
+          description: Jak surfaceSpans, dla smoothness code.
+
+    RouteSpan:
+      type: object
+      description: |
+        Zakres consecutive wierzchołków trasy z tym samym kodem kategorii.
+        Indeksy lokalne dla `coordinates` z tego samego BRouter calle.
+      required: [startIdx, endIdx, code]
+      properties:
+        startIdx:
+          type: integer
+          format: int32
+          description: Indeks pierwszego wierzchołka spanu (włącznie)
+        endIdx:
+          type: integer
+          format: int32
+          description: Indeks ostatniego wierzchołka spanu (włącznie)
+        code:
+          type: string
+          description: Znormalizowany kod kategorii (zgodny z RouteStats.surfaceMeters/roadMeters/smoothnessMeters)
 
     LineStringGeoJson:
       type: object
@@ -853,6 +942,12 @@ components:
           type: string
           nullable: true
           description: Waypointy (gminy) jako zakodowana polyline (OPAQUE) — do edycji wczytanego szkicu
+        stats:
+          $ref: '#/components/schemas/RouteStats'
+          nullable: true
+          description: |
+            Snapshot statystyk trasy (typy nawierzchni / dróg / smoothness + spans per kategoria).
+            Indeksy w spans są LOKALNE dla coordinates draftu. Stare drafts sprzed feature nie mają.
 
     RouteDraftSummary:
       type: object
@@ -928,6 +1023,9 @@ components:
         waypoints:
           type: string
           nullable: true
+        stats:
+          $ref: '#/components/schemas/RouteStats'
+          nullable: true
         createdAt:
           type: string
           format: date-time
@@ -960,6 +1058,12 @@ components:
           type: number
           format: double
           nullable: true
+        stats:
+          $ref: '#/components/schemas/RouteStats'
+          nullable: true
+          description: |
+            Snapshot RouteStats per ten dzień (indeksy w spans LOKALNE do tego decoded geometry).
+            FE skleja stats z wszystkich dni przy renderze overlay (offset per dzień).
 
     DemTileResponse:
       type: object
@@ -1254,11 +1358,27 @@ components:
         elevationLoss:
           type: integer
           nullable: true
+        stats:
+          $ref: '#/components/schemas/RouteStats'
+          nullable: true
+          description: |
+            Snapshot RouteStats per ten dzień (slice z full-route). Indeksy w spans LOKALNE do
+            zdekodowanej geometrii dnia. FE używa do panelu nawierzchni/dróg w scalonym podglądzie.
         profile:
           type: string
         editedAt:
           type: string
           format: date-time
+        coveredAreaIds:
+          type: array
+          nullable: true
+          items:
+            type: integer
+          description: |
+            ID gmin ZALICZONYCH przez ten dzień (kryterium kredytu ≥200 m, liczone backendem JTS).
+            Front koloruje TE ID (źródło prawdy = co realnie zaliczysz jadąc) zamiast re-derywacji
+            turfem (plain-touch). Pusta/brak = brak danych z backendu (np. ręczne rysowanie) → front
+            liczy turfem.
 
     PlanningSessionResponse:
       type: object

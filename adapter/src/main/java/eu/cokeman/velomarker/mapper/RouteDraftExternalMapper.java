@@ -4,8 +4,12 @@ import eu.cokeman.velomarker.openapi.model.LineStringGeoJsonDto;
 import eu.cokeman.velomarker.openapi.model.RouteDraftRequestDto;
 import eu.cokeman.velomarker.openapi.model.RouteDraftResponseDto;
 import eu.cokeman.velomarker.openapi.model.RouteDraftSummaryDto;
+import eu.cokeman.velomarker.openapi.model.RouteSpanDto;
+import eu.cokeman.velomarker.openapi.model.RouteStatsDto;
 import org.springframework.stereotype.Component;
 import velomarker.entity.RouteDraft;
+import velomarker.entity.RouteSpan;
+import velomarker.entity.RouteStats;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -26,9 +30,60 @@ public class RouteDraftExternalMapper {
         dto.setGroupName(d.groupName());
         dto.setDayNumber(d.dayNumber());
         dto.setWaypoints(d.waypointsEncoded());
+        dto.setStats(toStatsDto(d.stats()));
         dto.setCreatedAt(d.createdAt());
         dto.setUpdatedAt(d.updatedAt());
         return dto;
+    }
+
+    public RouteStatsDto toStatsDto(RouteStats stats) {
+        if (stats == null) return null;
+        RouteStatsDto dto = new RouteStatsDto();
+        dto.setTotalMeters(stats.totalMeters());
+        dto.setSurfaceMeters(stats.surfaceMeters());
+        dto.setRoadMeters(stats.roadMeters());
+        dto.setSmoothnessMeters(stats.smoothnessMeters());
+        dto.setSurfaceSpans(toSpansDto(stats.surfaceSpans()));
+        dto.setRoadSpans(toSpansDto(stats.roadSpans()));
+        dto.setSmoothnessSpans(toSpansDto(stats.smoothnessSpans()));
+        return dto;
+    }
+
+    public RouteStats fromStatsDto(RouteStatsDto dto) {
+        if (dto == null) return null;
+        return new RouteStats(
+                dto.getTotalMeters() == null ? 0 : dto.getTotalMeters(),
+                dto.getSurfaceMeters() == null ? java.util.Map.of() : dto.getSurfaceMeters(),
+                dto.getRoadMeters() == null ? java.util.Map.of() : dto.getRoadMeters(),
+                dto.getSmoothnessMeters() == null ? java.util.Map.of() : dto.getSmoothnessMeters(),
+                fromSpansDto(dto.getSurfaceSpans()),
+                fromSpansDto(dto.getRoadSpans()),
+                fromSpansDto(dto.getSmoothnessSpans()));
+    }
+
+    private static List<RouteSpanDto> toSpansDto(List<RouteSpan> spans) {
+        if (spans == null || spans.isEmpty()) return List.of();
+        List<RouteSpanDto> out = new ArrayList<>(spans.size());
+        for (RouteSpan s : spans) {
+            RouteSpanDto d = new RouteSpanDto();
+            d.setStartIdx(s.startIdx());
+            d.setEndIdx(s.endIdx());
+            d.setCode(s.code());
+            out.add(d);
+        }
+        return out;
+    }
+
+    private static List<RouteSpan> fromSpansDto(List<RouteSpanDto> spans) {
+        if (spans == null || spans.isEmpty()) return List.of();
+        List<RouteSpan> out = new ArrayList<>(spans.size());
+        for (RouteSpanDto s : spans) {
+            out.add(new RouteSpan(
+                    s.getStartIdx() == null ? 0 : s.getStartIdx(),
+                    s.getEndIdx() == null ? 0 : s.getEndIdx(),
+                    s.getCode()));
+        }
+        return out;
     }
 
     public RouteDraftSummaryDto toSummaryDto(RouteDraft d) {

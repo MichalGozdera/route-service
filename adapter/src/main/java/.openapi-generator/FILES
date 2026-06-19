@@ -34,6 +34,8 @@ eu/cokeman/velomarker/openapi/model/RouteDraftRequestDto.java
 eu/cokeman/velomarker/openapi/model/RouteDraftResponseDto.java
 eu/cokeman/velomarker/openapi/model/RouteDraftSummaryDto.java
 eu/cokeman/velomarker/openapi/model/RoutePreferencesDto.java
+eu/cokeman/velomarker/openapi/model/RouteSpanDto.java
+eu/cokeman/velomarker/openapi/model/RouteStatsDto.java
 eu/cokeman/velomarker/openapi/model/SaveAsExpeditionRequestDto.java
 eu/cokeman/velomarker/openapi/model/SaveAsExpeditionResponseDto.java
 eu/cokeman/velomarker/openapi/model/SaveProfileRequestDto.java

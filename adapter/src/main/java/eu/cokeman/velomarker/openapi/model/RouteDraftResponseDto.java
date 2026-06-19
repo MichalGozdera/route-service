@@ -6,6 +6,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonTypeName;
 import eu.cokeman.velomarker.openapi.model.LineStringGeoJsonDto;
+import eu.cokeman.velomarker.openapi.model.RouteStatsDto;
 import java.time.Instant;
 import java.util.UUID;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -48,6 +49,8 @@ public class RouteDraftResponseDto {
   private @Nullable Integer dayNumber = null;
 
   private @Nullable String waypoints = null;
+
+  private @Nullable RouteStatsDto stats;
 
   @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
   private Instant createdAt;
@@ -290,6 +293,27 @@ public class RouteDraftResponseDto {
     this.waypoints = waypoints;
   }
 
+  public RouteDraftResponseDto stats(@Nullable RouteStatsDto stats) {
+    this.stats = stats;
+    return this;
+  }
+
+  /**
+   * Get stats
+   * @return stats
+   */
+  @Valid 
+  @Schema(name = "stats", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
+  @JsonProperty("stats")
+  public @Nullable RouteStatsDto getStats() {
+    return stats;
+  }
+
+  @JsonProperty("stats")
+  public void setStats(@Nullable RouteStatsDto stats) {
+    this.stats = stats;
+  }
+
   public RouteDraftResponseDto createdAt(Instant createdAt) {
     this.createdAt = createdAt;
     return this;
@@ -352,13 +376,14 @@ public class RouteDraftResponseDto {
         Objects.equals(this.groupName, routeDraftResponse.groupName) &&
         Objects.equals(this.dayNumber, routeDraftResponse.dayNumber) &&
         Objects.equals(this.waypoints, routeDraftResponse.waypoints) &&
+        Objects.equals(this.stats, routeDraftResponse.stats) &&
         Objects.equals(this.createdAt, routeDraftResponse.createdAt) &&
         Objects.equals(this.updatedAt, routeDraftResponse.updatedAt);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(id, name, geometry, profile, distanceKm, elevationGain, elevationLoss, groupId, groupName, dayNumber, waypoints, createdAt, updatedAt);
+    return Objects.hash(id, name, geometry, profile, distanceKm, elevationGain, elevationLoss, groupId, groupName, dayNumber, waypoints, stats, createdAt, updatedAt);
   }
 
   @Override
@@ -376,6 +401,7 @@ public class RouteDraftResponseDto {
     sb.append("    groupName: ").append(toIndentedString(groupName)).append("\n");
     sb.append("    dayNumber: ").append(toIndentedString(dayNumber)).append("\n");
     sb.append("    waypoints: ").append(toIndentedString(waypoints)).append("\n");
+    sb.append("    stats: ").append(toIndentedString(stats)).append("\n");
     sb.append("    createdAt: ").append(toIndentedString(createdAt)).append("\n");
     sb.append("    updatedAt: ").append(toIndentedString(updatedAt)).append("\n");
     sb.append("}");

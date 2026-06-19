@@ -23,7 +23,13 @@ public class CalculateElevationService implements CalculateElevationUseCase {
         if (coordinates == null || coordinates.size() < 2) {
             throw new IllegalArgumentException("At least 2 coordinates required");
         }
-        log.debug("Sampling elevation for {} coordinates", coordinates.size());
-        return source.sample(coordinates);
+        // Pełna granulacja — bez tego default cap 500 dla długich tras zaniżał gain o 20-30%
+        // (sampling co kilka km gubi wzgórki). Spójne z per-day planera (sample(coords, size)).
+        ElevationProfile p = source.sample(coordinates, coordinates.size());
+        log.info("ROUTE-ELEVATION call: in={} coords, profile={} points, gain={}m, loss={}m",
+                coordinates.size(),
+                p.profile() != null ? p.profile().size() : 0,
+                Math.round(p.gainM()), Math.round(p.lossM()));
+        return p;
     }
 }

@@ -32,7 +32,15 @@ public class GminaIndex {
     private final List<UnvisitedArea> allAreas;
     private final AreaCoverageIndex coverage;
     private final Map<Integer, double[][]> samplePointsCache = new HashMap<>();
+    /** Cache dla {@link #grazePointsFor} — płytkie entry-pointy (~280m) do re-snapu „przy granicy". */
+    private final Map<Integer, double[][]> grazePointsCache = new HashMap<>();
     private final int samplePointsPerGmina;
+
+    /** Głębokość wjazdu standardowego entry-pointu (deg, ~500m): BRouter czasem ślizga się po granicy. */
+    private static final double SAMPLE_OFFSET_DEG = 0.0045;
+    /** Płytka „graź" (deg, ~280m): tuż nad progiem kredytu (≤200m) + margines na snap-do-drogi. Re-snap
+     *  ma siadać przy granicy gdzie ślad wjeżdża, NIE 500m w głąb (oszczędza km, zwalnia budżet). */
+    private static final double GRAZE_OFFSET_DEG = 0.0025;
     /** areaId → id-ki HOLE_KNN najbliższych obszarów (po centroidzie). Leniwie liczone raz (O(n²)). */
     private Map<Integer, int[]> kNearestCache;
 
@@ -48,12 +56,76 @@ public class GminaIndex {
         return coverage.findAreaForPoint(lng, lat);
     }
 
+    /** Jak {@link #findGminaForPoint}, ale po RDZENIU KREDYTU (bufor −200m). null = punkt w wielokącie ale POZA
+     *  buforem (płytki przy granicy, nie kredytuje) lub poza obszarami. Do wykrywania „wp bez kredytu". */
+    public UnvisitedArea findCreditedGminaForPoint(double lng, double lat) {
+        return coverage.findCreditedAreaForPoint(lng, lat);
+    }
+
+    /** RUNDA 52: jak {@link #findCreditedGminaForPoint}, ale bufor −220m (punkt ≥220m w głąb) — do testu
+     *  „start/meta/via dostatecznie głęboko, by sam pokrył gminę". */
+    public UnvisitedArea findDeeplyCreditedGminaForPoint(double lng, double lat) {
+        return coverage.findDeeplyCreditedAreaForPoint(lng, lat);
+    }
+
     /**
      * Id obszarów zaliczonych przez trasę — PLAIN intersect na pełnej geometrii (jak front turf),
      * deleguje do {@link AreaCoverageIndex}. Jednolite kryterium: seed/densify/raport.
      */
     public Set<Integer> visitedAreaIds(List<double[]> routeGeometry) {
         return coverage.visitedAreaIds(routeGeometry);
+    }
+
+    /** RUNDA 66: id obszarów w które trasa wchodzi GŁĘBOKO ≥220m (bufor −220) = PRZELOT, nie muśnięcie. */
+    public Set<Integer> deeplyVisitedAreaIds(List<double[]> routeGeometry) {
+        return coverage.deeplyVisitedAreaIds(routeGeometry);
+    }
+
+    /** RUNDA 24: id obszarów DOTYKANYCH przez trasę (pełny wielokąt, nawet muśnięcie) — anchor-intersects. */
+    public Set<Integer> touchedAreaIds(List<double[]> routeGeometry) {
+        return coverage.touchedAreaIds(routeGeometry);
+    }
+
+    // === v3.15: operacje przestrzenne przez port (jeden silnik JTS, kryterium kredytu) ===
+
+    /** Najdłuższy odcinek legu wewnątrz gminy wg kredytu (wejście/środek/wyjście/długość). null gdy brak. */
+    public AreaCoverageIndex.Crossing creditedCrossing(List<double[]> legGeometry, int areaId) {
+        return coverage.creditedCrossing(legGeometry, areaId);
+    }
+
+    /** RUNDA 24: PIERWSZE wejście w rdzeń wzdłuż śladu (nie najdłuższe). null gdy muśnięcie (nigdzie ≥200m). */
+    public AreaCoverageIndex.Crossing firstCreditedCrossing(List<double[]> legGeometry, int areaId) {
+        return coverage.firstCreditedCrossing(legGeometry, areaId);
+    }
+
+    /** RUNDA 27: JEDEN przebieg śladu → gmina → punkt pierwszego wejścia w bufor (+20m w głąb). Brak gminy = muśnięcie. */
+    public Map<Integer, double[]> firstBufferEntryPoints(List<double[]> routeGeometry) {
+        return coverage.firstBufferEntryPoints(routeGeometry);
+    }
+
+    /** RUNDA 31: najgłębszy punkt gminy (środek największego wpisanego okręgu) — „głęboki centroid" dla muśnięć. */
+    public double[] deepestInteriorPoint(int areaId) {
+        return coverage.deepestInteriorPoint(areaId);
+    }
+
+    /** areaId → indeksy legów które gminę kredytują (autorytatywny przebieg, zastępuje crossCount). */
+    public Map<Integer, int[]> creditingLegs(List<List<double[]>> legGeometries) {
+        return coverage.creditingLegs(legGeometries);
+    }
+
+    /** Gminy nieprzecięte OTOCZONE śladem z każdej strony (≥1 sąsiad, wszyscy zaliczeni, cross-border, bez progu). */
+    public Set<Integer> enclosedUnvisited(Set<Integer> visited) {
+        return coverage.enclosedUnvisited(visited);
+    }
+
+    /** Czy gmina jest otoczona śladem: ≥1 sąsiad wielokątowy i WSZYSCY zaliczeni (bez progu, cross-border). */
+    public boolean allNeighborsVisited(int areaId, Set<Integer> visited) {
+        return coverage.allNeighborsVisited(areaId, visited);
+    }
+
+    /** Gminy nieprzecięte ≤ maxKm od trasy (bufor+STRtree, szybkie łapanie dziur). */
+    public Set<Integer> unvisitedWithinKm(List<double[]> routeGeometry, Set<Integer> visited, double maxKm) {
+        return coverage.unvisitedWithinKm(routeGeometry, visited, maxKm);
     }
 
     /**
@@ -66,33 +138,44 @@ public class GminaIndex {
      * znormalizuj, przesuń vertex o ~500m w tym kierunku.
      */
     public double[][] samplePointsFor(UnvisitedArea area) {
-        return samplePointsCache.computeIfAbsent(area.areaId(), id -> {
-            double[][] ring = area.ring();
-            if (ring == null || ring.length == 0) {
-                return new double[][]{{area.lng(), area.lat()}};
+        return samplePointsCache.computeIfAbsent(area.areaId(), id -> computeSamples(area, SAMPLE_OFFSET_DEG));
+    }
+
+    /**
+     * Jak {@link #samplePointsFor}, ale **płytkie** kandydaty (~280m w głąb zamiast 500m) — tuż nad progiem
+     * kredytu. Re-snap używa ich, by waypoint siadał PRZY GRANICY gdzie ślad wjeżdża (nie nurkował 500m w środek
+     * i wracał = zbędne km). Transit-guard w re-snapie cofa do oryginału te, które wyszły za płytko (gmina spadła).
+     */
+    public double[][] grazePointsFor(UnvisitedArea area) {
+        return grazePointsCache.computeIfAbsent(area.areaId(), id -> computeSamples(area, GRAZE_OFFSET_DEG));
+    }
+
+    /** Wspólny rdzeń: weź co (ring.length / N) vertex, przesuń o {@code offsetDeg} w kierunku centroidu. */
+    private double[][] computeSamples(UnvisitedArea area, double offsetDeg) {
+        double[][] ring = area.ring();
+        if (ring == null || ring.length == 0) {
+            return new double[][]{{area.lng(), area.lat()}};
+        }
+        int n = Math.min(samplePointsPerGmina, ring.length);
+        double[][] pts = new double[n][];
+        int step = Math.max(1, ring.length / n);
+        double cLng = area.lng();
+        double cLat = area.lat();
+        for (int i = 0; i < n; i++) {
+            int idx = Math.min(ring.length - 1, i * step);
+            double vLng = ring[idx][0];
+            double vLat = ring[idx][1];
+            double dirLng = cLng - vLng;
+            double dirLat = cLat - vLat;
+            double len = Math.sqrt(dirLng * dirLng + dirLat * dirLat);
+            if (len < 1e-9) {
+                pts[i] = new double[]{vLng, vLat};
+            } else {
+                double scale = Math.min(offsetDeg / len, 0.5);
+                pts[i] = new double[]{vLng + dirLng * scale, vLat + dirLat * scale};
             }
-            int n = Math.min(samplePointsPerGmina, ring.length);
-            double[][] pts = new double[n][];
-            int step = Math.max(1, ring.length / n);
-            double offsetDeg = 0.0045; // ~500m w kierunku centroidu (BRouter czasem ślizga się po granicy)
-            double cLng = area.lng();
-            double cLat = area.lat();
-            for (int i = 0; i < n; i++) {
-                int idx = Math.min(ring.length - 1, i * step);
-                double vLng = ring[idx][0];
-                double vLat = ring[idx][1];
-                double dirLng = cLng - vLng;
-                double dirLat = cLat - vLat;
-                double len = Math.sqrt(dirLng * dirLng + dirLat * dirLat);
-                if (len < 1e-9) {
-                    pts[i] = new double[]{vLng, vLat};
-                } else {
-                    double scale = Math.min(offsetDeg / len, 0.5);
-                    pts[i] = new double[]{vLng + dirLng * scale, vLat + dirLat * scale};
-                }
-            }
-            return pts;
-        });
+        }
+        return pts;
     }
 
     /**

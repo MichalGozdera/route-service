@@ -184,18 +184,29 @@ public class SpringAppConfig {
             ElevationDataSource elevation,
             @org.springframework.beans.factory.annotation.Value("${planning.algorithm:tsp}") String algorithm,
             @org.springframework.beans.factory.annotation.Value("${planning.alns2.strip-km:15.0}") double stripKm,
-            @org.springframework.beans.factory.annotation.Value("${route.calculate.max-concurrent:8}") int maxConcurrent,
+            // ALNS2 prewarmEdges używa virtual threads z semaforek `brouterParallelism` — to LIMIT
+            // jednocześnie wywoływanych BRouter calls. Powinien być === route.brouter.max-concurrent
+            // (default 16 dla embedded), żeby semafor embedded'a był w pełni wykorzystywany.
+            // Zostawiamy `route.calculate.max-concurrent` jako fallback dla legacy http mode.
+            @org.springframework.beans.factory.annotation.Value("${route.brouter.max-concurrent:${route.calculate.max-concurrent:8}}") int maxConcurrent,
             @org.springframework.beans.factory.annotation.Value("${planning.alns2.seed-only:false}") boolean seedOnly,
             @org.springframework.beans.factory.annotation.Value("${planning.alns2.proxy-search:false}") boolean proxySearch,
             @org.springframework.beans.factory.annotation.Value("${planning.alns2.proxy-cell-deg:0.5}") double proxyCellDeg,
             @org.springframework.beans.factory.annotation.Value("${planning.alns2.proxy-recalibrate-every:25}") int proxyRecalibrateEvery,
             @org.springframework.beans.factory.annotation.Value("${planning.alns2.reconcile-swap:true}") boolean reconcileSwap,
+            @org.springframework.beans.factory.annotation.Value("${planning.alns2.debug-geojson:false}") boolean debugGeoJson,
+            // A/B: stara pętla DEEP-BATCH po seedzie. Default OFF — zastąpiona przez seed→105% + tailPrune.
+            @org.springframework.beans.factory.annotation.Value("${planning.alns2.deep-batch:false}") boolean deepBatch,
+            // WIGGLE (warianty pozycji wp w gminie) — default OFF: 3 runy danych dały ~540 pytań
+            // do BRoutera za ~190 effortu za każdym razem (0.3/call).
+            @org.springframework.beans.factory.annotation.Value("${planning.alns2.wiggle:false}") boolean wiggle,
             velomarker.port.out.planning.AreaCoverageIndexFactory coverageIndexFactory) {
         // alns3 = ten sam planner w trybie space-filling (HILBERT). alns2 = projection.
         boolean spaceFilling = "alns3".equalsIgnoreCase(algorithm);
         return new velomarker.service.planning.alns2.AlnsCoveragePlanner2(
                 params, elevation, spaceFilling, stripKm, maxConcurrent, seedOnly,
-                proxySearch, proxyCellDeg, proxyRecalibrateEvery, reconcileSwap, coverageIndexFactory);
+                proxySearch, proxyCellDeg, proxyRecalibrateEvery, reconcileSwap, coverageIndexFactory, debugGeoJson,
+                deepBatch, wiggle);
     }
 
     @Bean
@@ -204,6 +215,8 @@ public class SpringAppConfig {
             PlanningSessionDayRepository dayRepository,
             VisitServiceClient visitClient,
             CalculateRouteUseCase routeUseCase,
+            BrouterRoutingClient brouterClient,
+            velomarker.port.out.planning.AreaCoverageIndexFactory coverageIndexFactory,
             ElevationDataSource elevation,
             WaypointSelector waypointSelector,
             ProfileMapper profileMapper,
@@ -213,7 +226,7 @@ public class SpringAppConfig {
             velomarker.service.planning.alns2.AlnsCoveragePlanner2 alns2Planner,
             @org.springframework.beans.factory.annotation.Value("${planning.algorithm:tsp}") String algorithm) {
         return new PlanningOrchestrationService(sessionRepository, dayRepository, visitClient, routeUseCase,
-                elevation, waypointSelector, profileMapper, daySplitter, algorithm, alnsPlanner, tspPlanner, alns2Planner);
+                brouterClient, coverageIndexFactory, elevation, waypointSelector, profileMapper, daySplitter, algorithm, alnsPlanner, tspPlanner, alns2Planner);
     }
 
     /** Virtual-thread executor — każde liczenie planu w osobnym wątku wirtualnym (tanio). */

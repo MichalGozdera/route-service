@@ -120,3 +120,22 @@ ALTER TABLE planning.session ADD COLUMN IF NOT EXISTS summary_climb_warning BOOL
 ALTER TABLE routes.route_draft DROP COLUMN IF EXISTS duration_sec;
 ALTER TABLE planning.session_day DROP COLUMN IF EXISTS duration_sec;
 ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_total_duration_sec;
+
+-- changeset cokeman:09_06_2026_01_route_draft_stats
+-- Persistencja statystyk surface/road/smoothness per day-draft (kompletny RouteStats z BRoutera)
+-- jako JSON. Pozwala FE pokazać kolorowanie linii (Typy nawierzchni / Typy dróg) dla scalonej
+-- wyprawy multi-day po reload'zie, a nie tylko świeżo po wyliczeniu. JSON zamiast osobnych tabel,
+-- bo to read-mostly snapshot — czytamy razem z draftem, nie agregujemy w SQL.
+-- Nullable: stare drafts (sprzed feature) nie mają stats; FE musi to obsłużyć (panel ukryty).
+ALTER TABLE routes.route_draft ADD COLUMN IF NOT EXISTS stats_json TEXT;
+
+-- changeset cokeman:09_06_2026_02_session_day_stats
+-- Snapshot RouteStats per dzień (slice z full-route przez RouteStatsSlicer) — pozwala FE pokazać
+-- panel "Typy nawierzchni / dróg" dla wyprawy asystenta (multi-day plan) bez ponownego BRouter call.
+ALTER TABLE planning.session_day ADD COLUMN IF NOT EXISTS stats_json TEXT;
+
+-- changeset cokeman:13_06_2026_01_session_day_covered_areas
+-- v3.18: ID gmin ZALICZONYCH przez dzień (kryterium kredytu ≥200m, liczone backendem JTS) jako JSON
+-- array — źródło prawdy dla kolorowania na froncie (zamiast re-derywacji turfem plain-touch).
+-- Nullable: stare/ręczne dni bez danych backendowych → front liczy turfem (fallback).
+ALTER TABLE planning.session_day ADD COLUMN IF NOT EXISTS covered_area_ids TEXT;

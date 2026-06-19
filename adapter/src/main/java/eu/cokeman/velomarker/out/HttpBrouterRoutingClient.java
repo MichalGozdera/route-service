@@ -5,11 +5,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import velomarker.entity.RouteCalculation;
+import velomarker.exception.BrouterMissingTileException;
 import velomarker.exception.BrouterUnavailableException;
 import velomarker.exception.BrouterUpstreamException;
 import velomarker.port.out.BrouterRoutingClient;
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import java.net.URI;
 import java.net.URLEncoder;
@@ -24,6 +29,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
 @Component
+@ConditionalOnProperty(name = "route.brouter.mode", havingValue = "http", matchIfMissing = true)
 public class HttpBrouterRoutingClient implements BrouterRoutingClient {
 
     private static final Logger log = LoggerFactory.getLogger(HttpBrouterRoutingClient.class);
@@ -52,7 +58,10 @@ public class HttpBrouterRoutingClient implements BrouterRoutingClient {
     }
 
     @Override
-    public RouteCalculation calculate(List<double[]> waypoints, String profile) {
+    public RouteCalculation calculate(List<double[]> waypoints, String profile, boolean computeStats) {
+        // HTTP wariant (legacy, fallback gdy ROUTE_BROUTER_MODE=http) zawsze zwraca to co BRouter HTTP
+        // wypluwa w GeoJSON — stats per-segment nie były nigdy budowane, więc flag jest nieaktywny.
+        // Embedded jest jedynym ścieżką która korzysta z computeStats.
         boolean acquired;
         try {
             acquired = semaphore.tryAcquire(waitSeconds, TimeUnit.SECONDS);
@@ -97,11 +106,21 @@ public class HttpBrouterRoutingClient implements BrouterRoutingClient {
             throw new BrouterUnavailableException(Math.max(waitSeconds, 2));
         }
         if (resp.statusCode() != 200) {
-            throw new BrouterUpstreamException("BRouter returned HTTP " + resp.statusCode() + ": " + truncate(resp.body()));
+            String body = resp.body();
+            // Brakujący tile DEM (.rd5) jest akcjonalny dla usera — wyłuskujemy nazwę by raportować.
+            // Np.: "datafile W10_N45.rd5 not found" → tileName="W10_N45".
+            Matcher m = RD5_NOT_FOUND.matcher(body == null ? "" : body);
+            if (m.find()) {
+                throw new BrouterMissingTileException(m.group(1),
+                        "BRouter brakuje tile DEM: " + m.group(1) + ".rd5");
+            }
+            throw new BrouterUpstreamException("BRouter returned HTTP " + resp.statusCode() + ": " + truncate(body));
         }
 
         return parseResponse(resp.body());
     }
+
+    private static final Pattern RD5_NOT_FOUND = Pattern.compile("datafile\\s+([A-Z]\\d+_[A-Z]\\d+)\\.rd5\\s+not\\s+found");
 
     private RouteCalculation parseResponse(String body) {
         try {

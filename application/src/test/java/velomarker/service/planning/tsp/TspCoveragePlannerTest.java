@@ -96,7 +96,7 @@ class TspCoveragePlannerTest {
         CoverageBuildInfo input = info(List.of(), List.of(), 80);
         RoutePreferences prefs = makePrefs(15.0, 50.0, 16.0, 50.0, 1, 200);
         TspCoveragePlanner.TspResult result = planner.plan(taskId, input, prefs, "fastbike",
-                calibrator(), fakeBrouter(), id -> {});
+                calibrator(), fakeBrouter(), fakeBrouter(), id -> {});
         assertThat(result).isNotNull();
         assertThat(result.picked()).isEmpty();
         assertThat(result.finalWaypoints()).hasSize(2); // start + end
@@ -110,7 +110,7 @@ class TspCoveragePlannerTest {
         CoverageBuildInfo input = info(List.of(freeArea), List.of(), 80);
         RoutePreferences prefs = makePrefs(15.0, 50.0, 16.0, 50.0, 1, 100);
         TspCoveragePlanner.TspResult result = planner.plan(taskId, input, prefs, "fastbike",
-                calibrator(), fakeBrouter(), id -> {});
+                calibrator(), fakeBrouter(), fakeBrouter(), id -> {});
         // Intersected musi byc w picked
         assertThat(result.picked()).hasSize(1);
         assertThat(result.picked().get(0).isIntersected()).isTrue();
@@ -128,7 +128,7 @@ class TspCoveragePlannerTest {
         CoverageBuildInfo input = info(List.of(), reserve, 80);
         RoutePreferences prefs = makePrefs(15.0, 50.0, 16.0, 50.0, 5, 100); // budget 500 km
         TspCoveragePlanner.TspResult result = planner.plan(taskId, input, prefs, "fastbike",
-                calibrator(), fakeBrouter(), id -> {});
+                calibrator(), fakeBrouter(), fakeBrouter(), id -> {});
         // Wszystkie 3 powinny byc zebrane (klaster blisko, budget wystarcza)
         assertThat(result.picked()).hasSize(3);
         // Tour zawsze ma start + end. Areas moga byc w tour ALBO usuniete przez post-dedup
@@ -148,7 +148,7 @@ class TspCoveragePlannerTest {
         CoverageBuildInfo input = info(List.of(), reserve, 80);
         RoutePreferences prefs = makePrefs(15.0, 50.0, 16.0, 50.0, 1, 180);
         TspCoveragePlanner.TspResult result = planner.plan(taskId, input, prefs, "fastbike",
-                calibrator(), fakeBrouter(), id -> {});
+                calibrator(), fakeBrouter(), fakeBrouter(), id -> {});
         // Bliskie obszary preferowane -- area 2 i 3 wzięte, area 1 (daleki) pominięty
         assertThat(result.picked()).extracting(c -> c.getArea().areaId())
                 .contains(2, 3)
@@ -168,7 +168,7 @@ class TspCoveragePlannerTest {
         // (~na korytarzu): per obszar real detour ~ 6.5 km. ~18 obszarow zmiesci sie.
         RoutePreferences prefs = makePrefs(15.0, 50.0, 16.0, 50.0, 1, 200);
         TspCoveragePlanner.TspResult result = planner.plan(taskId, input, prefs, "fastbike",
-                calibrator(), fakeBrouter(), id -> {});
+                calibrator(), fakeBrouter(), fakeBrouter(), id -> {});
         // Final calc nie przekracza budgetu
         double finalKm = result.calc().distanceKm();
         assertThat(finalKm).isLessThanOrEqualTo(200 * 1.1); // +10% tolerancja na real BRouter rozjazd vs proxy
@@ -184,7 +184,7 @@ class TspCoveragePlannerTest {
         CoverageBuildInfo input = info(List.of(), reserve, 80);
         RoutePreferences prefs = makePrefs(15.0, 50.0, 16.0, 50.0, 10, 200); // budget 2000 km
         TspCoveragePlanner.TspResult result = planner.plan(taskId, input, prefs, "fastbike",
-                calibrator(), fakeBrouter(), id -> {});
+                calibrator(), fakeBrouter(), fakeBrouter(), id -> {});
         // User: "byleby nie ucinal, ma dobierac jak starczy budzetu"
         assertThat(result.picked()).hasSize(3);
     }
@@ -243,7 +243,7 @@ class TspCoveragePlannerTest {
         CoverageBuildInfo input = info(List.of(), reserve, 80);
         RoutePreferences prefs = makePrefs(15.0, 50.0, 16.0, 50.0, 5, 100);
         TspCoveragePlanner.TspResult result = planner.plan(taskId, input, prefs, "fastbike",
-                calibrator(), fakeBrouter(), id -> {});
+                calibrator(), fakeBrouter(), fakeBrouter(), id -> {});
         // Picked zawsze ma 3 obszary (post-dedup nie zmniejsza coverage, tylko usuwa waypointy
         // ktore sa naturalnie pokryte). Tour zaczyna sie od start i konczy end.
         assertThat(result.picked()).hasSize(3);

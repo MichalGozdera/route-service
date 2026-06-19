@@ -27,6 +27,12 @@ import java.util.List;
 @Component
 public class PlanningExternalMapper {
 
+    private final RouteDraftExternalMapper routeDraftExternalMapper;
+
+    public PlanningExternalMapper(RouteDraftExternalMapper routeDraftExternalMapper) {
+        this.routeDraftExternalMapper = routeDraftExternalMapper;
+    }
+
     public PlanningSessionResponseDto toSessionResponse(PlanningSession session, List<PlanningSessionDay> days) {
         PlanningSessionResponseDto dto = new PlanningSessionResponseDto();
         dto.setId(session.id());
@@ -78,6 +84,8 @@ public class PlanningExternalMapper {
         if (day.distanceKm() != null) dto.setDistanceKm(day.distanceKm());
         if (day.elevationGain() != null) dto.setElevationGain(day.elevationGain());
         if (day.elevationLoss() != null) dto.setElevationLoss(day.elevationLoss());
+        dto.setStats(routeDraftExternalMapper.toStatsDto(day.stats()));
+        dto.setCoveredAreaIds(day.coveredAreaIds()); // v3.18: zaliczone gminy (kompiluje się po `mvn -P api`)
         return dto;
     }
 

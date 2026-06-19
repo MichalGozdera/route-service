@@ -50,6 +50,12 @@ public class RouteDraftEntity {
     @Column(name = "waypoints")
     private String waypoints;
 
+    /** Snapshot {@code RouteStats} (totalMeters + 3 mapy + 3 spans listy) jako JSON. Pozwala FE
+     *  pokazać kolorowanie nawierzchni dla scalonego podglądu wyprawy multi-day. Nullable: stare
+     *  drafts nie mają — FE ukrywa panel statystyk. */
+    @Column(name = "stats_json", columnDefinition = "text")
+    private String statsJson;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -80,6 +86,8 @@ public class RouteDraftEntity {
     public void setDayNumber(Integer dayNumber) { this.dayNumber = dayNumber; }
     public String getWaypoints() { return waypoints; }
     public void setWaypoints(String waypoints) { this.waypoints = waypoints; }
+    public String getStatsJson() { return statsJson; }
+    public void setStatsJson(String statsJson) { this.statsJson = statsJson; }
     public Instant getCreatedAt() { return createdAt; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }

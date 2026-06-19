@@ -43,7 +43,8 @@ public class RouteDraftManagementService implements RouteDraftUseCase {
                 command.groupId(),
                 command.groupName(),
                 command.dayNumber(),
-                command.waypointsEncoded()
+                command.waypointsEncoded(),
+                command.stats()
         );
         log.info("Creating route draft userId={} name={}", command.userId(), draft.name());
         return repository.save(draft);
@@ -91,7 +92,8 @@ public class RouteDraftManagementService implements RouteDraftUseCase {
                 command.groupId() != null ? command.groupId() : existing.groupId(),
                 command.groupName() != null ? command.groupName() : existing.groupName(),
                 command.dayNumber() != null ? command.dayNumber() : existing.dayNumber(),
-                command.waypointsEncoded() != null ? command.waypointsEncoded() : existing.waypointsEncoded()
+                command.waypointsEncoded() != null ? command.waypointsEncoded() : existing.waypointsEncoded(),
+                command.stats() != null ? command.stats() : existing.stats()
         );
         log.info("Updating route draft id={} userId={}", existing.id(), existing.userId());
         return repository.save(updated);

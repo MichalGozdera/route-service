@@ -43,4 +43,31 @@ class EdgeCacheTest {
         assertThat(cache.misses()).isEqualTo(1);
         assertThat(cache.hitRatio()).isEqualTo(0.8);
     }
+
+    // === v3.16: ledger realnych strzałów per powód ===
+
+    @Test
+    void realCalls_tallied_per_reason() {
+        // onRealCall() liczy realny strzał pod BIEŻĄCYM powodem (loader woła go przy brouter.apply).
+        EdgeCache cache = new EdgeCache();
+        cache.setReason("grow");
+        cache.onRealCall();
+        cache.onRealCall();
+        cache.setReason("ogonek-relokacja");
+        cache.onRealCall();
+        assertThat(cache.realCalls()).isEqualTo(3);
+        assertThat(cache.realCallsByReason()).containsEntry("grow", 2L).containsEntry("ogonek-relokacja", 1L);
+    }
+
+    @Test
+    void realCalls_notBumpedBySlicedSeed() {
+        // seedSlicedEdges seeduje cache loaderem BEZ brouter.apply (gotowy EdgeInfo) → miss++, ale
+        // realCalls NIE rośnie (to było źródło zawyżania: misses ≠ realne strzały).
+        EdgeCache cache = new EdgeCache();
+        cache.setReason("grow");
+        cache.getOrCompute(14.0, 50.0, 14.1, 50.0, pts -> new EdgeCache.EdgeInfo(5, 0, 5)); // sliced-seed, brak onRealCall
+        assertThat(cache.misses()).isEqualTo(1);
+        assertThat(cache.realCalls()).isZero();
+        assertThat(cache.realCallsByReason()).isEmpty();
+    }
 }

@@ -112,6 +112,16 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- BRouter (embedded) — prebuilt JAR pobierany z GitHub releases przez scripts/setup-brouter-jar.sh
+             i instalowany do ~/.m2 jako local.brouter:brouter. NIE jest w Maven Central, więc każdy dev/CI
+             musi raz odpalić skrypt. RoutingEngine extends Thread (stateful per-request) → pooling instancji
+             bezsensowny, używamy semafora dla limitu współbieżności. -->
+        <dependency>
+            <groupId>local.brouter</groupId>
+            <artifactId>brouter</artifactId>
+            <version>1.7.9</version>
+        </dependency>
+
         <!-- ===== Observability ===== -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

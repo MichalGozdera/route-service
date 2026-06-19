@@ -1,6 +1,7 @@
 package velomarker.port.in;
 
 import velomarker.entity.RouteDraft;
+import velomarker.entity.RouteStats;
 
 import java.util.List;
 import java.util.UUID;
@@ -31,7 +32,9 @@ public interface RouteDraftUseCase {
             UUID groupId,
             String groupName,
             Integer dayNumber,
-            String waypointsEncoded
+            String waypointsEncoded,
+            /** Snapshot statystyk z BRoutera (null jeśli brak — dla legacy/manual bez stats). */
+            RouteStats stats
     ) {
     }
 
@@ -47,7 +50,9 @@ public interface RouteDraftUseCase {
             UUID groupId,
             String groupName,
             Integer dayNumber,
-            String waypointsEncoded
+            String waypointsEncoded,
+            /** Snapshot statystyk z BRoutera (null jeśli brak — pozostawia istniejące). */
+            RouteStats stats
     ) {
     }
 }

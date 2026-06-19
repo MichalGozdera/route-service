@@ -1,13 +1,19 @@
 package eu.cokeman.velomarker.mapper;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.cokeman.velomarker.out.persistence.jpa.entity.RouteDraftEntity;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import velomarker.entity.RouteDraft;
-
-import java.util.List;
+import velomarker.entity.RouteStats;
 
 @Component
 public class RouteDraftJpaMapper {
+
+    private static final Logger log = LoggerFactory.getLogger(RouteDraftJpaMapper.class);
+
+    private final ObjectMapper json = new ObjectMapper();
 
     public RouteDraftEntity toEntity(RouteDraft draft) {
         RouteDraftEntity e = new RouteDraftEntity();
@@ -23,6 +29,7 @@ public class RouteDraftJpaMapper {
         e.setGroupName(draft.groupName());
         e.setDayNumber(draft.dayNumber());
         e.setWaypoints(draft.waypointsEncoded());
+        e.setStatsJson(serializeStats(draft.stats()));
         e.setCreatedAt(draft.createdAt());
         e.setUpdatedAt(draft.updatedAt());
         return e;
@@ -43,7 +50,28 @@ public class RouteDraftJpaMapper {
                 e.getGroupId(),
                 e.getGroupName(),
                 e.getDayNumber(),
-                e.getWaypoints()
+                e.getWaypoints(),
+                deserializeStats(e.getStatsJson())
         );
+    }
+
+    private String serializeStats(RouteStats stats) {
+        if (stats == null || stats.totalMeters() == 0) return null;
+        try {
+            return json.writeValueAsString(stats);
+        } catch (Exception ex) {
+            log.warn("Failed to serialize RouteStats to JSON (skipping persist): {}", ex.getMessage());
+            return null;
+        }
+    }
+
+    private RouteStats deserializeStats(String statsJson) {
+        if (statsJson == null || statsJson.isBlank()) return null;
+        try {
+            return json.readValue(statsJson, RouteStats.class);
+        } catch (Exception ex) {
+            log.warn("Failed to deserialize RouteStats from JSON (treating as null): {}", ex.getMessage());
+            return null;
+        }
     }
 }

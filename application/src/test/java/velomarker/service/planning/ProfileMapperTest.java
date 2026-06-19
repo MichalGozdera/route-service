@@ -11,37 +11,37 @@ class ProfileMapperTest {
     private final ProfileMapper mapper = new ProfileMapper();
 
     @Test
-    void tempoSzybko_alwaysFastbike() {
-        assertThat(mapper.toBrouterProfile(RouteStyle.SCIEZKI, Tempo.SZYBKO)).isEqualTo("fastbike");
-        assertThat(mapper.toBrouterProfile(RouteStyle.KRAJOWKI, Tempo.SZYBKO)).isEqualTo("fastbike");
-        assertThat(mapper.toBrouterProfile(null, Tempo.SZYBKO)).isEqualTo("fastbike");
+    void tempoSzybko_alwaysUltraGminy() {
+        assertThat(mapper.toBrouterProfile(RouteStyle.SCIEZKI, Tempo.SZYBKO)).isEqualTo("ultra-gminy");
+        assertThat(mapper.toBrouterProfile(RouteStyle.KRAJOWKI, Tempo.SZYBKO)).isEqualTo("ultra-gminy");
+        assertThat(mapper.toBrouterProfile(null, Tempo.SZYBKO)).isEqualTo("ultra-gminy");
     }
 
     @Test
-    void tempoTurystycznie_alwaysTrekking() {
-        assertThat(mapper.toBrouterProfile(RouteStyle.KRAJOWKI, Tempo.TURYSTYCZNIE)).isEqualTo("trekking");
-        assertThat(mapper.toBrouterProfile(RouteStyle.SCIEZKI, Tempo.TURYSTYCZNIE)).isEqualTo("trekking");
+    void tempoTurystycznie_alwaysTrekkingGminy() {
+        assertThat(mapper.toBrouterProfile(RouteStyle.KRAJOWKI, Tempo.TURYSTYCZNIE)).isEqualTo("trekking-gminy");
+        assertThat(mapper.toBrouterProfile(RouteStyle.SCIEZKI, Tempo.TURYSTYCZNIE)).isEqualTo("trekking-gminy");
     }
 
     @Test
-    void styleKrajowki_withoutTempo_isFastbike() {
-        assertThat(mapper.toBrouterProfile(RouteStyle.KRAJOWKI, null)).isEqualTo("fastbike");
+    void styleKrajowki_withoutTempo_isUltraGminy() {
+        assertThat(mapper.toBrouterProfile(RouteStyle.KRAJOWKI, null)).isEqualTo("ultra-gminy");
     }
 
     @Test
-    void stylePrzezMiasta_isSafety() {
-        assertThat(mapper.toBrouterProfile(RouteStyle.PRZEZ_MIASTA, null)).isEqualTo("safety");
+    void stylePrzezMiasta_isFastbikeGminy() {
+        assertThat(mapper.toBrouterProfile(RouteStyle.PRZEZ_MIASTA, null)).isEqualTo("fastbike-gminy");
     }
 
     @Test
-    void offRoadStyles_areTrekking() {
-        assertThat(mapper.toBrouterProfile(RouteStyle.SCIEZKI, null)).isEqualTo("trekking");
-        assertThat(mapper.toBrouterProfile(RouteStyle.GRAVEL, null)).isEqualTo("trekking");
-        assertThat(mapper.toBrouterProfile(RouteStyle.WZDLUZ_RZEK, null)).isEqualTo("trekking");
+    void offRoadStyles_areTrekkingGminy() {
+        assertThat(mapper.toBrouterProfile(RouteStyle.SCIEZKI, null)).isEqualTo("trekking-gminy");
+        assertThat(mapper.toBrouterProfile(RouteStyle.GRAVEL, null)).isEqualTo("trekking-gminy");
+        assertThat(mapper.toBrouterProfile(RouteStyle.WZDLUZ_RZEK, null)).isEqualTo("trekking-gminy");
     }
 
     @Test
-    void noStyle_noTempo_defaultTrekking() {
-        assertThat(mapper.toBrouterProfile(null, null)).isEqualTo("trekking");
+    void noStyle_noTempo_defaultTrekkingGminy() {
+        assertThat(mapper.toBrouterProfile(null, null)).isEqualTo("trekking-gminy");
     }
 }

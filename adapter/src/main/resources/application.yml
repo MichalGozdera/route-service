@@ -38,6 +38,29 @@ brouter:
 
 # Route planning — limity i konfiguracja
 route:
+  brouter:
+    # embedded = JAR załadowany do route-service, method calls (zero HTTP) — DEFAULT (kontener
+    # velomarker-brouter już nie istnieje). Współbieżność ograniczona semaforem poniżej. Segments .rd5
+    # mmap-owane przez OS page cache; przy aktywnym planie zdekodowane kafle są współdzielone (shared-rd5-store).
+    # http = legacy HTTP do kontenera velomarker-brouter (już nieużywane; zostaje tylko jako awaryjny fallback).
+    # Sterowane zmienną ENV — restart route-service przepina implementację (ConditionalOnProperty).
+    mode: ${ROUTE_BROUTER_MODE:embedded}
+    # Maks. równocześnie wykonywanych routing calls. BRouter container miał 10 workerów × 1g heap;
+    # embedded dzieli jeden heap JVM, więc 16 jest bezpieczne na start. Monitoring saturacji semafora
+    # w Grafanie zdecyduje czy podnosić/obniżać.
+    max-concurrent: ${ROUTE_BROUTER_MAX_CONCURRENT:16}
+    # RoutingContext.memoryclass (MB) na pojedynczy routing call — limit pamięci microcache per-trasa.
+    # Domyślny BRouter to 64 MB; przy szerokim szukaniu A* (ultra-gminy ekspanduje dużo węzłów) 64 MB
+    # wpada w panic-mode eviction → re-dekodowanie microcache W TRAKCIE jednego callu → calc p50 rośnie.
+    # 256 MB usuwa thrash. UWAGA: pamięć ~ memory-class-mb × równoczesne calls (≤ max-concurrent).
+    memory-class-mb: ${ROUTE_BROUTER_MEMORY_CLASS:256}
+    # Twardy limit (ms) na pojedynczy PRÓBNY call planowania (computeStats=false). Patologiczne trasy
+    # (target-island, las/woda) liczą się 10-22 s i przez batch-barrier (f.get() na całym batchu) dławią
+    # równoległość — rdzenie czekają na jeden zawieszony call. Po timeoucie → haversine fallback (planer
+    # traktuje jak wyspę). Finalny routing (computeStats=true) ZAWSZE bez limitu. 0 = wyłącz limit.
+    # DEFAULT 0 = WYŁĄCZONE (ryzyko ucięcia osiągalnych-ale-wolnych gmin jako wysp; po L2 ogon mniej boli).
+    # >0 włącza limit (np. 6000) — wtedy patologiczna trasa pada → haversine fallback.
+    probe-timeout-ms: ${ROUTE_BROUTER_PROBE_TIMEOUT_MS:0}
   calculate:
     # Match z BROUTER_WORKERS w brouter container (Iter 12: 10 = rdzenie hosta; też = brouterParallelism
     # plannera ALNS2/3 dla równoległego pre-warm krawędzi). ≤ BROUTER_WORKERS by uniknąć 429.
@@ -133,6 +156,15 @@ planning:
     # (1) twardy filtr reward macki ≤ reward dziury, (2) re-route: rollback gdy łączny REWARD spadł >3%
     # lub effort >110%. false → tylko czyste wstawianie do 110% (nic nie tnie).
     reconcile-swap: ${PLANNING_ALNS2_RECONCILE_SWAP:true}
+    # ADMIN DEBUG: loguj GeoJSON snapshot trasy na każdej fazie seeda (init/batch/prune/densify/reconcile/final)
+    # do podglądu w mapie rysowania (panel 🐞 paste-to-map). UWAGA: per-batch zalewa log → włączaj tylko do debugowania.
+    debug-geojson: ${ROUTE_PLANNING_DEBUG_GEOJSON:true}
+    # A/B: stara pętla DEEP-BATCH po seedzie (7 iter × pełne reroute ≈ 23 min, marginalne zyski).
+    # Default OFF — zastąpiona przez seed→[100,105%] + track-aware tailPrune (ogonki/tranzyt z guardem).
+    deep-batch: ${PLANNING_ALNS2_DEEP_BATCH:false}
+    # WIGGLE (warianty pozycji wp w gminie): default OFF — 3 runy danych: ~540 pytań do BRoutera
+    # za ~190 effortu za każdym razem (0.3/call). Włącz, gdy uznasz że wart swojej ceny.
+    wiggle: ${PLANNING_ALNS2_WIGGLE:false}
 
 springdoc:
   swagger-ui:

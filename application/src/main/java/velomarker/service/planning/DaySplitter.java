@@ -30,6 +30,10 @@ public class DaySplitter {
     private static final Logger log = LoggerFactory.getLogger(DaySplitter.class);
 
     public static final double MIN_DAY_KM = 20.0;
+    /** Współczynnik effortu wzniosu — SPÓJNY z ALNS2 (params.alphaKmPerMeter = 0.1). User: dziel dni
+     *  EQUAL effort = km + 0.1 × climb_m. Niezależnie od profilu (road/off-road) — bo ALNS2 też nie
+     *  rozróżnia. Stare ROAD/OFFROAD_KM_PER_300 utrzymane dla kompatybilności helpera equivalentKm. */
+    public static final double DAY_EFFORT_ALPHA_KM_PER_M = 0.1;
     public static final double ROAD_KM_PER_300_UP = 20.0;
     public static final double ROAD_KM_PER_300_DOWN = 30.0;
     public static final double OFFROAD_KM_PER_300_UP = 30.0;
@@ -75,15 +79,11 @@ public class DaySplitter {
                 ? elevBudgetPerDay
                 : Math.max(300.0, kmPerDay * EFFORT_BASE_CLIMB_PER_180 / 180.0);
 
-        // LINEAR UNITS: effort = km + climb_m * (KM_PER_300_UP / 300).
-        // Dla szosy: 0.0667 km per 1m wzniosu (= 20 km kary za 300m). Dla offroad: 0.1 km/m (= 30/300).
-        // BEZ asymetrii UP/DOWN i BEZ bonusu za "płaski dzień".
-        // Wcześniej formula equivalentKm operowała na delta = climb - ref (z proporcjonalnym ref),
-        // dawała bonus DUZE km za dni gdzie cumClimb < cumRef. Skutek: d5=381 km / 2341 m wzniosu
-        // mialo cumRef=4523m -> delta=-2182m -> +218km bonusu -> effort 163 = "rowne innym dniom"
-        // mathematicznie ale absurdalne fizycznie (381 km dziennie). Linear unit eliminuje ten
-        // artefakt: dzien dluzszy tylko gdy ma proporcjonalnie mniej wzniosu, ale rozsadnie.
-        double effortPerMClimb = (isRoad ? ROAD_KM_PER_300_UP : OFFROAD_KM_PER_300_UP) / 300.0;
+        // LINEAR UNITS: effort = km + 0.1 × climb_m. SPÓJNE z ALNS2 (params.alphaKmPerMeter = 0.1).
+        // BEZ asymetrii UP/DOWN i BEZ bonusu za „płaski dzień". User chce równy effort per dzień
+        // (jeśli total to 4300 a dni 10 → 430/dzień), niezależnie od profilu. Dawniej road=0.0667
+        // a off-road=0.1 dawało rozjazd vs budżet ALNS2 (ten zawsze 0.1) → user widział nierówność.
+        double effortPerMClimb = DAY_EFFORT_ALPHA_KM_PER_M;
         int n = samples.length;
         double[] cumEffort = new double[n];
         double[] cumClimb = new double[n];
@@ -182,6 +182,6 @@ public class DaySplitter {
     public static boolean isRoadProfile(String brouterProfile) {
         if (brouterProfile == null) return true;
         String p = brouterProfile.toLowerCase();
-        return p.contains("fastbike") || p.contains("safety") || p.contains("car");
+        return p.contains("fastbike") || p.contains("ultra") || p.contains("safety") || p.contains("car");
     }
 }

@@ -125,7 +125,9 @@ public final class PlanningJpaMapper {
         return new PlanningSessionDay(e.getId(), e.getSessionId(), e.getDayNumber(),
                 geometry, waypoints,
                 e.getDistanceKm(), e.getElevationGain(), e.getElevationLoss(),
-                e.getProfile(), e.getEditedAt());
+                e.getProfile(), e.getEditedAt(),
+                deserializeStats(e.getStatsJson()),
+                deserializeIntList(e.getCoveredAreaIds()));
     }
 
     public PlanningSessionDayEntity toEntity(PlanningSessionDay d) {
@@ -140,7 +142,38 @@ public final class PlanningJpaMapper {
         e.setElevationLoss(d.elevationLoss());
         e.setProfile(d.profile());
         e.setEditedAt(d.editedAt());
+        e.setStatsJson(serializeStats(d.stats()));
+        e.setCoveredAreaIds(serializeIntList(d.coveredAreaIds()));
         return e;
+    }
+
+    /** v3.18: lista ID gmin ↔ JSON array (covered_area_ids). */
+    private String serializeIntList(List<Integer> ids) {
+        if (ids == null || ids.isEmpty()) return null;
+        try { return objectMapper.writeValueAsString(ids); }
+        catch (Exception ex) { return null; }
+    }
+
+    private List<Integer> deserializeIntList(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        try {
+            ArrayNode arr = (ArrayNode) objectMapper.readTree(json);
+            List<Integer> out = new ArrayList<>(arr.size());
+            arr.forEach(v -> out.add(v.asInt()));
+            return out;
+        } catch (Exception ex) { return List.of(); }
+    }
+
+    private String serializeStats(velomarker.entity.RouteStats stats) {
+        if (stats == null || stats.totalMeters() == 0) return null;
+        try { return objectMapper.writeValueAsString(stats); }
+        catch (Exception ex) { return null; }
+    }
+
+    private velomarker.entity.RouteStats deserializeStats(String json) {
+        if (json == null || json.isBlank()) return null;
+        try { return objectMapper.readValue(json, velomarker.entity.RouteStats.class); }
+        catch (Exception ex) { return null; }
     }
 
     // ===== RoutePreferences JSON =====

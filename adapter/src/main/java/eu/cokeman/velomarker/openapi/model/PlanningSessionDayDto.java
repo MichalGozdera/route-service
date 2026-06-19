@@ -5,6 +5,7 @@ import java.util.Objects;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonTypeName;
+import eu.cokeman.velomarker.openapi.model.RouteStatsDto;
 import eu.cokeman.velomarker.openapi.model.WaypointDto;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -47,10 +48,15 @@ public class PlanningSessionDayDto {
 
   private @Nullable Integer elevationLoss = null;
 
+  private @Nullable RouteStatsDto stats;
+
   private String profile;
 
   @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
   private Instant editedAt;
+
+  @Valid
+  private @Nullable List<Integer> coveredAreaIds;
 
   public PlanningSessionDayDto() {
     super();
@@ -232,6 +238,27 @@ public class PlanningSessionDayDto {
     this.elevationLoss = elevationLoss;
   }
 
+  public PlanningSessionDayDto stats(@Nullable RouteStatsDto stats) {
+    this.stats = stats;
+    return this;
+  }
+
+  /**
+   * Get stats
+   * @return stats
+   */
+  @Valid 
+  @Schema(name = "stats", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
+  @JsonProperty("stats")
+  public @Nullable RouteStatsDto getStats() {
+    return stats;
+  }
+
+  @JsonProperty("stats")
+  public void setStats(@Nullable RouteStatsDto stats) {
+    this.stats = stats;
+  }
+
   public PlanningSessionDayDto profile(String profile) {
     this.profile = profile;
     return this;
@@ -274,6 +301,35 @@ public class PlanningSessionDayDto {
     this.editedAt = editedAt;
   }
 
+  public PlanningSessionDayDto coveredAreaIds(@Nullable List<Integer> coveredAreaIds) {
+    this.coveredAreaIds = coveredAreaIds;
+    return this;
+  }
+
+  public PlanningSessionDayDto addCoveredAreaIdsItem(Integer coveredAreaIdsItem) {
+    if (this.coveredAreaIds == null) {
+      this.coveredAreaIds = new ArrayList<>();
+    }
+    this.coveredAreaIds.add(coveredAreaIdsItem);
+    return this;
+  }
+
+  /**
+   * ID gmin ZALICZONYCH przez ten dzień (kryterium kredytu ≥200 m, liczone backendem JTS). Front koloruje TE ID (źródło prawdy = co realnie zaliczysz jadąc) zamiast re-derywacji turfem (plain-touch). Pusta/brak = brak danych z backendu (np. ręczne rysowanie) → front liczy turfem. 
+   * @return coveredAreaIds
+   */
+  
+  @Schema(name = "coveredAreaIds", description = "ID gmin ZALICZONYCH przez ten dzień (kryterium kredytu ≥200 m, liczone backendem JTS). Front koloruje TE ID (źródło prawdy = co realnie zaliczysz jadąc) zamiast re-derywacji turfem (plain-touch). Pusta/brak = brak danych z backendu (np. ręczne rysowanie) → front liczy turfem. ", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
+  @JsonProperty("coveredAreaIds")
+  public @Nullable List<Integer> getCoveredAreaIds() {
+    return coveredAreaIds;
+  }
+
+  @JsonProperty("coveredAreaIds")
+  public void setCoveredAreaIds(@Nullable List<Integer> coveredAreaIds) {
+    this.coveredAreaIds = coveredAreaIds;
+  }
+
   @Override
   public boolean equals(Object o) {
     if (this == o) {
@@ -291,13 +347,15 @@ public class PlanningSessionDayDto {
         Objects.equals(this.distanceKm, planningSessionDay.distanceKm) &&
         Objects.equals(this.elevationGain, planningSessionDay.elevationGain) &&
         Objects.equals(this.elevationLoss, planningSessionDay.elevationLoss) &&
+        Objects.equals(this.stats, planningSessionDay.stats) &&
         Objects.equals(this.profile, planningSessionDay.profile) &&
-        Objects.equals(this.editedAt, planningSessionDay.editedAt);
+        Objects.equals(this.editedAt, planningSessionDay.editedAt) &&
+        Objects.equals(this.coveredAreaIds, planningSessionDay.coveredAreaIds);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(id, sessionId, dayNumber, geometryEncoded, waypoints, distanceKm, elevationGain, elevationLoss, profile, editedAt);
+    return Objects.hash(id, sessionId, dayNumber, geometryEncoded, waypoints, distanceKm, elevationGain, elevationLoss, stats, profile, editedAt, coveredAreaIds);
   }
 
   @Override
@@ -312,8 +370,10 @@ public class PlanningSessionDayDto {
     sb.append("    distanceKm: ").append(toIndentedString(distanceKm)).append("\n");
     sb.append("    elevationGain: ").append(toIndentedString(elevationGain)).append("\n");
     sb.append("    elevationLoss: ").append(toIndentedString(elevationLoss)).append("\n");
+    sb.append("    stats: ").append(toIndentedString(stats)).append("\n");
     sb.append("    profile: ").append(toIndentedString(profile)).append("\n");
     sb.append("    editedAt: ").append(toIndentedString(editedAt)).append("\n");
+    sb.append("    coveredAreaIds: ").append(toIndentedString(coveredAreaIds)).append("\n");
     sb.append("}");
     return sb.toString();
   }

@@ -6,6 +6,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonTypeName;
 import eu.cokeman.velomarker.openapi.model.LineStringGeoJsonDto;
+import eu.cokeman.velomarker.openapi.model.RouteStatsDto;
 import org.springframework.lang.Nullable;
 import java.time.OffsetDateTime;
 import jakarta.validation.Valid;
@@ -27,6 +28,8 @@ public class CalculateRouteResponseDto {
   private LineStringGeoJsonDto geometry;
 
   private Double distanceKm;
+
+  private @Nullable RouteStatsDto stats;
 
   public CalculateRouteResponseDto() {
     super();
@@ -74,6 +77,27 @@ public class CalculateRouteResponseDto {
     this.distanceKm = distanceKm;
   }
 
+  public CalculateRouteResponseDto stats(@Nullable RouteStatsDto stats) {
+    this.stats = stats;
+    return this;
+  }
+
+  /**
+   * Get stats
+   * @return stats
+   */
+  @Valid 
+  @Schema(name = "stats", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
+  @JsonProperty("stats")
+  public @Nullable RouteStatsDto getStats() {
+    return stats;
+  }
+
+  @JsonProperty("stats")
+  public void setStats(@Nullable RouteStatsDto stats) {
+    this.stats = stats;
+  }
+
   @Override
   public boolean equals(Object o) {
     if (this == o) {
@@ -84,12 +108,13 @@ public class CalculateRouteResponseDto {
     }
     CalculateRouteResponseDto calculateRouteResponse = (CalculateRouteResponseDto) o;
     return Objects.equals(this.geometry, calculateRouteResponse.geometry) &&
-        Objects.equals(this.distanceKm, calculateRouteResponse.distanceKm);
+        Objects.equals(this.distanceKm, calculateRouteResponse.distanceKm) &&
+        Objects.equals(this.stats, calculateRouteResponse.stats);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(geometry, distanceKm);
+    return Objects.hash(geometry, distanceKm, stats);
   }
 
   @Override
@@ -98,6 +123,7 @@ public class CalculateRouteResponseDto {
     sb.append("class CalculateRouteResponseDto {\n");
     sb.append("    geometry: ").append(toIndentedString(geometry)).append("\n");
     sb.append("    distanceKm: ").append(toIndentedString(distanceKm)).append("\n");
+    sb.append("    stats: ").append(toIndentedString(stats)).append("\n");
     sb.append("}");
     return sb.toString();
   }

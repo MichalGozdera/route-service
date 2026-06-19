@@ -105,6 +105,36 @@ public final class SpatialGrid {
         return best;
     }
 
+    /** Indeks punktu w siatce najbliższego ZEWNĘTRZNEMU coord {@code (lng, lat)}. {@code -1} gdy siatka pusta. */
+    public int nearestIndexTo(double lng, double lat) {
+        if (pts.length == 0) return -1;
+        int cc = colOf(lng), cr = rowOf(lat);
+        int bestIdx = -1;
+        double best = Double.MAX_VALUE;
+        int maxR = cols + rows;
+        double[] q = {lng, lat};
+        for (int r = 0; r <= maxR; r++) {
+            for (int dc = -r; dc <= r; dc++) {
+                for (int dr = -r; dr <= r; dr++) {
+                    if (Math.max(Math.abs(dc), Math.abs(dr)) != r) continue;
+                    int c = cc + dc, rr = cr + dr;
+                    if (c < 0 || c >= cols || rr < 0 || rr >= rows) continue;
+                    for (int j : cells[rr * cols + c]) {
+                        double d = WaypointSelector.haversineKm(pts[j], q);
+                        if (d < best) { best = d; bestIdx = j; }
+                    }
+                }
+            }
+            if (best <= r * cellKmMin) break;
+        }
+        return bestIdx;
+    }
+
+    /** Dystans (km) między punktem siatki i a zewnętrznymi coord {@code (lng, lat)}. Wykorzystywany po {@link #nearestIndexTo}. */
+    public double distKmFromExternal(int i, double lng, double lat) {
+        return WaypointSelector.haversineKm(pts[i], new double[]{lng, lat});
+    }
+
     /** Liczba innych punktów w promieniu {@code radiusKm} od {@code i}. */
     public int countWithinKm(int i, double radiusKm) {
         int cc = colOf(pts[i][0]), cr = rowOf(pts[i][1]);

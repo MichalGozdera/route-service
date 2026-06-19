@@ -6,6 +6,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonTypeName;
 import eu.cokeman.velomarker.openapi.model.LineStringGeoJsonDto;
+import eu.cokeman.velomarker.openapi.model.RouteStatsDto;
 import java.util.UUID;
 import org.springframework.lang.Nullable;
 import java.time.OffsetDateTime;
@@ -44,6 +45,8 @@ public class RouteDraftRequestDto {
   private @Nullable Integer dayNumber = null;
 
   private @Nullable String waypoints = null;
+
+  private @Nullable RouteStatsDto stats;
 
   public RouteDraftRequestDto() {
     super();
@@ -259,6 +262,27 @@ public class RouteDraftRequestDto {
     this.waypoints = waypoints;
   }
 
+  public RouteDraftRequestDto stats(@Nullable RouteStatsDto stats) {
+    this.stats = stats;
+    return this;
+  }
+
+  /**
+   * Get stats
+   * @return stats
+   */
+  @Valid 
+  @Schema(name = "stats", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
+  @JsonProperty("stats")
+  public @Nullable RouteStatsDto getStats() {
+    return stats;
+  }
+
+  @JsonProperty("stats")
+  public void setStats(@Nullable RouteStatsDto stats) {
+    this.stats = stats;
+  }
+
   @Override
   public boolean equals(Object o) {
     if (this == o) {
@@ -277,12 +301,13 @@ public class RouteDraftRequestDto {
         Objects.equals(this.groupId, routeDraftRequest.groupId) &&
         Objects.equals(this.groupName, routeDraftRequest.groupName) &&
         Objects.equals(this.dayNumber, routeDraftRequest.dayNumber) &&
-        Objects.equals(this.waypoints, routeDraftRequest.waypoints);
+        Objects.equals(this.waypoints, routeDraftRequest.waypoints) &&
+        Objects.equals(this.stats, routeDraftRequest.stats);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(name, geometry, profile, distanceKm, elevationGain, elevationLoss, groupId, groupName, dayNumber, waypoints);
+    return Objects.hash(name, geometry, profile, distanceKm, elevationGain, elevationLoss, groupId, groupName, dayNumber, waypoints, stats);
   }
 
   @Override
@@ -299,6 +324,7 @@ public class RouteDraftRequestDto {
     sb.append("    groupName: ").append(toIndentedString(groupName)).append("\n");
     sb.append("    dayNumber: ").append(toIndentedString(dayNumber)).append("\n");
     sb.append("    waypoints: ").append(toIndentedString(waypoints)).append("\n");
+    sb.append("    stats: ").append(toIndentedString(stats)).append("\n");
     sb.append("}");
     return sb.toString();
   }

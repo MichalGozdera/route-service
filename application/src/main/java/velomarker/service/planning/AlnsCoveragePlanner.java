@@ -107,6 +107,7 @@ public class AlnsCoveragePlanner {
                                 String profile,
                                 RoadFactorCalibrator calibrator,
                                 BiFunction<List<Waypoint>, String, RouteCalculation> brouter,
+                                BiFunction<List<Waypoint>, String, RouteCalculation> brouterFinal,
                                 Consumer<UUID> checkCancel) {
         if (input == null || input.pickedCandidates() == null || input.pickedCandidates().isEmpty()) {
             log.info("ALNS: pusty greedy result -- nic do optymalizacji");
@@ -336,6 +337,19 @@ public class AlnsCoveragePlanner {
         if (mutableWpBest.size() < wpBest.size()) {
             wpBest = mutableWpBest;
             calcBest = dedupedCalc;
+        }
+
+        // FINAL RECOMPUTE: wewnetrzne calls brouter.apply uzywaja computeStats=false. Tu jedno
+        // wywolanie brouterFinal (computeStats=true) zeby zwracany RouteCalculation mial pelne stats.
+        try {
+            RouteCalculation finalCalcBest = brouterFinal.apply(wpBest, profile);
+            log.info("ALNS final recompute z stats: distanceKm={} stats.totalMeters={}",
+                    new Object[]{Math.round(finalCalcBest.distanceKm()),
+                            finalCalcBest.stats() != null ? finalCalcBest.stats().totalMeters() : 0});
+            calcBest = finalCalcBest;
+            brouterCalls++;
+        } catch (RuntimeException ex) {
+            log.warn("ALNS final recompute z stats failed ({}) — zwracam wynik bez stats", ex.getMessage());
         }
 
         return new AlnsResult(calcBest, wpBest, best, params.iterations(), brouterCalls,

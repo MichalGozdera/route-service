@@ -109,8 +109,9 @@ public class TspCoveragePlanner {
                            String profile,
                            RoadFactorCalibrator calibrator,
                            BiFunction<List<Waypoint>, String, RouteCalculation> brouter,
+                           BiFunction<List<Waypoint>, String, RouteCalculation> brouterFinal,
                            Consumer<UUID> checkCancel) {
-        return plan(taskId, input, prefs, profile, calibrator, brouter, checkCancel, null);
+        return plan(taskId, input, prefs, profile, calibrator, brouter, brouterFinal, checkCancel, null);
     }
 
     /**
@@ -125,6 +126,7 @@ public class TspCoveragePlanner {
                            String profile,
                            RoadFactorCalibrator calibrator,
                            BiFunction<List<Waypoint>, String, RouteCalculation> brouter,
+                           BiFunction<List<Waypoint>, String, RouteCalculation> brouterFinal,
                            Consumer<UUID> checkCancel,
                            Function<List<double[]>, Integer> elevationGainFn) {
         long startTs = System.currentTimeMillis();
@@ -697,6 +699,19 @@ public class TspCoveragePlanner {
                         tour.size(), Math.round(finalCalc.distanceKm()), budgetKm,
                         Math.round(effectiveBudgetKm),
                         brouterCalls, inserts, rejectedByBudget, elapsedMs});
+
+        // FINAL RECOMPUTE: wewnetrzne wywolania brouter.apply uzywaja computeStats=false. Tu jedno
+        // wywolanie brouterFinal (computeStats=true) zeby zwracany RouteCalculation mial pelne stats.
+        try {
+            RouteCalculation recomputed = brouterFinal.apply(tour, profile);
+            log.info("TSP final recompute z stats: distanceKm={} stats.totalMeters={}",
+                    new Object[]{Math.round(recomputed.distanceKm()),
+                            recomputed.stats() != null ? recomputed.stats().totalMeters() : 0});
+            finalCalc = recomputed;
+            brouterCalls++;
+        } catch (RuntimeException ex) {
+            log.warn("TSP final recompute z stats failed ({}) — zwracam wynik bez stats", ex.getMessage());
+        }
 
         return new TspResult(finalCalc, tour, picked, inserts, brouterCalls, rejectedByBudget);
     }

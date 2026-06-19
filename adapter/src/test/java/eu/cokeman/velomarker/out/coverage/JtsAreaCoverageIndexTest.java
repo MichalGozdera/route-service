@@ -6,14 +6,16 @@ import velomarker.entity.planning.UnvisitedArea;
 import velomarker.port.out.planning.AreaCoverageIndex;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Coverage liczone JTS-em na PEŁNEJ geometrii. Kryterium zaliczenia na trasie BRoutera = wjazd
- * ≥100m W GŁĄB ({@code buffer(-100m).intersects(line)}) — przejazd po granicy / płytkie otarcie NIE
- * liczy (false-positives Grębów/Piotrków: trasa po drodze granicznej). {@code findAreaForPoint} =
- * pełna geometria bez bufora (lookup „która gmina zawiera punkt", nie kryterium zaliczenia).
+ * ≥200m W GŁĄB ({@code buffer(-200m).intersects(line)}) — przejazd po granicy / płytkie otarcie /
+ * smyranie po peryferiach NIE liczy (false-positives Grębów/Piotrków/Kołobrzeg).
+ * {@code findAreaForPoint} = pełna geometria bez bufora (lookup „która gmina zawiera punkt", nie
+ * kryterium zaliczenia).
  */
 class JtsAreaCoverageIndexTest {
 
@@ -50,9 +52,9 @@ class JtsAreaCoverageIndexTest {
     }
 
     @Test
-    void visitedAreaIds_shallowEntry_lessThan100m_notCredited() {
+    void visitedAreaIds_shallowEntry_lessThan200m_notCredited() {
         // Trasa przekracza prawą krawędź (15.05) ale wchodzi tylko ~36m (15.0495) — płytkie otarcie.
-        // < 100m → buffer(-100m) NIE przecina → NIE zaliczona (to był false-positive Grębów/Piotrków).
+        // < 200m → buffer(-200m) NIE przecina → NIE zaliczona (false-positive Grębów/Piotrków/Kołobrzeg).
         AreaCoverageIndex idx = FACTORY.build(List.of(squareGmina(1, 15.0, 50.0, 0.05)));
         List<double[]> route = List.of(new double[]{15.06, 50.0}, new double[]{15.0495, 50.0});
         assertThat(idx.visitedAreaIds(route)).doesNotContain(1);
@@ -69,8 +71,8 @@ class JtsAreaCoverageIndexTest {
 
     @Test
     void adaptiveDepth_narrowGmina_creditedOnProportionalEntry() {
-        // Próg adaptacyjny = min(100m, 0.6×130m) ≈ 78m (NIE pełne 100m). Wjazd ~85m → zaliczona.
-        // (Przy twardym 100m byłaby odrzucona — to ratuje wąskie nadrzeczne gminy nad Wisłą.)
+        // Próg adaptacyjny = min(200m, 0.6×130m) ≈ 78m (NIE pełne 200m). Wjazd ~85m → zaliczona.
+        // (Przy twardym 200m byłaby odrzucona — to ratuje wąskie nadrzeczne gminy nad Wisłą.)
         AreaCoverageIndex idx = FACTORY.build(List.of(narrowGmina()));
         List<double[]> route = List.of(new double[]{15.000629, 49.999}, new double[]{15.000629, 50.001});
         assertThat(idx.visitedAreaIds(route)).contains(1);
@@ -124,6 +126,63 @@ class JtsAreaCoverageIndexTest {
         assertThat(idx.visitedAreaIds(List.of(new double[]{15.5, 50.0}, new double[]{15.51, 50.0}))).contains(1);
     }
 
+    // === v3.15: operacje przestrzenne portu (jeden silnik, kryterium kredytu) ===
+
+    @Test
+    void creditedCrossing_longestRunThroughGmina() {
+        AreaCoverageIndex idx = FACTORY.build(List.of(squareGmina(1, 15.0, 50.0, 0.05)));
+        // Leg przelatuje gminę poziomo na lat 50 (wchodzi lewą krawędzią, wychodzi prawą).
+        List<double[]> leg = List.of(new double[]{14.9, 50.0}, new double[]{15.1, 50.0});
+        AreaCoverageIndex.Crossing c = idx.creditedCrossing(leg, 1);
+        assertThat(c).isNotNull();
+        assertThat(c.lengthKm()).isBetween(5.0, 8.0);          // szerokość skurczonej gminy ~6.8 km
+        assertThat(c.mid()[0]).isBetween(14.99, 15.01);        // środek ~ centroid lng
+        assertThat(c.mid()[1]).isCloseTo(50.0, org.assertj.core.api.Assertions.within(0.01));
+    }
+
+    @Test
+    void creditedCrossing_legOutsideGmina_null() {
+        AreaCoverageIndex idx = FACTORY.build(List.of(squareGmina(1, 15.0, 50.0, 0.05)));
+        assertThat(idx.creditedCrossing(List.of(new double[]{20.0, 60.0}, new double[]{20.1, 60.0}), 1)).isNull();
+    }
+
+    @Test
+    void creditingLegs_mapsAreaToCreditingLegIndices() {
+        AreaCoverageIndex idx = FACTORY.build(List.of(squareGmina(1, 15.0, 50.0, 0.05)));
+        List<List<double[]>> legs = List.of(
+                List.of(new double[]{14.9, 50.0}, new double[]{15.0, 50.0}),  // leg 0 — wjazd głęboko → kredytuje
+                List.of(new double[]{20.0, 60.0}, new double[]{20.1, 60.0})); // leg 1 — daleko → nie kredytuje
+        var map = idx.creditingLegs(legs);
+        assertThat(map).containsKey(1);
+        assertThat(map.get(1)).containsExactly(0);
+    }
+
+    @Test
+    void enclosedUnvisited_centerSurroundedByVisitedNeighbors() {
+        List<UnvisitedArea> grid = new java.util.ArrayList<>();
+        int id = 1;
+        for (int row = -1; row <= 1; row++) {
+            for (int col = -1; col <= 1; col++) {
+                grid.add(squareGmina(id++, 15.0 + col * 0.1, 50.0 + row * 0.1, 0.05));
+            }
+        }
+        AreaCoverageIndex idx = FACTORY.build(grid);
+        // id 5 = środek (15.0,50.0); reszta zaliczona dookoła → środek otoczony.
+        Set<Integer> visited = Set.of(1, 2, 3, 4, 6, 7, 8, 9);
+        assertThat(idx.enclosedUnvisited(visited)).containsExactly(5);
+    }
+
+    @Test
+    void unvisitedWithinKm_nearRouteOnly() {
+        AreaCoverageIndex idx = FACTORY.build(List.of(
+                squareGmina(1, 15.0, 50.0, 0.05),
+                squareGmina(2, 20.0, 60.0, 0.05)));
+        List<double[]> route = List.of(new double[]{14.8, 50.0}, new double[]{15.2, 50.0}); // przez g1
+        Set<Integer> near = idx.unvisitedWithinKm(route, Set.of(), 1.0);
+        assertThat(near).contains(1);
+        assertThat(near).doesNotContain(2);
+    }
+
     @Test
     void donutHole_cityNotShadowedByRural() {
         // Gmina wiejska = duży kwadrat z DZIURĄ w środku; gmina miejska = mały kwadrat w dziurze.
@@ -143,5 +202,44 @@ class JtsAreaCoverageIndexTest {
         UnvisitedArea band = idx.findAreaForPoint(15.07, 50.0);
         assertThat(band).isNotNull();
         assertThat(band.areaId()).isEqualTo(1);
+    }
+
+    @Test
+    void allNeighborsVisited_trueAcrossCountries() {
+        // Środek (kraj 1) otoczony 8 sąsiadami z INNEGO kraju (kraj 2). Adjacency jest geometryczna,
+        // bez filtra kraju → otoczenie liczy też sąsiadów zza granicy.
+        List<UnvisitedArea> grid = new java.util.ArrayList<>();
+        int id = 1;
+        for (int row = -1; row <= 1; row++) {
+            for (int col = -1; col <= 1; col++) {
+                int country = (row == 0 && col == 0) ? 1 : 2; // środek kraj 1, reszta kraj 2
+                grid.add(UnvisitedArea.level(id++, "g", null, 50.0 + row * 0.1, 15.0 + col * 0.1,
+                        square(15.0 + col * 0.1, 50.0 + row * 0.1, 0.05), country, 4, "gmina"));
+            }
+        }
+        AreaCoverageIndex idx = FACTORY.build(grid);
+        // id 5 = środek; sąsiedzi 1,2,3,4,6,7,8,9 (kraj 2) wszyscy zaliczeni → otoczony.
+        assertThat(idx.allNeighborsVisited(5, Set.of(1, 2, 3, 4, 6, 7, 8, 9))).isTrue();
+        // jeden sąsiad (9) niezaliczony → NIE otoczony.
+        assertThat(idx.allNeighborsVisited(5, Set.of(1, 2, 3, 4, 6, 7, 8))).isFalse();
+    }
+
+    @Test
+    void allNeighborsVisited_noFloorOnNeighborCount() {
+        // Rząd 3 gmin: środkowa ma TYLKO 2 sąsiadów. Oba zaliczone → otoczona mimo małej liczby (bez progu).
+        AreaCoverageIndex idx = FACTORY.build(List.of(
+                squareGmina(1, 14.9, 50.0, 0.05),
+                squareGmina(2, 15.0, 50.0, 0.05),
+                squareGmina(3, 15.1, 50.0, 0.05)));
+        assertThat(idx.allNeighborsVisited(2, Set.of(1, 3))).isTrue();  // 2 sąsiadów, oba → otoczona
+        assertThat(idx.allNeighborsVisited(1, Set.of(2))).isTrue();     // skrajna: 1 sąsiad zaliczony → otoczona
+        assertThat(idx.allNeighborsVisited(2, Set.of(1))).isFalse();    // sąsiad 3 niezaliczony → NIE
+    }
+
+    @Test
+    void allNeighborsVisited_falseWhenNoNeighbors() {
+        // Realna wyspa: 0 sąsiadów → nie jest „otoczona" (length>0 ją odsiewa).
+        AreaCoverageIndex idx = FACTORY.build(List.of(squareGmina(1, 15.0, 50.0, 0.05)));
+        assertThat(idx.allNeighborsVisited(1, Set.of())).isFalse();
     }
 }

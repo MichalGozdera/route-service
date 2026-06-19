@@ -20,6 +20,8 @@ public record RouteDraft(
         String groupName,
         Integer dayNumber,
         // Waypointy (gminy) jako zakodowana polyline (OPAQUE) — pozwala wczytać szkic edytowalnie.
-        String waypointsEncoded
+        String waypointsEncoded,
+        /** Snapshot statystyk z BRoutera — null dla starych draftów (sprzed feature). */
+        RouteStats stats
 ) {
 }

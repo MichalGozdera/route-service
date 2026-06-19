@@ -20,4 +20,13 @@ public interface ElevationDataSource {
     default ElevationProfile sample(List<double[]> coordinates, int maxSamples) {
         return sample(coordinates);
     }
+
+    /**
+     * Pre-fault (mmap + dotknij stron) wszystkie kafle DEM pokrywające bbox planu, by pierwsze próbkowanie
+     * wysokości w trakcie planowania nie płaciło rzadkich cold page-faultów (~100 ms w p99). Best-effort,
+     * default no-op. bbox = [minLng, minLat, maxLng, maxLat].
+     */
+    default void preload(double[] bbox) {
+        // no-op
+    }
 }

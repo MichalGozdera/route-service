@@ -140,7 +140,8 @@ public class PlanningSessionService implements PlanningSessionUseCase, UpdatePla
                     groupId,
                     groupName,
                     day.dayNumber(),
-                    encodedWaypoints
+                    encodedWaypoints,
+                    day.stats() // slice z full-route stats — FE rysuje overlay nawierzchni per dzień
             ));
             draftIds.add(created.id());
         }

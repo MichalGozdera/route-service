@@ -39,13 +39,29 @@ public class Alns2LocalSearch {
 
     /** 2-opt z jawnym oknem skanowania (j ≤ i+window). window ≥ n = pełny skan. */
     public static int twoOpt(List<double[]> route, int window) {
+        return twoOptRange(route, 0, route.size() - 2, window);
+    }
+
+    /**
+     * 2-opt na PODZAKRESIE pozycji `i ∈ [loIdx, hiIdx]` (włącznie), `j ≤ i+window`. Używany w seed grow
+     * jako tani incremental po dodaniu batch=20 obszarów — skanujemy tylko OKOLICĘ ostatnio wstawionych
+     * wp + ich sąsiadów. Pełny twoOpt(route) co 5 batchy zostaje jako bezpiecznik.
+     *
+     * <p>Dla seed grow z 34746 obszarów (Francja): pełny twoOpt 1737× w pętli batch ≈ 4 h. Incremental
+     * z window=80 wokół ostatnich +80 sąsiadów = ~6 400 par × 10 outer-pass × 100 ns ≈ 6 ms per call,
+     * razy 1737 ≈ 10 s. Pełny co 5 batchy = 347× × ~3 s = 17 min. Razem ~17 min vs 4 h.
+     */
+    public static int twoOptRange(List<double[]> route, int loIdx, int hiIdx, int window) {
         if (route.size() < 4) return 0;
+        int lo = Math.max(0, loIdx);
+        int hi = Math.min(route.size() - 2, hiIdx);
+        if (lo > hi) return 0;
         int swaps = 0;
         boolean improved = true;
         int iter = 0;
         while (improved && iter++ < MAX_ITER) {
             improved = false;
-            for (int i = 0; i < route.size() - 2; i++) {
+            for (int i = lo; i <= hi; i++) {
                 int jMax = Math.min(i + 1 + window, route.size() - 1);
                 for (int j = i + 2; j < jMax; j++) {
                     double[] a = route.get(i);
@@ -64,6 +80,14 @@ public class Alns2LocalSearch {
             }
         }
         return swaps;
+    }
+
+    /**
+     * Wygoda: 2-opt incremental — skanuje OKOLICĘ {@code fromIdx ± window}. Używany po dodaniu batch
+     * w seed grow zamiast pełnego twoOpt (który dla 30k wp robi ~3-10 s per call × 1737 batchy = h).
+     */
+    public static int twoOptIncremental(List<double[]> route, int fromIdx, int window) {
+        return twoOptRange(route, fromIdx - window, fromIdx + window, window);
     }
 
     /**

@@ -74,12 +74,64 @@ public class LocalHgtElevationClient implements ElevationDataSource {
         return sampleInternal(coordinates, Math.max(1, maxSamplesOverride));
     }
 
+    @Override
+    public void preload(double[] bbox) {
+        if (bbox == null || bbox.length < 4) {
+            return;
+        }
+        int lonMin = (int) Math.floor(bbox[0]);
+        int lonMax = (int) Math.floor(bbox[2]);
+        int latMin = (int) Math.floor(bbox[1]);
+        int latMax = (int) Math.floor(bbox[3]);
+        long tilesInBbox = (long) (latMax - latMin + 1) * (lonMax - lonMin + 1);
+        // Anty-thrash: pre-fault ma sens tylko gdy CAŁOŚĆ zmieści się w LRU. Dla wielkich plan-bboxów
+        // (np. 917 km → setki kafli) pomijamy — i tak nie zmieściłoby się (hgt-open-tiles), a routing
+        // bierze DEM on-demand z mmap+OS page-cache. Jeden log INFO zamiast zalewu.
+        if (tilesInBbox > maxOpenTiles) {
+            log.info("DEM preload: pomijam (bbox = {} kafli > hgt-open-tiles={}); DEM ładowany on-demand (mmap+page-cache)",
+                    tilesInBbox, maxOpenTiles);
+            return;
+        }
+        int opened = 0;
+        int present = 0;
+        for (int la = latMin; la <= latMax; la++) {
+            for (int lo = lonMin; lo <= lonMax; lo++) {
+                // Pomijaj brakujące kafle CICHO (nie przez tile(), które warnuje) — większość prostokąta
+                // bbox to obszary bez pokrycia HGT (poza krajem), więc warnowanie byłoby szumem.
+                if (!tilePresent(la, lo)) {
+                    continue;
+                }
+                present++;
+                Tile t = tile(la, lo);
+                if (t != null) {
+                    opened++;
+                    // dotknij kilku stron (rogi + środek) by sprowokować początkowe page-faulty zanim
+                    // pierwsze próbkowanie wysokości trafi na zimny kafel (rzadki ~100 ms spike w p99).
+                    int n = t.n();
+                    t.buf().getShort(0);
+                    t.buf().getShort((n * n - 1) * 2);
+                    t.buf().getShort(((n / 2) * n + n / 2) * 2);
+                }
+            }
+        }
+        log.info("DEM preload: otwarto {} kafli HGT (z {} obecnych w bboxie)", opened, present);
+    }
+
+    /** Czy kafel HGT dla (tLat,tLon) istnieje na dysku — bez mmap i bez warnowania (do preloadu). */
+    private boolean tilePresent(int tLat, int tLon) {
+        String fn = DemTileName.of(tLon, tLat).name() + ".hgt";
+        return Files.isRegularFile(hgtDir.resolve(fn));
+    }
+
     private ElevationProfile sampleInternal(List<double[]> coordinates, int maxSamples) {
         List<double[]> sampled = downsample(coordinates, maxSamples);
         List<double[]> profile = new ArrayList<>(sampled.size());
         double cumDist = 0;
-        int gain = 0;
-        int loss = 0;
+        // CRITICAL: gain/loss jako DOUBLE (nie int). Stare `gain += (int) delta` truncowało każdą deltę
+        // < 1m do 0. Przy gęstym samplingu (~5000 coords/dzień) deltas avg ~0.5m → utrata ~50% gain.
+        // Stąd backend ~1500m vs front ~2000m dla tego samego dnia. Akumulujemy w double, round na końcu.
+        double gain = 0;
+        double loss = 0;
         int minEle = Integer.MAX_VALUE;
         int maxEle = Integer.MIN_VALUE;
         double[] prev = sampled.get(0);
@@ -91,8 +143,8 @@ public class LocalHgtElevationClient implements ElevationDataSource {
             if (i > 0) {
                 cumDist += haversineMeters(prev[0], prev[1], cur[0], cur[1]);
                 double delta = ele - prevEle;
-                if (delta > 0) gain += (int) delta;
-                else loss += (int) -delta;
+                if (delta > 0) gain += delta;
+                else loss += -delta;
             }
             profile.add(new double[]{cumDist, ele});
             int eleInt = (int) Math.round(ele);
@@ -106,7 +158,7 @@ public class LocalHgtElevationClient implements ElevationDataSource {
             minEle = 0;
             maxEle = 0;
         }
-        return new ElevationProfile(profile, gain, loss, minEle, maxEle);
+        return new ElevationProfile(profile, (int) Math.round(gain), (int) Math.round(loss), minEle, maxEle);
     }
 
     /** Wysokość (m) w (lat, lon) — biliniowa interpolacja z kafla HGT; brak kafla → 0. */

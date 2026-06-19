@@ -84,7 +84,7 @@ public interface RoutingApi {
         getRequest().ifPresent(request -> {
             for (MediaType mediaType: MediaType.parseMediaTypes(request.getHeader("Accept"))) {
                 if (mediaType.isCompatibleWith(MediaType.valueOf("application/json"))) {
-                    String exampleString = "{ \"distanceKm\" : 6.027456183070403, \"geometry\" : { \"coordinates\" : [ [ 0.8008281904610115, 0.8008281904610115, 0.8008281904610115 ], [ 0.8008281904610115, 0.8008281904610115, 0.8008281904610115 ] ], \"type\" : \"LineString\" } }";
+                    String exampleString = "{ \"stats\" : { \"roadMeters\" : { \"key\" : 5 }, \"totalMeters\" : 1, \"surfaceSpans\" : [ { \"code\" : \"code\", \"endIdx\" : 9, \"startIdx\" : 7 }, { \"code\" : \"code\", \"endIdx\" : 9, \"startIdx\" : 7 } ], \"roadSpans\" : [ { \"code\" : \"code\", \"endIdx\" : 9, \"startIdx\" : 7 }, { \"code\" : \"code\", \"endIdx\" : 9, \"startIdx\" : 7 } ], \"surfaceMeters\" : { \"key\" : 5 }, \"smoothnessMeters\" : { \"key\" : 2 }, \"smoothnessSpans\" : [ { \"code\" : \"code\", \"endIdx\" : 9, \"startIdx\" : 7 }, { \"code\" : \"code\", \"endIdx\" : 9, \"startIdx\" : 7 } ] }, \"distanceKm\" : 6.027456183070403, \"geometry\" : { \"coordinates\" : [ [ 0.8008281904610115, 0.8008281904610115, 0.8008281904610115 ], [ 0.8008281904610115, 0.8008281904610115, 0.8008281904610115 ] ], \"type\" : \"LineString\" } }";
                     ApiUtil.setExampleResponse(request, "application/json", exampleString);
                     break;
                 }

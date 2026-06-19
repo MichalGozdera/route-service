@@ -110,17 +110,18 @@ class SnapToBaselineTest {
     }
 
     @Test
-    void polylineBbox_returnsBboxWithMargin() {
+    void polylineBbox_returnsBboxWithSeparateLngLatMargins() {
         List<double[]> poly = List.of(
                 new double[]{14.0, 50.0},
                 new double[]{16.0, 51.0},
                 new double[]{18.0, 50.5}
         );
-        double[] bbox = PlanningOrchestrationService.polylineBbox(poly, 0.5);
-        assertThat(bbox[0]).isEqualTo(13.5);  // minLng - margin
-        assertThat(bbox[1]).isEqualTo(49.5);  // minLat
-        assertThat(bbox[2]).isEqualTo(18.5);  // maxLng
-        assertThat(bbox[3]).isEqualTo(51.5);  // maxLat
+        // Osobne marginesy lng/lat — odzwierciedla rzeczywistość: 1° lng ≠ 1° lat w km.
+        double[] bbox = PlanningOrchestrationService.polylineBbox(poly, 0.8, 0.5);
+        assertThat(bbox[0]).isEqualTo(13.2);  // minLng - marginLng (14.0 - 0.8)
+        assertThat(bbox[1]).isEqualTo(49.5);  // minLat - marginLat (50.0 - 0.5)
+        assertThat(bbox[2]).isEqualTo(18.8);  // maxLng + marginLng (18.0 + 0.8)
+        assertThat(bbox[3]).isEqualTo(51.5);  // maxLat + marginLat (51.0 + 0.5)
     }
 
     @Test

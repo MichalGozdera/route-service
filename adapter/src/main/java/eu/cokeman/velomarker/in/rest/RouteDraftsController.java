@@ -60,7 +60,8 @@ public class RouteDraftsController implements DraftsApi {
                 req.getGroupId(),
                 req.getGroupName(),
                 req.getDayNumber(),
-                req.getWaypoints()
+                req.getWaypoints(),
+                mapper.fromStatsDto(req.getStats())
         ));
         return ResponseEntity.status(201).body(mapper.toResponseDto(created));
     }
@@ -86,7 +87,8 @@ public class RouteDraftsController implements DraftsApi {
                 req.getGroupId(),
                 req.getGroupName(),
                 req.getDayNumber(),
-                req.getWaypoints()
+                req.getWaypoints(),
+                mapper.fromStatsDto(req.getStats())
         ));
         return ResponseEntity.ok(mapper.toResponseDto(updated));
     }
@@ -132,6 +134,7 @@ public class RouteDraftsController implements DraftsApi {
                     item.setDayNumber(d.dayNumber() != null ? d.dayNumber() : 0);
                     item.setGeometryEncoded(Polyline3DCodec.encode(d.coordinates()));
                     item.setDistanceKm(d.distanceKm());
+                    item.setStats(mapper.toStatsDto(d.stats()));
                     return item;
                 })
                 .toList();
