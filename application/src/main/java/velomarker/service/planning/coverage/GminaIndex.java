@@ -1,4 +1,4 @@
-package velomarker.service.planning.alns2;
+package velomarker.service.planning.coverage;
 
 import velomarker.entity.planning.UnvisitedArea;
 import velomarker.port.out.planning.AreaCoverageIndex;
@@ -32,21 +32,16 @@ public class GminaIndex {
     private final List<UnvisitedArea> allAreas;
     private final AreaCoverageIndex coverage;
     private final Map<Integer, double[][]> samplePointsCache = new HashMap<>();
-    /** Cache dla {@link #grazePointsFor} — płytkie entry-pointy (~280m) do re-snapu „przy granicy". */
-    private final Map<Integer, double[][]> grazePointsCache = new HashMap<>();
-    private final int samplePointsPerGmina;
+    /** Ile entry-pointów (ring vertices) generować per gmina — fallback dla null-MIC + retry wysp. */
+    private static final int SAMPLE_POINTS = 8;
 
     /** Głębokość wjazdu standardowego entry-pointu (deg, ~500m): BRouter czasem ślizga się po granicy. */
     private static final double SAMPLE_OFFSET_DEG = 0.0045;
-    /** Płytka „graź" (deg, ~280m): tuż nad progiem kredytu (≤200m) + margines na snap-do-drogi. Re-snap
-     *  ma siadać przy granicy gdzie ślad wjeżdża, NIE 500m w głąb (oszczędza km, zwalnia budżet). */
-    private static final double GRAZE_OFFSET_DEG = 0.0025;
     /** areaId → id-ki HOLE_KNN najbliższych obszarów (po centroidzie). Leniwie liczone raz (O(n²)). */
     private Map<Integer, int[]> kNearestCache;
 
-    public GminaIndex(List<UnvisitedArea> areas, int samplePointsPerGmina, AreaCoverageIndex coverage) {
+    public GminaIndex(List<UnvisitedArea> areas, AreaCoverageIndex coverage) {
         this.allAreas = new ArrayList<>(areas);
-        this.samplePointsPerGmina = Math.max(1, samplePointsPerGmina);
         this.coverage = coverage;
     }
 
@@ -141,22 +136,13 @@ public class GminaIndex {
         return samplePointsCache.computeIfAbsent(area.areaId(), id -> computeSamples(area, SAMPLE_OFFSET_DEG));
     }
 
-    /**
-     * Jak {@link #samplePointsFor}, ale **płytkie** kandydaty (~280m w głąb zamiast 500m) — tuż nad progiem
-     * kredytu. Re-snap używa ich, by waypoint siadał PRZY GRANICY gdzie ślad wjeżdża (nie nurkował 500m w środek
-     * i wracał = zbędne km). Transit-guard w re-snapie cofa do oryginału te, które wyszły za płytko (gmina spadła).
-     */
-    public double[][] grazePointsFor(UnvisitedArea area) {
-        return grazePointsCache.computeIfAbsent(area.areaId(), id -> computeSamples(area, GRAZE_OFFSET_DEG));
-    }
-
     /** Wspólny rdzeń: weź co (ring.length / N) vertex, przesuń o {@code offsetDeg} w kierunku centroidu. */
     private double[][] computeSamples(UnvisitedArea area, double offsetDeg) {
         double[][] ring = area.ring();
         if (ring == null || ring.length == 0) {
             return new double[][]{{area.lng(), area.lat()}};
         }
-        int n = Math.min(samplePointsPerGmina, ring.length);
+        int n = Math.min(SAMPLE_POINTS, ring.length);
         double[][] pts = new double[n][];
         int step = Math.max(1, ring.length / n);
         double cLng = area.lng();

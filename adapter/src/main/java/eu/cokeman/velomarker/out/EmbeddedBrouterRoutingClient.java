@@ -254,7 +254,7 @@ public class EmbeddedBrouterRoutingClient implements BrouterRoutingClient {
             // tuneli. RouteServer kontenera BRouter robił to per query param "messages=1".
             // Wszystkie te flagi DROGIE per-segment (BRouter buduje message strings + turn instructions
             // + dodatkowe tagi z OSM); włączamy je TYLKO gdy faktycznie zużyjemy wynik. Dla intermediate
-            // ALNS2 calls (~10k+ per coverage plan) to oszczędność ~50-100ms per call.
+            // Coverage calls (~10k+ per coverage plan) to oszczędność ~50-100ms per call.
             rc.showspeed = true;
             rc.showSpeedProfile = true;
             rc.showTime = true;
@@ -306,7 +306,7 @@ public class EmbeddedBrouterRoutingClient implements BrouterRoutingClient {
 
         if (!computeStats) {
             // Skip cały stats + flatSpans build. FlatSpans potrzebne tylko do korekcji wysokości tuneli,
-            // a planning ALNS2 probing calls geometrii nie używają do elevation — używają jej do oceny
+            // a planning Coverage probing calls geometrii nie używają do elevation — używają jej do oceny
             // cost'u w cache. Zostawiamy empty by oszczędzić ~kilka ms × 10k calls = sekundy CPU.
             return new RouteCalculation(coordList, distMeters / 1000.0, List.of(), RouteStats.empty());
         }

@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * </pre>
  *
  * <p>Wszystkie {@code add(...)} są synchronized — bezpieczne dla concurrent BRouter calls
- * (np. ALNS2/3 wykonuje paralelne calls z executor service).
+ * (np. Coverage/3 wykonuje paralelne calls z executor service).
  */
 public class RouteStatsAccumulator {
 

@@ -428,10 +428,10 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
         Set<Integer> seen220 = new HashSet<>(); // RUNDA 57: gmina ma już placement na PIERWSZYM −220 (final, nie nadpisywać)
         long hbT0 = System.nanoTime();
         for (int i = 0; i < tc.length; i++) {
-            if (i % 5000 == 0 && i > 0) {
-                log.info("ALNS2 firstBufferEntryPoints HB: pt {}/{}, gmin={}, dt={}ms",
-                        new Object[]{i, tc.length, result.size(), (System.nanoTime() - hbT0) / 1_000_000});
-            }
+//            if (i % 5000 == 0 && i > 0) {
+//                log.info("Coverage firstBufferEntryPoints HB: pt {}/{}, gmin={}, dt={}ms",
+//                        new Object[]{i, tc.length, result.size(), (System.nanoTime() - hbT0) / 1_000_000});
+//            }
             Coordinate c = tc[i];
             @SuppressWarnings("unchecked")
             List<AreaGeom> cands = tree.query(new Envelope(c));

@@ -95,14 +95,8 @@ public class PlanningOrchestrationService {
     private final WaypointSelector waypointSelector;
     private final ProfileMapper profileMapper;
     private final DaySplitter daySplitter;
-    /** Feature flag: greedy (obecny TRIM/GROW/DEDUP) vs alns (Adaptive Large Neighborhood Search). */
-    private final String algorithm;
-    /** ALNS post-processor (opcjonalny, wstrzykiwany gdy planning.algorithm=alns). */
-    private final AlnsCoveragePlanner alnsPlanner;
-    /** TSP cheapest insertion planner (opcjonalny, wstrzykiwany gdy planning.algorithm=tsp). */
-    private final velomarker.service.planning.tsp.TspCoveragePlanner tspPlanner;
-    /** ALNS2 Orienteering/MCP planner (iter 10, planning.algorithm=alns2). */
-    private final velomarker.service.planning.alns2.AlnsCoveragePlanner2 alns2Planner;
+    /** Planner pokrycia (seed + compact-loop) — COVERAGE intent. */
+    private final velomarker.service.planning.coverage.CoveragePlanner coveragePlanner;
     private PlanProgressSink progressSink; // setter-injected by SpringAppConfig (avoids cyclic dep)
 
     /**
@@ -124,10 +118,7 @@ public class PlanningOrchestrationService {
                                         WaypointSelector waypointSelector,
                                         ProfileMapper profileMapper,
                                         DaySplitter daySplitter,
-                                        String algorithm,
-                                        AlnsCoveragePlanner alnsPlanner,
-                                        velomarker.service.planning.tsp.TspCoveragePlanner tspPlanner,
-                                        velomarker.service.planning.alns2.AlnsCoveragePlanner2 alns2Planner) {
+                                        velomarker.service.planning.coverage.CoveragePlanner coveragePlanner) {
         this.sessionRepository = sessionRepository;
         this.dayRepository = dayRepository;
         this.visitClient = visitClient;
@@ -138,15 +129,9 @@ public class PlanningOrchestrationService {
         this.waypointSelector = waypointSelector;
         this.profileMapper = profileMapper;
         this.daySplitter = daySplitter;
-        this.algorithm = algorithm != null ? algorithm.toLowerCase() : "greedy";
-        this.alnsPlanner = alnsPlanner;
-        this.tspPlanner = tspPlanner;
-        this.alns2Planner = alns2Planner;
-        log.info("PlanningOrchestrationService initialized with algorithm={} (alns={}, tsp={}, alns2={})",
-                new Object[]{this.algorithm,
-                        alnsPlanner != null ? "present" : "absent",
-                        tspPlanner != null ? "present" : "absent",
-                        alns2Planner != null ? "present" : "absent"});
+        this.coveragePlanner = coveragePlanner;
+        log.info("PlanningOrchestrationService initialized (coverage planner {})",
+                coveragePlanner != null ? "present" : "absent");
     }
 
     /** Setter injection — wstrzykiwane PO utworzeniu obu beanów (rozwiązuje cykl OrchestrationService ↔ PlanTaskService). */
@@ -192,96 +177,44 @@ public class PlanningOrchestrationService {
 
             CoverageBuildInfo coverageInfo = null;
             List<Waypoint> allWaypoints;
-            // ALNS / TSP BRANCH: gdy algorithm=alns | tsp + COVERAGE -> robi pełen routing
-            // (z BRouter incremental) i ZWRACA gotowy RouteCalculation. Pomijamy
-            // routeWithTrimAndDedup poniej. Greedy result jest CIEPŁYM STARTEM.
-            AlnsCoveragePlanner.AlnsResult alnsResult = null;
-            velomarker.service.planning.tsp.TspCoveragePlanner.TspResult tspResult = null;
-            velomarker.service.planning.alns2.AlnsCoveragePlanner2.Alns2Result alns2Result = null;
+            // COVERAGE BRANCH: planner pokrycia (seed + compact-loop) ZWRACA gotowy RouteCalculation,
+            // pomijamy routeWithTrimAndDedup poniżej. Greedy fallback tylko gdy planner zwróci null.
+            velomarker.service.planning.coverage.CoveragePlanner.CoverageResult coverageResult = null;
             switch (session.intent()) {
                 case AB -> allWaypoints = buildAbWaypoints(prefs);
                 case FREESTYLE -> allWaypoints = buildFreestyleWaypoints(prefs);
                 case COVERAGE -> {
                     coverageInfo = buildCoverageWaypointsWithInfo(taskId, prefs, bearerToken, calibrator);
                     allWaypoints = coverageInfo.waypoints;
-                    if ("tsp".equals(algorithm) && tspPlanner != null) {
-                        setPhase(taskId, "tsp-cheapest-insertion");
+                    if (coveragePlanner != null) {
+                        setPhase(taskId, "coverage-planning");
                         checkCancel(taskId);
                         java.util.function.BiFunction<List<Waypoint>, String, RouteCalculation> brouterFn =
                                 (wps, prof) -> calculateRouteChunked(taskId,
                                         wps.stream().map(Waypoint::toLngLat).toList(), prof, false);
-                        // brouterFinal — TYLKO dla finalnego recompute przed return z plannera.
-                        // computeStats=true → zwracany RouteCalculation ma pelne stats (surface/road/
-                        // smoothness + spans) potrzebne dla per-day slicing w orchestratorze.
-                        java.util.function.BiFunction<List<Waypoint>, String, RouteCalculation> brouterFinal =
-                                (wps, prof) -> calculateRouteChunked(taskId,
-                                        wps.stream().map(Waypoint::toLngLat).toList(), prof, true);
-                        // Climb-aware GROW: TspCoveragePlanner moze rozszerzyc km budget jesli wznios
-                        // nie jest wykorzystany. Callback zwraca gainM dla geometrii.
-                        java.util.function.Function<List<double[]>, Integer> elevationGainFn =
-                                geom -> elevation.sample(geom).gainM();
-                        tspResult = tspPlanner.plan(taskId, coverageInfo, prefs, profile,
-                                calibrator, brouterFn, brouterFinal, this::checkCancel, elevationGainFn);
-                        if (tspResult != null) {
-                            log.info("TSP done: picked={} waypoints={} realKm={}",
-                                    new Object[]{tspResult.picked().size(), tspResult.finalWaypoints().size(),
-                                            Math.round(tspResult.calc().distanceKm())});
-                            allWaypoints = tspResult.finalWaypoints();
-                            // Iter 9: pipeline TSP→ALNS USUNIĘTY. `algorithm=tsp` = czyste TSP,
-                            // `algorithm=alns` = czyste ALNS. Kombinacje nie pomagały z nawrotkami.
-                        } else {
-                            log.warn("TSP returned null -- fallback do greedy + routeWithTrimAndDedup");
-                        }
-                    } else if ("alns".equals(algorithm) && alnsPlanner != null) {
-                        setPhase(taskId, "alns-optimizing");
-                        checkCancel(taskId);
-                        // Wstrzykujemy BRouter callable (binds taskId + profile)
-                        final String alnsProfile = profile;
-                        java.util.function.BiFunction<List<Waypoint>, String, RouteCalculation> brouterFn =
-                                (wps, prof) -> calculateRouteChunked(taskId,
-                                        wps.stream().map(Waypoint::toLngLat).toList(), prof, false);
-                        java.util.function.BiFunction<List<Waypoint>, String, RouteCalculation> brouterFinal =
-                                (wps, prof) -> calculateRouteChunked(taskId,
-                                        wps.stream().map(Waypoint::toLngLat).toList(), prof, true);
-                        alnsResult = alnsPlanner.optimize(taskId, coverageInfo, prefs, profile,
-                                calibrator, brouterFn, brouterFinal, this::checkCancel);
-                        if (alnsResult != null) {
-                            log.info("ALNS branch: bypassing routeWithTrimAndDedup, using ALNS result directly");
-                            allWaypoints = alnsResult.finalWaypoints();
-                        } else {
-                            log.warn("ALNS returned null -- fallback do greedy + routeWithTrimAndDedup");
-                        }
-                    } else if ("alns".equals(algorithm) && alnsPlanner == null) {
-                        log.warn("planning.algorithm=alns ale AlnsCoveragePlanner bean nie wstrzykniety -- fallback do greedy");
-                    } else if (("alns2".equals(algorithm) || "alns3".equals(algorithm)) && alns2Planner != null) {
-                        // ALNS2 (projection) / ALNS3 (serpentine space-filling) — ten sam planner,
-                        // tryb wybrany w SpringAppConfig wg planning.algorithm.
-                        setPhase(taskId, "alns2-orienteering");
-                        checkCancel(taskId);
-                        java.util.function.BiFunction<List<Waypoint>, String, RouteCalculation> brouterFn =
-                                (wps, prof) -> calculateRouteChunked(taskId,
-                                        wps.stream().map(Waypoint::toLngLat).toList(), prof, false);
+                        // brouterFinal — finalny recompute z computeStats=true (surface/road/smoothness +
+                        // spans potrzebne dla per-day slicing w orchestratorze).
                         java.util.function.BiFunction<List<Waypoint>, String, RouteCalculation> brouterFinal =
                                 (wps, prof) -> calculateRouteChunked(taskId,
                                         wps.stream().map(Waypoint::toLngLat).toList(), prof, true);
                         // Pool = wszystkie areas z bbox-filtered coverageInfo (picked + reserve)
-                        List<UnvisitedArea> alns2Pool = new ArrayList<>();
+                        List<UnvisitedArea> coveragePool = new ArrayList<>();
                         if (coverageInfo.pickedCandidates() != null) {
-                            for (AreaCandidate c : coverageInfo.pickedCandidates()) alns2Pool.add(c.area);
+                            for (AreaCandidate c : coverageInfo.pickedCandidates()) coveragePool.add(c.area);
                         }
                         if (coverageInfo.reserveCandidates() != null) {
-                            for (AreaCandidate c : coverageInfo.reserveCandidates()) alns2Pool.add(c.area);
+                            for (AreaCandidate c : coverageInfo.reserveCandidates()) coveragePool.add(c.area);
                         }
-                        log.info("ALNS2: pool={} areas (z greedy bbox-filtered)", alns2Pool.size());
-                        alns2Result = alns2Planner.plan(taskId, alns2Pool, coverageInfo.baselineGeometry(), prefs, profile,
+                        log.info("Coverage planner: pool={} areas (z greedy bbox-filtered)", coveragePool.size());
+                        coverageResult = coveragePlanner.plan(taskId, coveragePool, coverageInfo.baselineGeometry(), prefs, profile,
                                 brouterFn, brouterFinal, this::checkCancel);
-                        if (alns2Result != null) {
-                            log.info("ALNS2 branch: visited={} iters={} brouterCalls={}",
-                                    new Object[]{alns2Result.visited().size(),
-                                            alns2Result.iterations(), alns2Result.brouterCalls()});
-                            allWaypoints = alns2Result.finalWaypoints();
+                        if (coverageResult != null) {
+                            log.info("Coverage planner: visited={} iters={} brouterCalls={}",
+                                    new Object[]{coverageResult.visited().size(),
+                                            coverageResult.iterations(), coverageResult.brouterCalls()});
+                            allWaypoints = coverageResult.finalWaypoints();
                         } else {
-                            log.warn("ALNS2 returned null -- fallback do greedy");
+                            log.warn("Coverage planner returned null -- fallback do greedy");
                         }
                     }
                 }
@@ -298,35 +231,22 @@ public class PlanningOrchestrationService {
             setPhase(taskId, "routing-brouter");
             checkCancel(taskId);
             RouteCalculation full;
-            if (tspResult != null) {
-                full = tspResult.calc();
-                allWaypoints = tspResult.finalWaypoints();
-                log.info("TSP bypass: actualKm={} picked={} brouterCalls={} inserts={}",
-                        new Object[]{Math.round(full.distanceKm()), tspResult.picked().size(),
-                                tspResult.brouterCalls(), tspResult.inserts()});
-            } else if (alnsResult != null) {
-                // ALNS BRANCH: pomin TRIM/GROW/DEDUP -- ALNS dal nam GOTOWY route.
-                full = alnsResult.calc();
-                allWaypoints = alnsResult.finalWaypoints();
-                log.info("ALNS bypass: actualKm={} picked={} brouterCalls={} accepted={}",
-                        new Object[]{Math.round(full.distanceKm()), alnsResult.picked().size(),
-                                alnsResult.brouterCalls(), alnsResult.accepted()});
-            } else if (alns2Result != null) {
-                // ALNS2 BRANCH (Iter 10): Orienteering/MCP wynik
-                full = alns2Result.calc();
-                allWaypoints = alns2Result.finalWaypoints();
-                log.info("ALNS2 bypass: actualKm={} visited={} brouterCalls={} accepted={}",
-                        new Object[]{Math.round(full.distanceKm()), alns2Result.visited().size(),
-                                alns2Result.brouterCalls(), alns2Result.accepted()});
+            if (coverageResult != null) {
+                // COVERAGE: planner dał GOTOWY route — pomijamy TRIM/GROW/DEDUP.
+                full = coverageResult.calc();
+                allWaypoints = coverageResult.finalWaypoints();
+                log.info("Coverage planner bypass: actualKm={} visited={} brouterCalls={} accepted={}",
+                        new Object[]{Math.round(full.distanceKm()), coverageResult.visited().size(),
+                                coverageResult.brouterCalls(), coverageResult.accepted()});
             } else {
-                // GREEDY BRANCH: BRouter chunked + trim loop (max 8 prób)
+                // AB / FREESTYLE / coverage-fallback: BRouter chunked + trim loop (max 8 prób)
                 TraceResult traced = routeWithTrimAndDedup(taskId, prefs, allWaypoints, coverageInfo, profile,
                         calibrator, ANCHOR_REACHABILITY_KM);
                 full = traced.calc;
                 allWaypoints = traced.finalWaypoints;
             }
-            // Stats per-day slicing dziala czysto: TSP/ALNS/ALNS2 same robia final recompute z brouterFinal
-            // przed return (zob. brouterFinal w lambdas powyzej), wiec `full.stats()` ma spans z pelnej trasy.
+            // Stats per-day slicing działa czysto: planner sam robi final recompute z brouterFinal
+            // przed return (zob. brouterFinal w lambdach powyżej), więc `full.stats()` ma spans z pełnej trasy.
 
             setPhase(taskId, "sampling-elevation");
             checkCancel(taskId);
@@ -459,7 +379,7 @@ public class PlanningOrchestrationService {
                             s.budgetKm(), s.verdict(),
                             s.poolSize(), s.initialPoolSize(),
                             s.reconcileIters(), s.reconcileTrims(), s.reconcileGrows()});
-            // Effort per dzień = km + 0.1 × climb_m (alpha jak ALNS2). Pokazuje czy DaySplitter dobrze
+            // Effort per dzień = km + 0.1 × climb_m (alpha jak Coverage). Pokazuje czy DaySplitter dobrze
             // wyrównuje. Idealnie wszystkie dni ≈ totalEffort/N. Spread > 5% = sygnał problemu.
             StringBuilder dayDump = new StringBuilder();
             for (PlanningSessionDay d : days) {
@@ -806,12 +726,12 @@ public class PlanningOrchestrationService {
         // 30 km²/5km NN) Kreissitz dostaje ~12× więcej pozycji = realny balans geograficzny niezależny
         // od fizycznej powierzchni gminy. Dawniej balansowaliśmy po areaKm² — działało dla Landkreis
         // (large+sparse) vs obec (small+dense), ale myliło Kreissitz (small+sparse) z obec.
-        // avgNN_cat precomputowane raz, spójne z reward calibration w AlnsCoveragePlanner2 (~linia 1995).
+        // avgNN_cat precomputowane raz, spójne z reward calibration w CoveragePlanner (~linia 1995).
         java.util.Map<String, Double> avgNNcat = new java.util.HashMap<>();
         for (var e : bucketed.entrySet()) {
             List<velomarker.entity.planning.UnvisitedArea> catAreas = e.getValue().stream()
                     .map(c -> c.area).toList();
-            double nn = velomarker.service.planning.alns2.GminaIndex.avgNearestNeighborDistKm(catAreas);
+            double nn = velomarker.service.planning.coverage.GminaIndex.avgNearestNeighborDistKm(catAreas);
             if (nn <= 0) {
                 // Fallback dla kategorii z <2 obszarami (avgNN==0) — sqrt(area) jako proxy spacing,
                 // żeby kategoria nie miała wagi 0 i nie była wieczym min (zawsze wybierana).
@@ -2004,7 +1924,7 @@ public class PlanningOrchestrationService {
     /**
      * @param computeStats {@code true} = agreguj per-chunk stats + loguj agregat całej trasy.
      *        {@code false} = skip stats wszędzie (per-chunk routeUseCase.calculate też dostaje false)
-     *        — używane przez ALNS2/TSP/ALNS3 dla intermediate probing (~10k+ calls per coverage plan)
+     *        — używane przez Coverage/TSP/Coverage dla intermediate probing (~10k+ calls per coverage plan)
      *        gdzie stats nie są używane a logi zalewały konsolę.
      */
     RouteCalculation calculateRouteChunked(UUID taskId, List<double[]> waypoints, String profile, boolean computeStats) {

@@ -1,4 +1,4 @@
-package velomarker.service.planning.alns2;
+package velomarker.service.planning.coverage;
 
 import org.junit.jupiter.api.Test;
 import velomarker.entity.planning.UnvisitedArea;
@@ -30,7 +30,7 @@ class GminaIndexTest {
         // samples = ring vertices przesunięte ~500m w kierunku centroidu (NIE centroid jako pierwszy
         // sample) — żeby trasa dotknęła krawędzi i wjechała w głąb, nie jechała do środka gminy.
         UnvisitedArea g = squareGmina(1, 15.0, 50.0, 0.05);
-        GminaIndex idx = new GminaIndex(List.of(g), 5, null);
+        GminaIndex idx = new GminaIndex(List.of(g), null);
         double[][] samples = idx.samplePointsFor(g);
         assertThat(samples.length).isLessThanOrEqualTo(5);
         assertThat(samples.length).isGreaterThan(0);
@@ -44,7 +44,7 @@ class GminaIndexTest {
     @Test
     void distToRoute_small_whenRouteThroughCorner() {
         UnvisitedArea g = squareGmina(1, 15.0, 50.0, 0.05);
-        GminaIndex idx = new GminaIndex(List.of(g), 5, null);
+        GminaIndex idx = new GminaIndex(List.of(g), null);
         // Route przez corner (15.05, 49.95) = ring vertex. Entry-point sample ~500m od niego.
         List<double[]> route = List.of(
                 new double[]{14.5, 50.0},
@@ -57,7 +57,7 @@ class GminaIndexTest {
     @Test
     void distToRoute_far_whenOutside() {
         UnvisitedArea g = squareGmina(1, 15.0, 50.0, 0.05);
-        GminaIndex idx = new GminaIndex(List.of(g), 5, null);
+        GminaIndex idx = new GminaIndex(List.of(g), null);
         // Route 0.5° na zachód = ~35 km
         List<double[]> route = List.of(
                 new double[]{14.0, 50.0},

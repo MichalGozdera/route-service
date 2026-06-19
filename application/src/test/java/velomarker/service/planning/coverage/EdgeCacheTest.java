@@ -1,4 +1,4 @@
-package velomarker.service.planning.alns2;
+package velomarker.service.planning.coverage;
 
 import org.junit.jupiter.api.Test;
 

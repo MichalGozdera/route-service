@@ -1,4 +1,4 @@
-package velomarker.service.planning.alns2;
+package velomarker.service.planning.coverage;
 
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
@@ -8,13 +8,13 @@ import java.util.function.Function;
 /**
  * Cache wyników BRouter calls dla pojedynczych edge'y (A→B).
  *
- * <p>ALNS2 robi SA z 200 iteracjami, każda destroy/repair sprawdza wiele wstawek.
+ * <p>Coverage robi SA z 200 iteracjami, każda destroy/repair sprawdza wiele wstawek.
  * Każda wstawka X między A i B wymaga 3 BRouter calls (A→X, X→B, A→B). Bez cache to
  * 10k+ BRouter calls per plan = nie do zaakceptowania. Z cache: setki unique calls.
  *
  * <p>Klucz = 5-decimal precision (~1m). Insertion-safe (ConcurrentHashMap).
  *
- * @see Alns2Parameters
+ * @see CoveragePlannerParameters
  */
 public class EdgeCache {
 

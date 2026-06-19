@@ -63,7 +63,7 @@ route:
     probe-timeout-ms: ${ROUTE_BROUTER_PROBE_TIMEOUT_MS:0}
   calculate:
     # Match z BROUTER_WORKERS w brouter container (Iter 12: 10 = rdzenie hosta; też = brouterParallelism
-    # plannera ALNS2/3 dla równoległego pre-warm krawędzi). ≤ BROUTER_WORKERS by uniknąć 429.
+    # plannera Coverage/3 dla równoległego pre-warm krawędzi). ≤ BROUTER_WORKERS by uniknąć 429.
     max-concurrent: ${ROUTE_CALCULATE_MAX_CONCURRENT:10}
     # Czas oczekiwania na slot zanim 429
     semaphore-wait-seconds: ${ROUTE_CALCULATE_WAIT_SECONDS:5}
@@ -91,80 +91,12 @@ jwt:
 planning:
   visit-service:
     base-url: ${PLANNING_VISIT_SERVICE_URL:http://localhost:8082}
-  # COVERAGE algorithm: tsp (default) | alns | alns2 | alns3 | greedy
-  # tsp    = cheapest insertion TSP heuristic + spatial grid index.
-  # alns   = destroy/repair/SA z greedy warm start.
-  # alns2  = Orienteering/MCP solver, PROJECTION (cienki korytarz, długi baseline).
-  # alns3  = jak alns2 ale SERPENTINE space-filling (gruby pas, short-baseline-big-budget).
-  # greedy = legacy TRIM/GROW/DEDUP.
-  algorithm: ${PLANNING_ALGORITHM:alns3}
-  alns:
-    iterations: ${PLANNING_ALNS_ITERATIONS:200}
-    destroy-ratio: ${PLANNING_ALNS_DESTROY_RATIO:0.20}
-    lambda-budget: ${PLANNING_ALNS_LAMBDA_BUDGET:1.0}
-    lambda-loops: ${PLANNING_ALNS_LAMBDA_LOOPS:5.0}
-    lambda-balance: ${PLANNING_ALNS_LAMBDA_BALANCE:0.5}
-    initial-temperature-ratio: ${PLANNING_ALNS_INITIAL_T:0.1}
-    cooling-rate: ${PLANNING_ALNS_COOLING:0.995}
-    no-improve-stop: ${PLANNING_ALNS_NO_IMPROVE_STOP:50}
-    proxy-skip-threshold: ${PLANNING_ALNS_PROXY_SKIP:2.0}
-    max-time-seconds: ${PLANNING_ALNS_MAX_TIME:240}
-  alns2:
-    # Effort model: 1 m wzniosu = ALPHA km. Profile-independent.
-    alpha-km-per-meter: ${PLANNING_ALNS2_ALPHA:0.1}
-    # Gmina "blisko trasy" — w repair brane są tylko obszary z dist ≤ R_NEAR
-    r-near-km: ${PLANNING_ALNS2_R_NEAR:5.0}
-    # Mnożnik kary za dziurę gęstą (na reward obszaru); <1 by coverage dominowało nad karą
-    beta: ${PLANNING_ALNS2_BETA:0.3}
-    # SA: temperature schedule
-    t-start: ${PLANNING_ALNS2_T_START:10.0}
-    cooling-rate: ${PLANNING_ALNS2_COOLING:0.95}
-    max-iters: ${PLANNING_ALNS2_MAX_ITERS:200}
-    no-improve-stop: ${PLANNING_ALNS2_NO_IMPROVE:50}
-    # Per-gmina sample points dla insertion (entry-points = ring vertices offset 500m do centroidu).
-    # 8 (z 5): więcej kandydatów = większa szansa trafić w drogę obrzeżną w regionach las/woda
-    # (Puszcza Notecka, pojezierze) gdzie centroid/sample lądują poza siecią dróg → mniej target-island.
-    sample-points-per-gmina: ${PLANNING_ALNS2_SAMPLE_PTS:8}
-    # Reward proporcji (Iter 11): avg nearest-neighbor dist / REFERENCE. PL gmina NN ~7km → reward 0.7.
-    reward-reference-dist-km: ${PLANNING_ALNS2_REWARD_REF_DIST:10.0}
-    destroy-ratio: ${PLANNING_ALNS2_DESTROY:0.10}
-    max-time-seconds: ${PLANNING_ALNS2_MAX_TIME:300}
-    # Iter 11 Fix 1: kara za odległość od baseline (50km od linii = 2.5× penalty mnożnik)
-    corridor-factor: ${PLANNING_ALNS2_CORRIDOR:0.05}
-    # Mnożnik kary za dziurę rzadką/dużą (Kreis) na reward (< beta bo dziura mniej boli)
-    gamma: ${PLANNING_ALNS2_GAMMA:0.2}
-    # Kara za BEZCELOWE pętle (powrót do gminy bez zbierania nowych); nuanced — nie tłamsi coverage
-    delta: ${PLANNING_ALNS2_DELTA:0.5}
-    # ALNS3 (serpentine): szerokość paska wężyka w km. Wąski = gęstsze pokrycie/dłuższa trasa.
-    strip-km: ${PLANNING_ALNS2_STRIP_KM:15.0}
-    # true = zwróć od razu wynik seeda (grow+prune+2opt+trim), POMIŃ pętlę SA. Do porównania
-    # "seed vs iteracje" i oszczędności czasu BRoutera. false = pełne SA (jak dotąd).
-    seed-only: ${PLANNING_ALNS2_SEED_ONLY:true}
-    # PROXY-SEARCH (eksperymentalny, default OFF): effort w trakcie seedu/SA liczony z haversine ×
-    # współczynniki regionu (RegionFactorGrid, leniwa kalibracja per-komórka) zamiast realnego BRoutera
-    # per krawędź. Finalny realny chunked BRouter zachowuje dokładność outputu. Tnie ~14k callów do ~150.
-    # Włącz: PLANNING_ALNS2_PROXY=true. Ryzyko: selekcja lekko inna + wyspy wychodzą dopiero na finale.
-    proxy-search: ${PLANNING_ALNS2_PROXY:false}
-    # Rozmiar komórki gridu kalibracji w stopniach (~0.5° ≈ 50 km). Mniejsza = dokładniej, więcej probe'ów.
-    proxy-cell-deg: ${PLANNING_ALNS2_PROXY_CELL:0.5}
-    # Co ile proxy-użyć komórki re-probować realnym BRouterem (EMA refresh, dryf terenu).
-    proxy-recalibrate-every: ${PLANNING_ALNS2_PROXY_RECALIB:25}
-    # RECONCILE-SWAP (default ON, REWARD-AWARE): gdy brak budżetu na łatanie dziurek MIĘDZY pokrytymi
-    # gminami, tnij DALEKIE + TANIE WARTOŚCIOWO macki (detour ≥ max(12km, 3×mediana), reward ≤ reward
-    # dziury) i finansuj nimi infill. Sort cięcia: reward ASC, detour DESC — najpierw tanie peryferyjne
-    # (gęste CZ gminy), NIGDY cenne rzadkie (DE Kreis) na rzecz taniej dziury. Dwa zabezpieczenia:
-    # (1) twardy filtr reward macki ≤ reward dziury, (2) re-route: rollback gdy łączny REWARD spadł >3%
-    # lub effort >110%. false → tylko czyste wstawianie do 110% (nic nie tnie).
-    reconcile-swap: ${PLANNING_ALNS2_RECONCILE_SWAP:true}
+  coverage:
+    # Effort model: 1 m wzniosu = ALPHA km. Profile-independent. effort = km + alpha·climb.
+    alpha-km-per-meter: ${PLANNING_COVERAGE_ALPHA:0.1}
     # ADMIN DEBUG: loguj GeoJSON snapshot trasy na każdej fazie seeda (init/batch/prune/densify/reconcile/final)
     # do podglądu w mapie rysowania (panel 🐞 paste-to-map). UWAGA: per-batch zalewa log → włączaj tylko do debugowania.
     debug-geojson: ${ROUTE_PLANNING_DEBUG_GEOJSON:true}
-    # A/B: stara pętla DEEP-BATCH po seedzie (7 iter × pełne reroute ≈ 23 min, marginalne zyski).
-    # Default OFF — zastąpiona przez seed→[100,105%] + track-aware tailPrune (ogonki/tranzyt z guardem).
-    deep-batch: ${PLANNING_ALNS2_DEEP_BATCH:false}
-    # WIGGLE (warianty pozycji wp w gminie): default OFF — 3 runy danych: ~540 pytań do BRoutera
-    # za ~190 effortu za każdym razem (0.3/call). Włącz, gdy uznasz że wart swojej ceny.
-    wiggle: ${PLANNING_ALNS2_WIGGLE:false}
 
 springdoc:
   swagger-ui:
