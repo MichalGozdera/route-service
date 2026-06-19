@@ -19,7 +19,7 @@ public interface CalculateRouteUseCase {
      * @param profile nazwa profilu BRoutera (np. "trekking", "fastbike")
      * @param computeStats {@code true} = backend zbuduje {@link velomarker.entity.RouteStats}
      *        (parsing messageList + per-segment spans) i zaloguje na INFO. {@code false} = skip
-     *        (oszczędza CPU + log spam dla wewnętrznych probing calls ALNS2 — typowo 10k+ calls
+     *        (oszczędza CPU + log spam dla wewnętrznych probing calls Coverage — typowo 10k+ calls
      *        per multi-day coverage plan, których stats nikt nie używa).
      *        Default {@code true} dla manual routing z frontu i finalnych chunków planning'u.
      */

@@ -54,9 +54,9 @@ public class CalculateRouteService implements CalculateRouteUseCase {
         log.debug("Routing {} waypoints with profile {} (computeStats={})",
                 command.waypoints().size(), command.profile(), command.computeStats());
         RouteCalculation result = brouterClient.calculate(command.waypoints(), command.profile(), command.computeStats());
-        // ZAWSZE doliczamy wysokość z DEM (HGT/Copernicus) — ALNS2 cost'uje effort = distance + alpha*ascent,
+        // ZAWSZE doliczamy wysokość z DEM (HGT/Copernicus) — Coverage cost'uje effort = distance + alpha*ascent,
         // więc elevation MUSI być w coords nawet dla intermediate probing calls (bez tego climbM byłby
-        // pobierany przez ALNS2 z surowych lng/lat = drogi DEM sample per krawędź zamiast wartości z'ek).
+        // pobierany przez Coverage z surowych lng/lat = drogi DEM sample per krawędź zamiast wartości z'ek).
         // computeStats=false WYŁĄCZA jedynie RouteStats/spans (drogie parsowanie messageList) — elevation NIE.
         long tEnrichStart = System.currentTimeMillis();
         List<double[]> withZ = enrichWithElevation(result.coordinates(), result.flatSpans());

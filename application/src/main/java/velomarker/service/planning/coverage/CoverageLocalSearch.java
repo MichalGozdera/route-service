@@ -1,4 +1,4 @@
-package velomarker.service.planning.alns2;
+package velomarker.service.planning.coverage;
 
 import velomarker.service.planning.WaypointSelector;
 
@@ -7,13 +7,13 @@ import java.util.List;
 import java.util.function.ToDoubleFunction;
 
 /**
- * Local search dla ALNS2: 2-opt, relocate, swap. Wszystkie operatorów zachowują
+ * Local search dla Coverage: 2-opt, relocate, swap. Wszystkie operatorów zachowują
  * route[0] (start) i route[route.size()-1] (end) — anchor-aware.
  *
  * <p>Optymalizują effort metryki przez {@link EdgeCache} — używają haversine jako proxy
  * dla speed (BRouter call per swap byłby za drogi).
  */
-public class Alns2LocalSearch {
+public class CoverageLocalSearch {
 
     // MAX_ITER = liczba PRZEBIEGÓW. 2-opt stosuje wiele reverse'ów per przebieg (1 na pozycję i),
     // więc to NIE limit całkowitych ruchów. 300 przebiegów wystarcza by odplątać trasę ~200+ wp.

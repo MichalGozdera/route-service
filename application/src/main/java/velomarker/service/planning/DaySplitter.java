@@ -30,8 +30,8 @@ public class DaySplitter {
     private static final Logger log = LoggerFactory.getLogger(DaySplitter.class);
 
     public static final double MIN_DAY_KM = 20.0;
-    /** Współczynnik effortu wzniosu — SPÓJNY z ALNS2 (params.alphaKmPerMeter = 0.1). User: dziel dni
-     *  EQUAL effort = km + 0.1 × climb_m. Niezależnie od profilu (road/off-road) — bo ALNS2 też nie
+    /** Współczynnik effortu wzniosu — SPÓJNY z Coverage (params.alphaKmPerMeter = 0.1). User: dziel dni
+     *  EQUAL effort = km + 0.1 × climb_m. Niezależnie od profilu (road/off-road) — bo Coverage też nie
      *  rozróżnia. Stare ROAD/OFFROAD_KM_PER_300 utrzymane dla kompatybilności helpera equivalentKm. */
     public static final double DAY_EFFORT_ALPHA_KM_PER_M = 0.1;
     public static final double ROAD_KM_PER_300_UP = 20.0;
@@ -79,10 +79,10 @@ public class DaySplitter {
                 ? elevBudgetPerDay
                 : Math.max(300.0, kmPerDay * EFFORT_BASE_CLIMB_PER_180 / 180.0);
 
-        // LINEAR UNITS: effort = km + 0.1 × climb_m. SPÓJNE z ALNS2 (params.alphaKmPerMeter = 0.1).
+        // LINEAR UNITS: effort = km + 0.1 × climb_m. SPÓJNE z Coverage (params.alphaKmPerMeter = 0.1).
         // BEZ asymetrii UP/DOWN i BEZ bonusu za „płaski dzień". User chce równy effort per dzień
         // (jeśli total to 4300 a dni 10 → 430/dzień), niezależnie od profilu. Dawniej road=0.0667
-        // a off-road=0.1 dawało rozjazd vs budżet ALNS2 (ten zawsze 0.1) → user widział nierówność.
+        // a off-road=0.1 dawało rozjazd vs budżet Coverage (ten zawsze 0.1) → user widział nierówność.
         double effortPerMClimb = DAY_EFFORT_ALPHA_KM_PER_M;
         int n = samples.length;
         double[] cumEffort = new double[n];

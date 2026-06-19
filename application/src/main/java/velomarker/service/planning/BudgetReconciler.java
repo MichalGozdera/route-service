@@ -41,7 +41,7 @@ public final class BudgetReconciler {
         }
         int budget = days * kmPerDay;
         int rk = (int) Math.round(routeKm);
-        // Climb compensation: km usprawiedliwione przez climb undershoot. Współczynnik = ALNS2 ALPHA
+        // Climb compensation: km usprawiedliwione przez climb undershoot. Współczynnik = Coverage ALPHA
         // (0.1 km/m), SPÓJNY z effort-modelem plannera (budget effort = km + 0.1×climb). Bez tego
         // verdict liczył luźniej (0.0667) niż planner → fałszywy DEFICIT mimo mieszczenia się w efforcie.
         double climbCompensationKm = 0;
@@ -53,7 +53,7 @@ public final class BudgetReconciler {
         double effectiveBudget = budget + climbCompensationKm;
         // Tolerancja 1.10 = sufit densify (planner CELOWO dopina donut-holes ponad budżet do 110%,
         // decyzja usera). Próg 1.05 piętnował tę intencjonalną nadwyżkę jako DEFICIT mimo że to
-        // świadome wypełnianie dziur. 1.10 spójne z densifyCeiling w AlnsCoveragePlanner2.
+        // świadome wypełnianie dziur. 1.10 spójne z densifyCeiling w CoveragePlanner.
         if (rk > effectiveBudget * 1.10) {
             return new Result(Verdict.DEFICIT, budget, 0);
         }

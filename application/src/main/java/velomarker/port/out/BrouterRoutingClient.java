@@ -14,7 +14,7 @@ public interface BrouterRoutingClient {
      *
      * @param computeStats {@code true} = zbuduj {@link velomarker.entity.RouteStats} z messageList
      *        (parsing + per-segment spans) i zaloguj na INFO. {@code false} = skip — ważne dla
-     *        wewnętrznych probing calls ALNS2 (~10k+ per multi-day coverage plan), gdzie stats
+     *        wewnętrznych probing calls Coverage (~10k+ per multi-day coverage plan), gdzie stats
      *        ignorowane przez orchestrator, a logi by zalewały konsolę.
      */
     RouteCalculation calculate(List<double[]> waypoints, String profile, boolean computeStats);

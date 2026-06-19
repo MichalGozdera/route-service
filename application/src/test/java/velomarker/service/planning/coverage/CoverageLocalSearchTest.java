@@ -1,4 +1,4 @@
-package velomarker.service.planning.alns2;
+package velomarker.service.planning.coverage;
 
 import org.junit.jupiter.api.Test;
 
@@ -7,7 +7,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class Alns2LocalSearchTest {
+class CoverageLocalSearchTest {
 
     @Test
     void twoOpt_anchorsPreserved() {
@@ -23,7 +23,7 @@ class Alns2LocalSearchTest {
         double[] originalStart = route.get(0);
         double[] originalEnd = route.get(route.size() - 1);
 
-        int swaps = Alns2LocalSearch.twoOpt(route);
+        int swaps = CoverageLocalSearch.twoOpt(route);
         // 2-opt powinien znaleźć improvement (B i C były skrzyżowane)
         assertThat(swaps).isGreaterThan(0);
         // Anchors niezmienne
@@ -43,7 +43,7 @@ class Alns2LocalSearchTest {
                 new double[]{6, 0}       // end
         ));
         double totalBefore = totalKm(route);
-        Alns2LocalSearch.relocate(route);
+        CoverageLocalSearch.relocate(route);
         double totalAfter = totalKm(route);
         // Tour po relocate powinien być KRÓTSZY (improvement)
         assertThat(totalAfter).isLessThan(totalBefore);
@@ -63,8 +63,8 @@ class Alns2LocalSearchTest {
         List<double[]> empty = new ArrayList<>(List.of(
                 new double[]{0, 0}, new double[]{1, 1}
         ));
-        int swaps = Alns2LocalSearch.twoOpt(empty);
-        int moves = Alns2LocalSearch.relocate(empty);
+        int swaps = CoverageLocalSearch.twoOpt(empty);
+        int moves = CoverageLocalSearch.relocate(empty);
         assertThat(swaps).isZero();
         assertThat(moves).isZero();
     }
@@ -77,8 +77,8 @@ class Alns2LocalSearchTest {
         List<double[]> b = new ArrayList<>(List.of(
                 new double[]{0, 0}, new double[]{1, 1}, new double[]{3, 0},
                 new double[]{2, 1}, new double[]{4, 0}, new double[]{5, 0}));
-        Alns2LocalSearch.twoOpt(a);             // default: małe → pełny skan
-        Alns2LocalSearch.twoOpt(b, b.size());   // jawne pełne okno
+        CoverageLocalSearch.twoOpt(a);             // default: małe → pełny skan
+        CoverageLocalSearch.twoOpt(b, b.size());   // jawne pełne okno
         assertThat(totalKm(a)).isEqualTo(totalKm(b));
     }
 
@@ -94,7 +94,7 @@ class Alns2LocalSearchTest {
         double[] start = route.get(0);
         double[] end = route.get(route.size() - 1);
         double before = totalKm(route);
-        Alns2LocalSearch.twoOpt(route, 8); // wąskie okno
+        CoverageLocalSearch.twoOpt(route, 8); // wąskie okno
         assertThat(totalKm(route)).isLessThanOrEqualTo(before + 1e-9);
         assertThat(route.get(0)).isSameAs(start);
         assertThat(route.get(route.size() - 1)).isSameAs(end);
