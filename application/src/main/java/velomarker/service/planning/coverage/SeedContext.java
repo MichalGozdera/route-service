@@ -17,5 +17,6 @@ record SeedContext(EdgeRouter edgeRouter,
                    List<UnvisitedArea> pool,
                    Map<String, Double> rewards,
                    CoverageDebug debug,
-                   SeedOps ops) {
+                   SeedOps ops,
+                   boolean debugGeoJson) {
 }
