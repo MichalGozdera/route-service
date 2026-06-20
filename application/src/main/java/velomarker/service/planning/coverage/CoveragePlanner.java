@@ -133,33 +133,10 @@ public class CoveragePlanner {
         SeedBuilder seedBuilder = new SeedBuilder(gminaIndex, candidatePool, rewards, edgeRouter, metrics,
                 ordering, elevation, params, debugGeoJson, totalLimit, areaCat);
 
-        // INITIAL ROUTE = shortest path (start, [via...], end)
-        List<Waypoint> initialWps = new ArrayList<>();
-        initialWps.add(prefs.start());
-        if (prefs.via() != null) initialWps.addAll(prefs.via());
-        if (Boolean.TRUE.equals(prefs.loop())) initialWps.add(prefs.start());
-        else if (prefs.end() != null) initialWps.add(prefs.end());
-        else initialWps.add(prefs.start());
-
-        // Iter 11 Fix 1: baseline geometry (shortest path start→via→end) — corridor anchor.
-        // Punkty trasy daleko od tej linii płacą karę (repair ranking + seed + score).
-        // PERF: baseline policzony JUŻ w orkiestracji (computeBaseline) — REUŻYWAMY (te same anchory,
-        // ten sam profil) zamiast routować BRouterem drugi raz (w Alpach ~50s/trasa). Świeży routing
-        // tylko gdy orkiestracja podała degenerat (BRouter baseline padł → anchory-only, <2 pkt).
-        int brouterCalls = 0;
-        List<double[]> baseline;
-        if (baselineGeom != null && baselineGeom.size() >= 2) {
-            baseline = GeometryUtil.downsample(baselineGeom, 200);
-        } else {
-            RouteCalculation initialCalc = brouter.apply(initialWps, profile);
-            brouterCalls = 1;
-            baseline = GeometryUtil.downsample(initialCalc.coordinates(), 200);
-        }
-        // Anchors (start + via + end) — NIE rusza ich destroy
-        List<double[]> anchors = new ArrayList<>();
-        for (Waypoint w : initialWps) anchors.add(w.toLngLat());
-        // Route = anchors only (start → via → end) — początkowo wąska
-        List<double[]> route = new ArrayList<>(anchors);
+        // Start = anchory (start→via→end) + baseline (korytarz). Reużywamy baseline z orkiestracji gdy podany.
+        SeedStart start = buildInitialRoute(prefs, baselineGeom, brouter, profile);
+        List<double[]> route = start.route(), anchors = start.anchors(), baseline = start.baseline();
+        int brouterCalls = start.brouterCalls();
 
         // GREEDY SEED: saturate trasy do 70% TOTAL_LIMIT przed SA. User: shortest_path daje
         // zbyt krótki seed (80 km) dla budgetu 3000 km. Bez seed SA nigdy nie urośnie do
@@ -206,23 +183,8 @@ public class CoveragePlanner {
         int rejected = 0;
         int iter = 0;
 
-        // FINAL: jeden REALNY chunked BRouter na best (target-island handling, dokładna geometria,
-        // dystans). SA używał per-edge eval (proxy); tu robimy "prawdziwy" wynik dla orchestration.
-        RouteCalculation bestCalc;
-        try {
-            bestCalc = brouter.apply(bestWps, profile);
-        } catch (RuntimeException ex) {
-            // Finalny chunked BRouter wywalił się (klaster wysp mimo prune) — NIE failuj planu.
-            // Zbuduj wynik z per-edge geometrii (evalRoute ma haversine fallback dla wysp, nie rzuca).
-            log.warn("Coverage final chunked BRouter failed ({}) — fallback do per-edge geometrii", ex.getMessage());
-            RouteMetrics.EvalResult fb = metrics.eval(bestRoute);
-            List<double[]> geom = fb.geometry();
-            double km = 0;
-            for (int i = 1; i < geom.size(); i++) {
-                km += velomarker.service.planning.WaypointSelector.haversineKm(geom.get(i - 1), geom.get(i));
-            }
-            bestCalc = new RouteCalculation(geom, km);
-        }
+        // FINAL: jeden REALNY chunked BRouter na best (target-island handling, dokładna geometria, dystans).
+        RouteCalculation bestCalc = finalChunkedRoute(bestWps, bestRoute, brouter, profile, metrics);
         brouterCalls++;
         // STRICT count: gmina zaliczona dopiero gdy trasa wjeżdża ≥ requiredDepth W GŁĄB (nie otarcie
         // krawędzi). Eliminuje false-positives „dojazdów pod krawędź". Front (turf, uproszczony ~90m)
@@ -250,20 +212,10 @@ public class CoveragePlanner {
                         edgeRouter.hits(), Math.round(edgeRouter.hitRatio() * 100),
                         accepted, rejected, elapsedMs});
 
-        // FINAL RECOMPUTE: wszystkie wewnetrzne wywołania brouter.apply (~10k+ per coverage plan)
-        // używaja computeStats=false (oszczednosc CPU). Tu robimy JEDEN ostatni call z brouterFinal
-        // (computeStats=true) żeby zwracany RouteCalculation miał pełne stats (surface/road/smoothness +
-        // spans) — bez tego orchestrator slicing per dzien daje puste mapy/spans.
-        try {
-            RouteCalculation finalBestCalc = brouterFinal.apply(bestWps, profile);
-            log.info("Coverage final recompute z stats: distanceKm={} stats.totalMeters={}",
-                    new Object[]{Math.round(finalBestCalc.distanceKm()),
-                            finalBestCalc.stats() != null ? finalBestCalc.stats().totalMeters() : 0});
-            bestCalc = finalBestCalc;
-            brouterCalls++;
-        } catch (RuntimeException ex) {
-            log.warn("Coverage final recompute z stats failed ({}) — zwracam wynik bez stats", ex.getMessage());
-        }
+        // FINAL RECOMPUTE: jeden ostatni call z brouterFinal (computeStats=true) → pełne stats (surface/road/
+        // spans) dla orchestratora; wewnętrzne ~10k calle szły z computeStats=false (oszczędność CPU).
+        RouteCalculation withStats = recomputeWithStats(bestWps, profile, brouterFinal);
+        if (withStats != null) { bestCalc = withStats; brouterCalls++; }
         // ADMIN DEBUG: finalna realna geometria trasy + ponumerowane waypointy
         if (debugGeoJson) {
             List<double[]> finalWps = new ArrayList<>(bestWps.size());
@@ -271,6 +223,64 @@ public class CoveragePlanner {
             seedBuilder.debugGeometry("final-real", bestCalc.coordinates(), finalWps, bestCalc.distanceKm());
         }
         return new CoverageResult(bestCalc, bestWps, visitedAreas, iter, brouterCalls, accepted, rejected);
+    }
+
+    /** Trasa startowa seeda: anchory (start→via→end) + route (kopia anchorów) + baseline (korytarz) + ile BRouter calli. */
+    private record SeedStart(List<double[]> route, List<double[]> anchors, List<double[]> baseline, int brouterCalls) {}
+
+    /** Zbuduj start: waypointy start→via→end → anchory + wąska route; baseline z orkiestracji (reużycie) lub świeży BRouter. */
+    private SeedStart buildInitialRoute(RoutePreferences prefs, List<double[]> baselineGeom,
+                                        BiFunction<List<Waypoint>, String, RouteCalculation> brouter, String profile) {
+        List<Waypoint> initialWps = new ArrayList<>();
+        initialWps.add(prefs.start());
+        if (prefs.via() != null) initialWps.addAll(prefs.via());
+        if (Boolean.TRUE.equals(prefs.loop())) initialWps.add(prefs.start());
+        else if (prefs.end() != null) initialWps.add(prefs.end());
+        else initialWps.add(prefs.start());
+        int brouterCalls = 0;
+        List<double[]> baseline;
+        if (baselineGeom != null && baselineGeom.size() >= 2) {
+            baseline = GeometryUtil.downsample(baselineGeom, 200); // reużycie baseline z orkiestracji (oszczędza ~50s/Alpy)
+        } else {
+            RouteCalculation initialCalc = brouter.apply(initialWps, profile); // degenerat → świeży routing
+            brouterCalls = 1;
+            baseline = GeometryUtil.downsample(initialCalc.coordinates(), 200);
+        }
+        List<double[]> anchors = new ArrayList<>();
+        for (Waypoint w : initialWps) anchors.add(w.toLngLat());
+        return new SeedStart(new ArrayList<>(anchors), anchors, baseline, brouterCalls);
+    }
+
+    /** Finalny REALNY chunked BRouter na best; gdy padnie (klaster wysp) — fallback do per-edge geometrii (haversine). */
+    private RouteCalculation finalChunkedRoute(List<Waypoint> bestWps, List<double[]> bestRoute,
+                                               BiFunction<List<Waypoint>, String, RouteCalculation> brouter,
+                                               String profile, RouteMetrics metrics) {
+        try {
+            return brouter.apply(bestWps, profile);
+        } catch (RuntimeException ex) {
+            log.warn("Coverage final chunked BRouter failed ({}) — fallback do per-edge geometrii", ex.getMessage());
+            List<double[]> geom = metrics.eval(bestRoute).geometry();
+            double km = 0;
+            for (int i = 1; i < geom.size(); i++) {
+                km += velomarker.service.planning.WaypointSelector.haversineKm(geom.get(i - 1), geom.get(i));
+            }
+            return new RouteCalculation(geom, km);
+        }
+    }
+
+    /** Ostatni call z brouterFinal (computeStats=true) → RouteCalculation z pełnymi stats; null gdy padł (zwracamy bez stats). */
+    private RouteCalculation recomputeWithStats(List<Waypoint> bestWps, String profile,
+                                                BiFunction<List<Waypoint>, String, RouteCalculation> brouterFinal) {
+        try {
+            RouteCalculation finalBestCalc = brouterFinal.apply(bestWps, profile);
+            log.info("Coverage final recompute z stats: distanceKm={} stats.totalMeters={}",
+                    new Object[]{Math.round(finalBestCalc.distanceKm()),
+                            finalBestCalc.stats() != null ? finalBestCalc.stats().totalMeters() : 0});
+            return finalBestCalc;
+        } catch (RuntimeException ex) {
+            log.warn("Coverage final recompute z stats failed ({}) — zwracam wynik bez stats", ex.getMessage());
+            return null;
+        }
     }
 
     /** DIAGNOSTYKA DZIUR (log-only): nieodwiedzone gminy wg odległości od finalnej trasy — pokazuje

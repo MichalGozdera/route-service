@@ -37,14 +37,23 @@ final class SeedBuilder {
     private final boolean debugGeoJson;
     /** Cache punkt→gmina (memoizacja point-in-polygon) — budowany w greedySeedRoute. */
     private Function<double[], UnvisitedArea> findGminaCached;
-    // ADMIN DEBUG: kontekst do linii ROUTE-STATS (budżet/gminy/kategorie).
-    private double debugBudget;
-    private GminaIndex debugGminaIndex;
-    private Map<Integer, String> debugAreaCat;
-    /** STRZAŁY/plan per faza (debug-only). */
-    private Map<String, Long> shots;
+    /** Renderery ADMIN-DEBUG (GeoJSON/ROUTE-STATS/STRZAŁY) — gated debugGeoJson. */
+    private final CoverageDebug debug;
+    /** Wspólne operacje trasy (2-opt, przebudowa kolejności, swap entry) — dzielone przez klasy odpowiedzialności. */
+    private final SeedOps ops;
+    /** Wiązka kolaboratorów wstrzykiwana do klas odpowiedzialności (Anchorer/GrowNear/SpurCutter/Trimmer). */
+    private final SeedContext ctx;
+
+    /** Delegator dla orkiestratora (plan()) — render finalnej realnej geometrii po chunked BRouterze. */
+    void debugGeometry(String phase, List<double[]> geometry, List<double[]> waypoints, double realKm) {
+        debug.geometry(phase, geometry, waypoints, realKm);
+    }
     /** Instrumentacja wall-time seeda (log-only). */
     private long tRebuildNs, tTwoOptNs, tRouteEffortNs, tEvalNs, tVisitsNs, tPruneNs;
+    /** L2: jeden effort-factor (realEffort/Σhaversine), rekalibrowany na checkpoincie; ile realnych checkpointów; start seeda. */
+    private double effortFactor;
+    private int realCheckpoints;
+    private long seedStartTs;
 
     SeedBuilder(GminaIndex gminaIndex, List<UnvisitedArea> pool, Map<String, Double> rewards,
                 EdgeRouter edgeRouter, RouteMetrics metrics, HilbertOrdering ordering,
@@ -59,9 +68,9 @@ final class SeedBuilder {
         this.elevation = elevation;
         this.params = params;
         this.debugGeoJson = debugGeoJson;
-        this.debugBudget = debugBudget;
-        this.debugGminaIndex = gminaIndex;
-        this.debugAreaCat = debugAreaCat;
+        this.debug = new CoverageDebug(debugGeoJson, edgeRouter, metrics, gminaIndex, params, debugBudget, debugAreaCat);
+        this.ops = new SeedOps(ordering, metrics, debugGeoJson);
+        this.ctx = new SeedContext(edgeRouter, metrics, gminaIndex, ordering, pool, rewards, debug, ops);
     }
     /**
      * SEED przez BASELINE-PROJECTION — O(N log N), zamiast cheapest-insertion O(N × E² × S).
@@ -127,24 +136,24 @@ final class SeedBuilder {
             // v3.20: cycle-start 2opt USUNIĘTY — był NO-OP (INIT-GROW + grow/enclosed/prune 2opt-ują
             // wewnętrznie; run dowiódł cycle0-2opt-real == round0-grown-real co do joty). Debug zostaje
             // jako snapshot WEJŚCIA cyklu (ten sam stan, jaśniejsza nazwa `entry`).
-            if (debugGeoJson) debugGeometry("cycle" + cycle + "-entry-real",
+            if (debugGeoJson) debug.geometry("cycle" + cycle + "-entry-real",
                     metrics.realGeometry(route), route,
                     metrics.realKm(route));
-            if (debugGeoJson) shots = logShots("cycle" + cycle + "-entry", shots); // RUNDA 24: STRZAŁY na start cyklu
+            if (debugGeoJson) debug.logShots("cycle" + cycle + "-entry"); // RUNDA 24: STRZAŁY na start cyklu
             // RUNDA 24: ANCHOR-INTERSECTS — GŁÓWNY silnik pokrycia (raz na cykl). Reset wszystkich DOTYKANYCH gmin:
             //    wp na PIERWSZYM wejściu w rdzeń (≥200m) albo CENTROID (muśnięcie). Kończy 2opt. enclosedFill NIE tu —
             //    tylko na końcu seeda (holefill). Realny BRouter wchodzi dopiero w tailPruneJts (reroute przez nowe wp).
             anchorResetTouched(seed, "cycle" + cycle);
-            if (debugGeoJson) debugGeometry("cycle" + cycle + "-anchor-real",
+            if (debugGeoJson) debug.geometry("cycle" + cycle + "-anchor-real",
                     metrics.realGeometry(route), route,
                     metrics.realKm(route));
-            if (debugGeoJson) shots = logShots("cycle" + cycle + "-anchor", shots);
+            if (debugGeoJson) debug.logShots("cycle" + cycle + "-anchor");
             // tailPrune — DOPIERO TERAZ BRouter (reroute przez nowe wp) + tnij ogonki DO SKUTKU (bez wewn. anchora)
             int prunePasses = cycle == 0 ? 8 : 3;
             realEffort = doubleCut(seed, // RUNDA 69: cut→2opt→reroute→cut (dla pewności)
                     targetEffort, prunePasses,
                     "cycle" + cycle + "-tailprune-real");
-            if (debugGeoJson) shots = logShots("cycle" + cycle + "-cut", shots);
+            if (debugGeoJson) debug.logShots("cycle" + cycle + "-cut");
             // 5. ZMIERZ stan ZWARTY (gminy + effort z cache — 0 BRoutera)
             RouteMetrics.EvalResult evc = metrics.eval(route);
             realEffort = metrics.effortAccurate(route); // RUNDA 40: DOKŁADNY (spójny z ROUTE-STATS), nie Σ przybliżony evc.effort()
@@ -174,8 +183,8 @@ final class SeedBuilder {
                 growNearAcc[0] += added;
                 realEffort = gr.effort();
             }
-            if (debugGeoJson) shots = logShots("cycle" + cycle + "-grow", shots);
-            if (debugGeoJson) debugGeometry("cycle" + cycle + "-grow-real",
+            if (debugGeoJson) debug.logShots("cycle" + cycle + "-grow");
+            if (debugGeoJson) debug.geometry("cycle" + cycle + "-grow-real",
                     metrics.realGeometry(route), route,
                     metrics.realKm(route));
             log.info("Coverage COMPACT cycle {}: anchor-intersects → 2opt → BRouter → tailPrune → {} gmin @ {}% → +{} (proporcja do 100%, cel +{}), calls={}",
@@ -211,17 +220,17 @@ final class SeedBuilder {
                     GeometryUtil.minDistToBaselineKm(deep, baseline)));
             enclosedAdded++;
         }
-        rebuildOrderedRoute(route, anchorOnly, selected, baseline, baseCum);
+        ops.rebuildOrdered(seed);
         log.info("Coverage HOLEFILL: {} enclosed → wp najgłębszy + anchor + 2opt + podwójne cięcie", enclosedHF.size());
-        if (debugGeoJson) debugGeometry("holefill-enclosed-real",
+        if (debugGeoJson) debug.geometry("holefill-enclosed-real",
                 metrics.realGeometry(route), route,
                 metrics.realKm(route));
-        if (debugGeoJson) shots = logShots("holefill-enclosed", shots);
+        if (debugGeoJson) debug.logShots("holefill-enclosed");
         anchorResetTouched(seed, "holefill");
-        if (debugGeoJson) debugGeometry("holefill-anchor-real",
+        if (debugGeoJson) debug.geometry("holefill-anchor-real",
                 metrics.realGeometry(route), route,
                 metrics.realKm(route));
-        if (debugGeoJson) shots = logShots("holefill-anchor", shots);
+        if (debugGeoJson) debug.logShots("holefill-anchor");
         realEffort = doubleCut(seed, targetEffort, 3, "holefill-tailprune-real");
         return new HoleFillResult(realEffort, enclosedAdded);
     }
@@ -232,12 +241,66 @@ final class SeedBuilder {
      * gdy zjechało &lt;95% → reward-aware growNear. Mutuje route/selected; akumuluje ucięte w
      * {@code trimmedAcc[0]} i grow w {@code growNearAcc[0]}; zwraca nowy realEffort.
      */
-    private double seedTrim(SeedRoute seed, double hiBand,
-            double targetEffort, double realEffort, int[] trimmedAcc, int[] growNearAcc) {
-        List<double[]> route = seed.route(); List<SeedSel> selected = seed.selected(); List<double[]> anchorOnly = seed.anchorOnly(); List<double[]> anchors = seed.anchors(); List<double[]> baseline = seed.baseline(); double[] baseCum = seed.baseCum();
-        for (int ti = 0; ti < 4 && realEffort > hiBand; ti++) {
+    private double seedTrim(SeedRoute seed, double hiBand, double targetEffort, double realEffort,
+                            int[] trimmedAcc, int[] growNearAcc) {
+        TrimRun run = new TrimRun(seed, hiBand, targetEffort, realEffort);
+        double result = run.run();
+        trimmedAcc[0] += run.trimmed();
+        growNearAcc[0] += run.growNearAdded();
+        return result;
+    }
+
+    /**
+     * TRIM (gdy >105% budżetu): peeling peryferii — tnij porcjami najgorszy reward/koszt-objazdu z FRINGE (nie
+     * otoczonych, by nie robić dziur), pełny 2-opt + realny pomiar; po peelingu rundy: anchor + doubleCut, a gdy
+     * spadło <95% — dobierz (growNear). Klasa stanu — inner non-static.
+     */
+    private final class TrimRun {
+        /** Kandydat do ucięcia: wp + klucz = reward/koszt-objazdu (niski = zły deal = tnij pierwszy). */
+        private record DealCand(SeedSel s, double key) {}
+
+        private final SeedRoute seed;
+        private final List<double[]> route;
+        private final List<SeedSel> selected;
+        private final double hiBand;
+        private final double targetEffort;
+        private double realEffort;
+        private int trimmed;
+        private int growNearAdded;
+
+        TrimRun(SeedRoute seed, double hiBand, double targetEffort, double realEffort) {
+            this.seed = seed;
+            this.route = seed.route();
+            this.selected = seed.selected();
+            this.hiBand = hiBand;
+            this.targetEffort = targetEffort;
+            this.realEffort = realEffort;
+        }
+
+        double trimmed() { return trimmed; }
+        double growNearAdded() { return growNearAdded; }
+
+        /** Rundy TRIM (max 4, dopóki >hiBand): peeling peryferii → anchor → doubleCut → dobierz gdy <95%. */
+        double run() {
+            for (int ti = 0; ti < 4 && realEffort > hiBand; ti++) {
+                int peeledThisRound = peelFringe(ti);
+                // RAZ na rundę: przywróć invariant „gmina = wp na śladzie" + autorytatywna geometria.
+                anchorResetTouched(seed, "trim" + ti);
+                if (debugGeoJson) {
+                    debug.geometry("trim" + ti + "-anchor-real", metrics.realGeometry(route), route, metrics.realKm(route));
+                    debug.logShots("trim" + ti + "-anchor");
+                }
+                realEffort = doubleCut(seed, targetEffort, 3, "trim" + ti + "-tailprune-real");
+                regrowIfUnderfilled(ti);
+                if (peeledThisRound == 0) break; // nic bezpiecznego do ucięcia → nie kręć outer loop w kółko
+            }
+            return realEffort;
+        }
+
+        /** Wewnętrzny peeling: porcjami tnij najgorszy reward/detour z fringe, pełny 2-opt, realny pomiar; stop gdy
+         *  brak bezpiecznych kandydatów albo effort nie schudł (anty-spin). Zwraca ile wp ucięto w tej rundzie. */
+        private int peelFringe(int ti) {
             int peeledThisRound = 0;
-            // WEWN. PEELING: tnij proporcjonalną porcję najgorszego reward/detour (fringe), pełny 2-opt, zmierz BRouterem.
             for (int peelK = 1; peelK <= TRIM_MAX_PEELS && realEffort > hiBand; peelK++) {
                 long peelCallsStart = edgeRouter.realCalls();
                 double before = realEffort;
@@ -246,23 +309,8 @@ final class SeedBuilder {
                 int gmint = visited.size();
                 double eFracT = realEffort / targetEffort;
                 int removeN = Math.max(1, (int) Math.round(gmint * (eFracT - 1.0) / eFracT));
-                // kandydaci = nie-enclosed, nie-protected, FRINGE (cięcie nie zrobi dziury); klucz = reward/koszt-objazdu ASC
-                record DealCand(SeedSel s, double key) {}
-                List<DealCand> cands = new ArrayList<>();
-                for (SeedSel s : selected) {
-                    if (s.score() >= ENCLOSED_PROTECTED_SCORE) continue;
-                    if (gminaIndex.allNeighborsVisited(s.area().areaId(), visited)) continue; // otoczona z każdej strony śladem (też zza granicy) → cięcie zrobiłoby dziurę
-                    int wpIdx = GeometryUtil.identityIndexOf(route, s.point());
-                    if (wpIdx <= 0 || wpIdx >= route.size() - 1) continue; // brzeg/anchor — nie kandydat
-                    double[] prev = route.get(wpIdx - 1), cur = route.get(wpIdx), next = route.get(wpIdx + 1);
-                    double eIn = edgeRouter.edge(prev, cur).distanceKm();
-                    double eOut = edgeRouter.edge(cur, next).distanceKm();
-                    double detour = Math.max(0.0, eIn + eOut
-                            - velomarker.service.planning.WaypointSelector.haversineKm(prev, next));
-                    double rw = rewards.getOrDefault(RewardModel.categoryKey(s.area()), 1.0);
-                    cands.add(new DealCand(s, rw / Math.max(TRIM_DETOUR_EPS, detour))); // niski klucz = zły deal = tnij pierwszy
-                }
-                if (cands.isEmpty()) break; // nic bezpiecznego do ucięcia (sama peryferia-wnętrze) → przerwij peeling
+                List<DealCand> cands = collectDealCandidates(visited);
+                if (cands.isEmpty()) break; // sama peryferia-wnętrze → nic bezpiecznego do ucięcia
                 cands.sort(Comparator.comparingDouble(DealCand::key));
                 edgeRouter.setReason("pomiar");
                 int removed = 0;
@@ -270,50 +318,62 @@ final class SeedBuilder {
                     if (removed >= removeN) break;
                     int wpIdx = GeometryUtil.identityIndexOf(route, dc.s().point());
                     if (wpIdx <= 0 || wpIdx >= route.size() - 1) continue;
-                    route.remove(wpIdx);        // W MIEJSCU (bez rebuildOrderedRoute) → prev→next wprost, brak rozłażenia
+                    route.remove(wpIdx);      // W MIEJSCU (bez rebuildOrderedRoute) → prev→next wprost
                     selected.remove(dc.s());
-                    trimmedAcc[0]++; removed++; peeledThisRound++;
+                    trimmed++; removed++; peeledThisRound++;
                 }
                 if (removed == 0) break;
-                twoOptLogged(route, "trim" + ti + "-peel" + peelK);                 // PEŁNY 2-opt (haversine, tylko skraca)
-                realEffort = metrics.effortAccurate(route); // realny BRouter PO 2-opt
-                log.info("Coverage TRIM peel ti={} k={}: {} gmin @ {}% → -{} (reward/detour, fringe) → {}%, calls={}",
+                ops.twoOpt(route, "trim" + ti + "-peel" + peelK); // pełny 2-opt (haversine, tylko skraca)
+                realEffort = metrics.effortAccurate(route);         // realny BRouter PO 2-opt
+                log.info("Coverage TRIM peel ti={} k={}: {} gmin @ {}% -> -{} (reward/detour, fringe) -> {}%, calls={}",
                         new Object[]{ti, peelK, gmint, Math.round(eFracT * 100), removed,
                                 Math.round(realEffort / targetEffort * 100), edgeRouter.realCalls() - peelCallsStart});
-                if (debugGeoJson) debugGeometry("trim" + ti + "-peel" + peelK + "-real",
-                        metrics.realGeometry(route), route,
-                        metrics.realKm(route));
-                if (debugGeoJson) shots = logShots("trim" + ti + "-peel" + peelK, shots);
-                if (realEffort >= before - TRIM_PROGRESS_EPS) break; // anty-spin: ucięto kolateral/tanie, effort nie schudł
-            }
-            // RAZ na rundę: przywróć invariant „gmina=wp na śladzie" + autorytatywna geometria (METODY BEZ ZMIAN)
-            anchorResetTouched(seed, "trim" + ti);
-            if (debugGeoJson) debugGeometry("trim" + ti + "-anchor-real",
-                    metrics.realGeometry(route), route,
-                    metrics.realKm(route));
-            if (debugGeoJson) shots = logShots("trim" + ti + "-anchor", shots);
-            realEffort = doubleCut(seed, targetEffort, 3, "trim" + ti + "-tailprune-real");
-            // zjechało <95% → dobierz (reward-aware growNear, BEZ ZMIAN)
-            double eFracAfter = realEffort / targetEffort;
-            if (eFracAfter < 0.95) {
-                int gminA = metrics.eval(route).visited().size();
-                int additional = (int) Math.round(gminA * (1.0 - eFracAfter) / Math.max(0.05, eFracAfter));
-                if (additional > 0) {
-                    edgeRouter.setReason("grow");
-                    GrowNearResult gr = growNear(seed, hiBand,
-                            Math.min(additional, 16), additional + 1, additional);
-                    growNearAcc[0] += gr.inserted();
-                    realEffort = gr.effort();
-                    edgeRouter.setReason("pomiar");
+                if (debugGeoJson) {
+                    debug.geometry("trim" + ti + "-peel" + peelK + "-real", metrics.realGeometry(route), route, metrics.realKm(route));
+                    debug.logShots("trim" + ti + "-peel" + peelK);
                 }
-                if (debugGeoJson) debugGeometry("trim" + ti + "-grow-real",
-                        metrics.realGeometry(route), route,
-                        metrics.realKm(route));
-                if (debugGeoJson) shots = logShots("trim" + ti + "-grow", shots);
+                if (realEffort >= before - TRIM_PROGRESS_EPS) break; // anty-spin: ucięto kolateral, effort nie schudł
             }
-            if (peeledThisRound == 0) break; // nic nie dało się bezpiecznie uciąć → nie kręć outer loop w kółko
+            return peeledThisRound;
         }
-        return realEffort;
+
+        /** Kandydaci do cięcia = nie-protected, FRINGE (nie otoczone — cięcie nie zrobi dziury); klucz reward/koszt-objazdu. */
+        private List<DealCand> collectDealCandidates(Set<Integer> visited) {
+            List<DealCand> cands = new ArrayList<>();
+            for (SeedSel s : selected) {
+                if (s.score() >= ENCLOSED_PROTECTED_SCORE) continue;
+                if (gminaIndex.allNeighborsVisited(s.area().areaId(), visited)) continue; // otoczona śladem → dziura
+                int wpIdx = GeometryUtil.identityIndexOf(route, s.point());
+                if (wpIdx <= 0 || wpIdx >= route.size() - 1) continue;
+                double[] prev = route.get(wpIdx - 1), cur = route.get(wpIdx), next = route.get(wpIdx + 1);
+                double eIn = edgeRouter.edge(prev, cur).distanceKm();
+                double eOut = edgeRouter.edge(cur, next).distanceKm();
+                double detour = Math.max(0.0, eIn + eOut
+                        - velomarker.service.planning.WaypointSelector.haversineKm(prev, next));
+                double rw = rewards.getOrDefault(RewardModel.categoryKey(s.area()), 1.0);
+                cands.add(new DealCand(s, rw / Math.max(TRIM_DETOUR_EPS, detour)));
+            }
+            return cands;
+        }
+
+        /** Gdy po cięciu zjechało <95% budżetu — dobierz proporcjonalnie gmin (reward-aware growNear). */
+        private void regrowIfUnderfilled(int ti) {
+            double eFracAfter = realEffort / targetEffort;
+            if (eFracAfter >= 0.95) return;
+            int gminA = metrics.eval(route).visited().size();
+            int additional = (int) Math.round(gminA * (1.0 - eFracAfter) / Math.max(0.05, eFracAfter));
+            if (additional > 0) {
+                edgeRouter.setReason("grow");
+                GrowNearResult gr = growNear(seed, hiBand, Math.min(additional, 16), additional + 1, additional);
+                growNearAdded += gr.inserted();
+                realEffort = gr.effort();
+                edgeRouter.setReason("pomiar");
+            }
+            if (debugGeoJson) {
+                debug.geometry("trim" + ti + "-grow-real", metrics.realGeometry(route), route, metrics.realKm(route));
+                debug.logShots("trim" + ti + "-grow");
+            }
+        }
     }
 
     void greedySeedRoute(List<double[]> route, List<double[]> anchors, double targetEffort, double alphaKmPerMeter,
@@ -359,12 +419,11 @@ final class SeedBuilder {
         // L2 (cięcie churnu): w grow effort SZACUJEMY z haversine×kmFactor + alpha×Δelev×climbFactor (tanio,
         // bez BRoutera), a realny routeEffort robimy tylko CO CHECKPOINT_EVERY batchy (rekalibracja factorów)
         // lub gdy est zbliża się do pasma (confirm-before-stop). Tnie ~8500 calli do ~2-3k. Reszta faz = REAL.
-        final int CHECKPOINT_EVERY = 5;
         // Jeden effort-factor: realEffort / Σhaversine, rekalibrowany na checkpoincie. (DEM/climb-factor
         // usunięte — climbFactor wychodził ~8.6, czyli prosta-DEM nic nie wnosiła; jeden factor jest prostszy
         // i równie dobry, bo i tak służy tylko do pasma budżetu.) Init = EFFORT_MULTIPLIER (road×(1+climb·alpha)).
-        double effortFactor = EFFORT_MULTIPLIER;
-        int realCheckpoints = 0;
+        this.effortFactor = EFFORT_MULTIPLIER;
+        this.realCheckpoints = 0;
         // areaId → próba entry-pointu (0=route-nearest, 1=centroid, ≥2=wyspa, usuń). Skróciliśmy z 10 prób
         // (route-nearest + N sampli + centroid) do 2 — wzorzec interiorEntryPoints reconcile. Empirycznie
         // sample[1..N] rzadko się udają gdy route-nearest padł (te same krawędzie boundary). Cięcie ~80%
@@ -382,161 +441,20 @@ final class SeedBuilder {
         // User nie wie czy plan dalej pracuje czy wisi. Logujemy co PROGRESS_EVERY obszarów
         // + na początku każdej rundy → user widzi ETA na podstawie tempa.
         final int PROGRESS_EVERY = 500;
-        final long seedStartTs = System.currentTimeMillis();
+        this.seedStartTs = System.currentTimeMillis();
         int lastProgressMilestone = 0;
         log.info("Coverage seed grow START: pool={} obszarów, target effort={} ({}/dzień × {}d)",
                 new Object[]{scored.size(), Math.round(targetEffort),
                         Math.round(targetEffort / Math.max(1, route.size())), route.size()});
         edgeRouter.setReason("grow"); // v3.16: INIT-GROW = realne waypointy (księgowanie strzałów per powód)
-        debugSkeleton("init", route); // ADMIN DEBUG: start+meta+anchory (przed dorzucaniem gmin)
+        debug.skeleton("init", route); // ADMIN DEBUG: start+meta+anchory (przed dorzucaniem gmin)
         // INIT-GROW (v3): JEDNA runda grow ze scored (baseline-score) do pasma + islands-fix.
         // Dalsze dobieranie przejmuje COMPACT-LOOP (grow-near po distToRoute = zwartość bloba) —
         // scored-tail po pierwszym prune dawał DALEKIE gminy (skoki 90%→128%) i błędne koło psuj-naprawiaj.
-        final int round = 0;
-        {
-            long roundStartTs = System.currentTimeMillis();
-            int roundStartSelected = selected.size();
-            log.info("Coverage seed round {} START: dotąd dodano {} obszarów, effort={}/{} ({}%), elapsed={}s",
-                    new Object[]{round, selected.size(), Math.round(realEffort), Math.round(targetEffort),
-                            realEffort > 0 ? Math.round(realEffort * 100.0 / targetEffort) : 0,
-                            (System.currentTimeMillis() - seedStartTs) / 1000});
-            int batchCounter = 0;
-            while (idx < scored.size()) {
-                // PRECYZJA: od 80% budżetu (est ≥ 0.80×target) zmniejsz batch 20→6 i przejdź na real +
-                // pełny 2opt CO BATCH (dokładny pomiar długości dróg w terenie zanim dobijemy do 110%).
-                // Poniżej 80% rośniemy szybko (batch 20, est, real tylko na checkpoincie).
-                boolean precise = metrics.haversineKm(route) * effortFactor >= targetEffort * 0.80;
-                int batchSize = precise ? 6 : BATCH;
-                for (int b = 0; b < batchSize && idx < scored.size(); b++, idx++) {
-                    selected.add(scored.get(idx));
-                }
-                long _tReb = System.nanoTime();
-                rebuildOrderedRoute(route, anchorOnly, selected, baseline, baseCum);
-                tRebuildNs += System.nanoTime() - _tReb;
-                // 2-opt incremental po każdym batchu (window ±80 od końca trasy = lokalne ulepszenia),
-                // PEŁNY twoOpt co 5 batchy = 100 obszarów = global cleanup. Dla FR 34746 obszarów / 5
-                // batchy 20 = 347 pełnych twoOpt zamiast 1737 → ~5× szybsze (z 4h 16min do ~1-1.5h
-                // łącznie z routeEffortViaCache). Dla małych scope (≤500 wp) twoOpt(route) i tak
-                // wewnętrznie robi pełen skan (FULL_SCAN_MAX), więc bez regresji.
-                batchCounter++;
-                long _tTwo = System.nanoTime();
-                if (precise || batchCounter % 5 == 0) {
-                    twoOptLogged(route, "init-grow-batch" + batchCounter);
-                } else {
-                    CoverageLocalSearch.twoOptIncremental(route, route.size() - 1, 80);
-                }
-                tTwoOptNs += System.nanoTime() - _tTwo;
-                // L2: tani estymator effortu = Σhaversine × effortFactor. Realny BRouter tylko na checkpoincie
-                // lub gdy est zbliża się do pasma → confirm-before-stop (nie przerywamy na samym szacunku).
-                double hav = metrics.haversineKm(route);
-                double estEffort = hav * effortFactor;
-                // batchCounter==1: wczesna kalibracja effortFactor (init 1.69 zaniża → bez tego małe plany
-                // przestrzeliwały do 129% zanim 1. checkpoint trafił w %5). Potem co CHECKPOINT_EVERY.
-                boolean doReal = (batchCounter == 1) || (batchCounter % CHECKPOINT_EVERY == 0) || estEffort >= hiBand
-                        || precise; // od 80% budżetu real co batch (est bywa nieświeży po prune)
-                if (doReal) {
-                    long _tRE = System.nanoTime();
-                    realEffort = metrics.effortViaCache(route);
-                    tRouteEffortNs += System.nanoTime() - _tRE;
-                    realCheckpoints++;
-                    if (hav > 1) effortFactor = realEffort / hav;   // rekalibruj jeden factor (km+wznios+detour razem)
-                    // ADMIN DEBUG: na checkpoincie cache krawędzi jest CIEPŁY → złóż realną geometrię dróg (cache-hity, 0 nowych calli) + waypointy
-                    if (debugGeoJson) debugGeometry("round" + round + "-batch" + batchCounter + "-real",
-                            metrics.realGeometry(route), route,
-                            metrics.realKm(route));
-                } else {
-                    realEffort = estEffort;
-                }
-                debugSkeleton("round" + round + "-batch" + batchCounter, route); // ADMIN DEBUG: szkielet (kolejność+numery) po każdym batchu
-                // Progress co 500 obszarów (user widzi tempo i może oszacować ETA dla mega-scope)
-                int currentMilestone = selected.size() / PROGRESS_EVERY;
-                if (currentMilestone > lastProgressMilestone) {
-                    lastProgressMilestone = currentMilestone;
-                    long elapsedS = (System.currentTimeMillis() - seedStartTs) / 1000;
-                    double pct = realEffort * 100.0 / targetEffort;
-                    double avgSecPerArea = elapsedS / (double) Math.max(1, selected.size());
-                    int remainingToTarget = (int) Math.max(0, (targetEffort - realEffort) / Math.max(0.01, realEffort / Math.max(1, selected.size())));
-                    long etaS = (long) (remainingToTarget * avgSecPerArea);
-                    log.info("Coverage seed progress: +{} obszarów (round={}), effort={}/{} ({}%), elapsed={}s, tempo={}ms/area, eta≈{}min",
-                            new Object[]{selected.size(), round, Math.round(realEffort), Math.round(targetEffort),
-                                    Math.round(pct), elapsedS, Math.round(avgSecPerArea * 1000), etaS / 60});
-                }
-                if (realEffort >= growCeiling) { // grow do 110% budżetu; COMPACT-LOOP/TRIM ściągnie do pasma [95,105]%
-                    log.info("Coverage INIT-GROW: osiągnięto {}% (≥110%) → stop rundy 0",
-                            Math.round(realEffort * 100.0 / targetEffort));
-                    break;
-                }
-            }
-            long roundDurMs = System.currentTimeMillis() - roundStartTs;
-            log.info("Coverage seed round {} END: dodano {} obszarów w tej rundzie ({} → {}), trwało {}s",
-                    new Object[]{round, selected.size() - roundStartSelected, roundStartSelected, selected.size(), roundDurMs / 1000});
-            // ISLANDS-FIX (v3, max 3 przebiegi): TYLKO wyspy/nieosiągalne. Stary transit-bet prune
-            // (lollipop/spur + restore 25 km) WYCIĘTY — robił dziury (restore promieniowy nie trafiał,
-            // grow nie umiał wrócić) i thrashował (removed 6/restored 37). Cięciem ogonków zajmuje się
-            // wyłącznie tailPrune v2 w COMPACT-LOOP (realna geometria, weryfikacja przed akceptacją).
-            for (int islPass = 0; islPass < 3; islPass++) {
-                long _tEval = System.nanoTime();
-                RouteMetrics.EvalResult ev = metrics.eval(route);
-                tEvalNs += System.nanoTime() - _tEval;
-                realEffort = ev.effort();
-                long _tVis = System.nanoTime();
-                Map<Integer, Integer> visits = countVisitsPerArea(ev.geometry(), gminaIndex);
-                tVisitsNs += System.nanoTime() - _tVis;
-                Set<double[]> toRemove = new HashSet<>(); // wyspy (identity — double[] nie nadpisuje equals)
-                boolean swapped = false;
-                int unreachable = 0;
-                long _tPrune = System.nanoTime();
-                for (int i = 1; i < route.size() - 1; i++) {
-                    double[] cur = route.get(i);
-                    if (GeometryUtil.isAnchor(cur, anchors)) continue;
-                    UnvisitedArea g = findGminaCached.apply(cur);
-                    int gv = (g == null) ? 0 : visits.getOrDefault(g.areaId(), 0);
-                    // Wyspa: BRouter nie dojechał do tego waypointu z którejś strony (edgeRouter.failedEdges()) —
-                    // nawet jeśli geometria fallback (prosta) fałszywie „zalicza" gminę (gv>0).
-                    boolean island = edgeRouter.failedEdges().contains(GeometryUtil.edgeKey(route.get(i - 1), cur))
-                            || edgeRouter.failedEdges().contains(GeometryUtil.edgeKey(cur, route.get(i + 1)));
-                    if (gv != 0 && !island) continue;
-                    // NIEOSIĄGALNA: próba 0: route-nearest sample (płytko, od strony trasy).
-                    // Próba 1: centroid (najgłębiej). Wyczerpane → wyspa, usuń.
-                    unreachable++;
-                    if (g == null) { toRemove.add(cur); continue; }
-                    int id = g.areaId();
-                    int att = entryAttempt.getOrDefault(id, 0);
-                    double[] alt = null;
-                    if (att == 0) {
-                        double[][] samples = gminaIndex.samplePointsFor(g);
-                        alt = GeometryUtil.sampleNearestToGeometry(samples, cur, ev.geometry()); // od strony trasy
-                    } else if (att == 1) {
-                        alt = gminaIndex.deepestInteriorPoint(g.areaId());           // RUNDA 51: najgłębszy (nie centroid)
-                        if (alt == null) alt = new double[]{g.lng(), g.lat()};
-                    }
-                    if (alt != null && (alt[0] != cur[0] || alt[1] != cur[1])) {
-                        swapEntryPoint(selected, cur, alt, baseline, baseCum);
-                        swapped = true;
-                        totalRetried++;
-                        entryAttempt.put(id, att + 1);
-                    } else if (att <= 1) {
-                        entryAttempt.put(id, att + 1); // ta próba odpadła (np. alt==cur) — następny pass
-                    } else {
-                        toRemove.add(cur); // route-nearest + centroid wyczerpane → naprawdę wyspa
-                    }
-                }
-                tPruneNs += System.nanoTime() - _tPrune;
-                if (toRemove.isEmpty() && !swapped) break; // czysto — koniec passów
-                selected.removeIf(s -> toRemove.contains(s.point()));
-                totalPruned += toRemove.size();
-                rebuildOrderedRoute(route, anchorOnly, selected, baseline, baseCum);
-                twoOptLogged(route, "init-grow-islands-prune");
-                realEffort = metrics.effortViaCache(route);
-                log.info("Coverage seed islands pass {}: removed={}, unreachable={}, retried={} entry-points (total)",
-                        new Object[]{islPass, toRemove.size(), unreachable, totalRetried});
-            }
-            // ADMIN DEBUG: stan po INIT-GROW + islands (przed COMPACT-LOOP)
-            debugSkeleton("round0-grown", route);
-            if (debugGeoJson) debugGeometry("round0-grown-real",
-                    metrics.realGeometry(route), route,
-                    metrics.realKm(route));
-        }
+        IslandFixResult initGrow = seedInitGrow(seed, scored, targetEffort, hiBand, growCeiling, entryAttempt);
+        realEffort = initGrow.realEffort();
+        totalPruned += initGrow.pruned();
+        totalRetried += initGrow.retried();
 
         // COMPACT-LOOP v3.17b — pętla PROPORCJONALNA (decyzja usera: koniec topup/holefill/headroom).
         // Po INIT-GROW: {2opt → anchorTransit → enclosedFill → tailPrune (tnie ogonki, ZWALNIA budżet —
@@ -548,8 +466,8 @@ final class SeedBuilder {
         int growNearInserted = 0;
         int enclosedFilled = 0;
         // Zmiana 3: STRZAŁY/plan per faza (suma + Δfaza); wątkowane przez seed, gated debugGeoJson.
-        shots = new HashMap<>();
-        if (debugGeoJson) shots = logShots("init-grow", shots);
+        debug.resetShots();
+        if (debugGeoJson) debug.logShots("init-grow");
         int[] growNearAcc = {growNearInserted};
         realEffort = seedCompactLoop(seed, hiBand, targetEffort, realEffort, growNearAcc);
         growNearInserted = growNearAcc[0];
@@ -569,10 +487,10 @@ final class SeedBuilder {
         HoleFillResult hf = seedHoleFill(seed, targetEffort, realEffort);
         realEffort = hf.realEffort();
         enclosedFilled += hf.enclosedAdded();
-        if (debugGeoJson) shots = logShots("seed-final", shots);
+        if (debugGeoJson) debug.logShots("seed-final");
         int densified = growNearInserted + enclosedFilled; // grow-near + ENCLOSED-FILL
-        debugSkeleton("seed", route); // ADMIN DEBUG: szkielet końca seeda (przed deep loop)
-        if (debugGeoJson) debugGeometry("seed-real", metrics.realGeometry(route), route,
+        debug.skeleton("seed", route); // ADMIN DEBUG: szkielet końca seeda (przed deep loop)
+        if (debugGeoJson) debug.geometry("seed-real", metrics.realGeometry(route), route,
                 metrics.realKm(route));
 
         log.info("Coverage seed ({}): +{} obszarów, removed={} islands, trimmed={}, grow-near={}, retried={} entry-points, real effort={}/{} ({}%) [v3.8: init-grow + compact-loop(grow→2opt→anchor→enclosed→tailPrune→topup)], route size={}",
@@ -633,26 +551,6 @@ final class SeedBuilder {
     private static final double RETRACE_TOL_KM = 0.06; // v3.24: out-and-back — eOut wraca TĄ SAMĄ drogą co eIn
 
 
-    /** STRZAŁY/plan po fazie: skumulowane realne brouter.apply per powód + Δ od poprzedniej fazy.
-     *  Zwraca świeży snapshot (przekaż jako {@code prev} w kolejnym wywołaniu). Total niesiony pod
-     *  kluczem "RAZEM" → Δfaza bez osobnej zmiennej. Wołaj tylko gdy {@code debugGeoJson}. */
-    private Map<String, Long> logShots(String phase, Map<String, Long> prev) {
-        Map<String, Long> now = new HashMap<>(edgeRouter.realCallsByReason());
-        long total = edgeRouter.realCalls(), prevTotal = prev.getOrDefault("RAZEM", 0L);
-        java.util.function.BiFunction<String, Long, String> f =
-                (k, n) -> n + "(Δ" + (n - prev.getOrDefault(k, 0L)) + ")";
-        log.info("Coverage STRZAŁY/plan [{}]: grow={} ogonek(relok={} scal={}) dziura(otocz={} trasa={}) pomiar={} | RAZEM={} (Δfaza={})",
-                new Object[]{phase,
-                        f.apply("grow", now.getOrDefault("grow", 0L)),
-                        f.apply("ogonek-relokacja", now.getOrDefault("ogonek-relokacja", 0L)),
-                        f.apply("ogonek-scalenie", now.getOrDefault("ogonek-scalenie", 0L)),
-                        f.apply("dziura-otoczona", now.getOrDefault("dziura-otoczona", 0L)),
-                        f.apply("dziura-przy-trasie", now.getOrDefault("dziura-przy-trasie", 0L)),
-                        f.apply("pomiar", now.getOrDefault("pomiar", 0L)),
-                        total, total - prevTotal});
-        now.put("RAZEM", total);
-        return now;
-    }
 
 
     /**
@@ -664,7 +562,7 @@ final class SeedBuilder {
     private double doubleCut(SeedRoute seed, double targetEffort, int maxPasses, String phase) {
         List<double[]> route = seed.route(); List<SeedSel> selected = seed.selected(); List<double[]> anchors = seed.anchors(); List<double[]> baseline = seed.baseline(); double[] baseCum = seed.baseCum();
         tailPruneJts2(seed, targetEffort, maxPasses, phase);
-        twoOptLogged(route, phase + "-recut2opt");
+        ops.twoOpt(route, phase + "-recut2opt");
         return tailPruneJts2(seed, targetEffort, maxPasses, phase + "-recut");
     }
 
@@ -677,129 +575,259 @@ final class SeedBuilder {
      * Zero delete/insert/re-anchor/restore/dedupe (anchor trzyma 1 wp/gmina; cięcie tylko repozycjonuje w gminie).
      * Logi (TAIL-PRUNE v6 / USUNIĘTE-OGONKI / STRZAŁY / SPUR-ANATOMIA) jak w v1.
      */
-    private double tailPruneJts2(SeedRoute seed, double targetEffort, int maxPasses, String debugPhase) {
-        List<double[]> route = seed.route(); List<SeedSel> selected = seed.selected(); List<double[]> anchors = seed.anchors(); List<double[]> baseline = seed.baseline(); double[] baseCum = seed.baseCum();
-        long callsStart = edgeRouter.realCalls();
-        edgeRouter.setReason("pomiar");
-        double effortBefore = metrics.effortViaCache(route);
-        Set<Integer> visitedBefore = gminaIndex.visitedAreaIds(
-                metrics.realGeometry(route));
-        Map<Integer, UnvisitedArea> idToArea = new HashMap<>();
-        for (UnvisitedArea a : pool) idToArea.put(a.areaId(), a);
+    /** Spur (zaułek) — punkt trasy + jego indeks + lokalny detour (objazd) względem prostej prev→next. */
+    private record Cand(double[] point, int idx, double detour) {}
+    /** Indeks pokrycia nóg: dla nogi i — gminy w które wchodzi ≥220m (legGminas[i]) + ile nóg per gmina (count). */
+    private record LegCoverage(List<Set<Integer>> legGminas, Map<Integer, Integer> count) {}
 
-        int relocated = 0, relocSkipped = 0, passes = 0, pendingRerouteCount = 0;
-        final int REROUTE_CAP = 50;
-        Map<double[], String> refusal = new java.util.IdentityHashMap<>();
-        Set<double[]> stay = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-        int round = 0, reroutedLegs = 0;
-        do {
+    /** Per-leg: gminy w które noga i wchodzi GŁĘBOKO ≥220m (0 BRouter, z cache) + licznik nóg per gmina. */
+    private LegCoverage buildLegCoverage(List<double[]> route) {
+        int n = route.size();
+        List<Set<Integer>> legGminas = new ArrayList<>(n - 1);
+        Map<Integer, Integer> count = new HashMap<>();
+        for (int i = 0; i < n - 1; i++) {
+            Set<Integer> s = gminaIndex.deeplyVisitedAreaIds(edgeRouter.edge(route.get(i), route.get(i + 1)).geometry());
+            legGminas.add(s);
+            for (int g : s) count.merge(g, 1, Integer::sum);
+        }
+        return new LegCoverage(legGminas, count);
+    }
+
+    /** Kandydaci do cięcia = nie-anchor punkty trasy posortowane wg detouru (objazdu prev→cur→next) DESC. */
+    private List<Cand> spurCandidatesByDetour(List<double[]> route, List<double[]> anchors) {
+        int n = route.size();
+        List<Cand> cands = new ArrayList<>();
+        for (int i = 1; i < n - 1; i++) {
+            double[] cur = route.get(i);
+            if (GeometryUtil.isAnchor(cur, anchors)) continue;
+            double det = edgeRouter.edge(route.get(i - 1), cur).distanceKm()
+                    + edgeRouter.edge(cur, route.get(i + 1)).distanceKm()
+                    - velomarker.service.planning.WaypointSelector.haversineKm(route.get(i - 1), route.get(i + 1));
+            cands.add(new Cand(cur, i, det));
+        }
+        cands.sort((x, y) -> Double.compare(y.detour(), x.detour()));
+        return cands;
+    }
+
+    /** Zaułek = ślad ZAWRACA na tym wp (eIn i eOut nakładają się, out-and-back). Przelot (ślad przechodzi) → false. */
+    private boolean isDeadEnd(EdgeCache.EdgeInfo eIn, EdgeCache.EdgeInfo eOut) {
+        return outAndBackDivergence(eIn, eOut) != null;
+    }
+
+    /** Czy gmina ma PRZELOT ≥220m na INNEJ nodze niż ten wp (count gmin − własny wkład tego wp > 0).
+     *  True → wp jest zbędny (gmina i tak zaliczona gdzie indziej → usuń zaułek, re-anchor na przelocie). */
+    private boolean hasDeepPassElsewhere(int areaId, Set<Integer> gIn, Set<Integer> gOut, Map<Integer, Integer> count) {
+        int ownContribution = (gIn.contains(areaId) ? 1 : 0) + (gOut.contains(areaId) ? 1 : 0);
+        return count.getOrDefault(areaId, 0) > ownContribution;
+    }
+
+    /** Wycofaj z licznika przelotów per-gmina wkład obu nóg wp idx (po usunięciu/relokacji wp na tych nogach). */
+    private void clearLegsFromCount(int idx, List<Set<Integer>> legGminas, Map<Integer, Integer> count) {
+        for (int g : legGminas.get(idx - 1)) count.merge(g, -1, Integer::sum);
+        for (int g : legGminas.get(idx)) count.merge(g, -1, Integer::sum);
+    }
+
+    /** Po przesunięciu wp idx (relokacja): przelicz pokrycie ≥220m jego DWÓCH nóg (prev→wp, wp→next) i zaktualizuj
+     *  legGminas + licznik przelotów per-gmina (wycofaj stare + dodaj nowe). Trzyma „ile nóg w gminę" spójne po cięciu. */
+    private void refreshLegCoverageAround(int idx, double[] prev, double[] moved, double[] next,
+                                          List<Set<Integer>> legGminas, Map<Integer, Integer> count) {
+        clearLegsFromCount(idx, legGminas, count);
+        Set<Integer> inDeep = gminaIndex.deeplyVisitedAreaIds(edgeRouter.edge(prev, moved).geometry());
+        Set<Integer> outDeep = gminaIndex.deeplyVisitedAreaIds(edgeRouter.edge(moved, next).geometry());
+        for (int g : inDeep) count.merge(g, 1, Integer::sum);
+        for (int g : outDeep) count.merge(g, 1, Integer::sum);
+        legGminas.set(idx - 1, inDeep);
+        legGminas.set(idx, outDeep);
+    }
+
+    private double tailPruneJts2(SeedRoute seed, double targetEffort, int maxPasses, String debugPhase) {
+        return new SpurCutRun(seed, targetEffort, maxPasses, debugPhase).run();
+    }
+
+    /**
+     * Jeden przebieg cięcia spurów (TAIL-PRUNE v6): rundy {pętla cut-passów do-skutku → realny reroute sliced legów}
+     * aż brak wtórniaków (max 3). Klasa stanu: gęsty stan przebiegu (pokrycie nóg, blokady, kolejka usunięć, liczniki,
+     * stay/refusal) trzymany w polach, a pętle rozbite na małe nazwane metody. Inner non-static → korzysta z
+     * kolaboratorów SeedBuilder (edgeRouter/metrics/gminaIndex/findGminaCached/debug) bez przepychania ich parametrami.
+     */
+    private final class SpurCutRun {
+        private static final int REROUTE_CAP = 50;
+        private final SeedRoute seed;
+        private final List<double[]> route;
+        private final List<double[]> anchors;
+        private final double targetEffort;
+        private final int maxPasses;
+        private final String debugPhase;
+        // ── stan całego przebiegu ──
+        private final Map<Integer, UnvisitedArea> idToArea = new HashMap<>();
+        private final Map<double[], String> refusal = new java.util.IdentityHashMap<>();
+        private final Set<double[]> stay = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        private final long callsStart;
+        private final double effortBefore;
+        private final Set<Integer> visitedBefore;
+        private int relocated, relocSkipped, passes, pendingRerouteCount;
+        // ── stan jednego cut-passa (reset w runCutPass) ──
+        private List<Set<Integer>> legGminas;
+        private Map<Integer, Integer> count;
+        private boolean[] locked;
+        private List<double[][]> relocPairs;
+        private List<double[]> toDelete;
+        private Set<Integer> delGids;
+        private boolean changed;
+        private List<String> killLog; // per-runda (null gdy !debugGeoJson)
+
+        SpurCutRun(SeedRoute seed, double targetEffort, int maxPasses, String debugPhase) {
+            this.seed = seed;
+            this.route = seed.route();
+            this.anchors = seed.anchors();
+            this.targetEffort = targetEffort;
+            this.maxPasses = maxPasses;
+            this.debugPhase = debugPhase;
+            for (UnvisitedArea a : pool) idToArea.put(a.areaId(), a);
+            edgeRouter.setReason("pomiar");
+            this.callsStart = edgeRouter.realCalls();
+            this.effortBefore = metrics.effortViaCache(route);
+            this.visitedBefore = gminaIndex.visitedAreaIds(metrics.realGeometry(route));
+        }
+
+        /** Rundy {pętla cut-passów → reroute} aż brak wtórniaków. Zwraca realny effort po cięciu. */
+        double run() {
+            int round = 0, reroutedLegs;
+            do {
+                reroutedLegs = runRound(round);
+                round++;
+            } while (reroutedLegs > 0 && round < 3);
+            return finishAndLog();
+        }
+
+        /** Jedna runda: pętla cut-passów do-skutku → realny reroute sliced legów (ujawnia wtórniaki). Zwraca #reroutedLegs. */
+        private int runRound(int round) {
             int relRoundStart = relocated;
-            List<String> killLog = debugGeoJson ? new ArrayList<>() : null;
-            Set<Integer> visBeforeRound = debugGeoJson ? gminaIndex.visitedAreaIds(
-                    metrics.realGeometry(route)) : null;
-            Map<String, Long> shotsRoundStart = null;
-            if (debugGeoJson) {
-                shotsRoundStart = new HashMap<>(edgeRouter.realCallsByReason());
-                shotsRoundStart.put("RAZEM", edgeRouter.realCalls());
-                debugGeometry(debugPhase + "-precut" + round,
-                        metrics.realGeometry(route), route,
-                        metrics.realKm(route));
-            }
-            boolean changed = true;
+            killLog = debugGeoJson ? new ArrayList<>() : null;
+            Set<Integer> visBeforeRound = debugGeoJson ? gminaIndex.visitedAreaIds(metrics.realGeometry(route)) : null;
+            if (debugGeoJson) debug.geometry(debugPhase + "-precut" + round, metrics.realGeometry(route), route, metrics.realKm(route));
+            changed = true;
             int pass = 0;
             while (changed && pass < maxPasses + 6) {
                 changed = false; pass++; passes++;
-                int n = route.size();
-                if (n < 3) break;
-                // RUNDA 66: per-leg index na −220 (deeplyVisitedAreaIds, 0 BRouter): legGminas[i] = gminy w które noga i
-                // wchodzi GŁĘBOKO ≥220m (PRZELOT, nie muśnięcie); count[g] = w ilu nogach. Decyzja cięcia: czy spurArea ma
-                // przelot GDZIE INDZIEJ ≥220m (spójne z re-anchorem, który też −220 → cel zawsze istnieje gdy tniemy).
-                List<Set<Integer>> legGminas = new ArrayList<>(n - 1);
-                Map<Integer, Integer> count = new HashMap<>();
-                for (int i = 0; i < n - 1; i++) {
-                    Set<Integer> s = gminaIndex.deeplyVisitedAreaIds(
-                            edgeRouter.edge(route.get(i), route.get(i + 1)).geometry());
-                    legGminas.add(s);
-                    for (int g : s) count.merge(g, 1, Integer::sum);
-                }
-                record Cand(double[] point, int idx, double detour) {}
-                List<Cand> cands = new ArrayList<>();
-                for (int i = 1; i < n - 1; i++) {
-                    double[] cur = route.get(i);
-                    if (GeometryUtil.isAnchor(cur, anchors)) continue;
-                    double det = edgeRouter.edge(route.get(i - 1), cur).distanceKm()
-                            + edgeRouter.edge(cur, route.get(i + 1)).distanceKm()
-                            - velomarker.service.planning.WaypointSelector.haversineKm(route.get(i - 1), route.get(i + 1));
-                    cands.add(new Cand(cur, i, det));
-                }
-                cands.sort((x, y) -> Double.compare(y.detour(), x.detour()));
-                List<double[][]> relocPairs = new ArrayList<>();
-                List<double[]> toDelete = new ArrayList<>();   // RUNDA 65: zbędne zaułki → USUŃ + re-anchor na przelocie (batch po pętli)
-                Set<Integer> delGids = new HashSet<>();
-                boolean[] locked = new boolean[n];             // chroni sąsiadów usuwanego spuru (poprawny merge prev→next)
-                for (Cand c : cands) {
-                    int idx = c.idx();
-                    if (idx <= 0 || idx >= route.size() - 1) continue;
-                    if (locked[idx - 1] || locked[idx] || locked[idx + 1]) continue;
-                    double[] cur = c.point();
-                    if (stay.contains(cur)) { refusal.put(cur, "stay-zostaw"); continue; }
-                    double[] prev = route.get(idx - 1), next = route.get(idx + 1);
-                    UnvisitedArea spurArea = findGminaCached.apply(cur);
-                    if (spurArea == null) { refusal.put(cur, "bez-gminy"); continue; }
-                    Set<Integer> gIn = legGminas.get(idx - 1), gOut = legGminas.get(idx);
-                    EdgeCache.EdgeInfo eIn = edgeRouter.edge(prev, cur);
-                    EdgeCache.EdgeInfo eOut = edgeRouter.edge(cur, next);
-                    // ───────── REGUŁA 1: NIE zaułek (przelot — ślad PRZECHODZI przez cur) → ZOSTAW ─────────
-                    if (outAndBackDivergence(eIn, eOut) == null) { refusal.put(cur, "przelot-zostaw"); continue; }
-                    // ───────── REGUŁA 2: ZAUŁEK (ślepy przejazd, ślad ZAWRACA) ─────────
-                    // czy spurArea ma PRZELOT ≥220m na INNEJ nodze niż ten wp? count/legGminas na −220 → wkład tego wp odejmujemy.
-                    // wp-na-granicy −220 wpływa TYLKO na własny wkład (nieszkodliwie); cel cięcia = głęboka noga gdzie indziej.
-                    int contribDeep = (gIn.contains(spurArea.areaId()) ? 1 : 0) + (gOut.contains(spurArea.areaId()) ? 1 : 0);
-                    boolean deepElsewhere = count.getOrDefault(spurArea.areaId(), 0) > contribDeep;
-                    if (deepElsewhere) {
-                        // 2a: ZBĘDNY zaułek — spurArea ma PRZELOT ≥220m GDZIE INDZIEJ (choćby na DALEKIEJ nodze). USUŃ spur
-                        //   (collapse prev→next); wp wstawimy na PRZELOCIE w spurArea po pętli (re-anchor, 1 wp/gmina). Jedna
-                        //   mechanika — re-anchor znajdzie nogę-przelot geometrią (indeks nogi nieistotny: #4-5 czy #204-205).
-                        if (killLog != null) killLog.add(String.format(java.util.Locale.ROOT, "#%d %s | DRUGI-KONTAKT | zbędny→usuń+przelot", idx, spurArea.name()));
-                        toDelete.add(cur);
-                        delGids.add(spurArea.areaId());
-                        for (int g : legGminas.get(idx - 1)) count.merge(g, -1, Integer::sum);
-                        for (int g : legGminas.get(idx)) count.merge(g, -1, Integer::sum);
-                        legGminas.set(idx - 1, new HashSet<>());
-                        legGminas.set(idx, new HashSet<>());
-                        locked[idx - 1] = locked[idx] = locked[idx + 1] = true;
-                        relocated++; changed = true; continue;
-                    }
-                    // 2b: JEDYNY wjazd → SKRÓĆ/POGŁĘB do 220m na WŁASNEJ nodze (route.set wewnątrz relocateShallowDeferred).
-                    RelocResult relocResult = relocateShallowDeferred(seed, Set.of(spurArea.areaId()), prev, cur, next, idx, spurArea, eIn, eOut,
-                            pendingRerouteCount < REROUTE_CAP);
-                    if (relocResult.ok()) {
-                        if (killLog != null) { // RUNDA 67: flaga — wynik MUSI być głęboki (kredytuje −200)
-                            UnvisitedArea creditedArea = gminaIndex.findCreditedGminaForPoint(route.get(idx)[0], route.get(idx)[1]);
-                            killLog.add(String.format(java.util.Locale.ROOT, "#%d %s | JEDYNY | →220m %s", idx, spurArea.name(),
-                                    creditedArea != null && creditedArea.areaId() == spurArea.areaId() ? "(głęboki)" : "(PŁYTKI!)"));
-                        }
-                        relocated++; changed = true;
-                        for (int g : legGminas.get(idx - 1)) count.merge(g, -1, Integer::sum);
-                        for (int g : legGminas.get(idx)) count.merge(g, -1, Integer::sum);
-                        Set<Integer> nInDeep = gminaIndex.deeplyVisitedAreaIds(edgeRouter.edge(prev, route.get(idx)).geometry());
-                        Set<Integer> nOutDeep = gminaIndex.deeplyVisitedAreaIds(edgeRouter.edge(route.get(idx), next).geometry());
-                        for (int g : nInDeep) count.merge(g, 1, Integer::sum);
-                        for (int g : nOutDeep) count.merge(g, 1, Integer::sum);
-                        legGminas.set(idx - 1, nInDeep); legGminas.set(idx, nOutDeep);
-                        if (relocResult.pendingDeparture() != null) { relocPairs.add(relocResult.pendingDeparture()); pendingRerouteCount++; stay.add(route.get(idx)); }
-                        continue;
-                    }
-                    refusal.put(cur, "jedyny-zostaw"); relocSkipped++;
-                }
-                if (!relocPairs.isEmpty()) {
-                    edgeRouter.setReason("ogonek-relokacja");
-                    edgeRouter.prewarmPairs(relocPairs); // nogi powrotne loop-spurów (batch)
-                    edgeRouter.setReason("pomiar");
-                }
-                // RUNDA 65: USUŃ zbędne zaułki (collapse prev→next) + WSTAW wp na PRZELOCIE ≥220m w każdej usuniętej
-                // gminie (re-anchor). Jedna mechanika dla przelotu lokalnego i dalekiego — nogę znajdujemy geometrią.
-                if (!toDelete.isEmpty()) {
+                if (route.size() < 3) break;
+                runCutPass();
+            }
+            int reroutedLegs = edgeRouter.rerouteApproximateLegs(route);
+            if (debugGeoJson) logRound(round, relRoundStart, reroutedLegs, visBeforeRound);
+            return reroutedLegs;
+        }
+
+        /** Jeden cut-pass: indeks pokrycia nóg → kandydaci wg detouru → rozstrzygnij każdego → scal relokacje i usunięcia. */
+        private void runCutPass() {
+            LegCoverage lc = buildLegCoverage(route);
+            legGminas = lc.legGminas();
+            count = lc.count();
+            relocPairs = new ArrayList<>();
+            toDelete = new ArrayList<>();
+            delGids = new HashSet<>();
+            locked = new boolean[route.size()];
+            for (Cand c : spurCandidatesByDetour(route, anchors)) processCandidate(c);
+            if (!relocPairs.isEmpty()) {
+                edgeRouter.setReason("ogonek-relokacja");
+                edgeRouter.prewarmPairs(relocPairs); // nogi powrotne loop-spurów (batch)
+                edgeRouter.setReason("pomiar");
+            }
+            if (!toDelete.isEmpty()) deleteSpursAndReanchor(seed, toDelete, delGids, stay);
+        }
+
+        /** Rozstrzygnięcie jednego kandydata wg reguł: przelot→zostaw; zaułek kryty gdzie indziej→usuń; jedyny wjazd→skróć. */
+        private void processCandidate(Cand c) {
+            int idx = c.idx();
+            if (idx <= 0 || idx >= route.size() - 1) return;
+            if (locked[idx - 1] || locked[idx] || locked[idx + 1]) return; // sąsiad usuwanego spuru — nie ruszaj w tym passie
+            double[] cur = c.point();
+            if (stay.contains(cur)) { refusal.put(cur, "stay-zostaw"); return; }
+            double[] prev = route.get(idx - 1), next = route.get(idx + 1);
+            UnvisitedArea spurArea = findGminaCached.apply(cur);
+            if (spurArea == null) { refusal.put(cur, "bez-gminy"); return; }
+            Set<Integer> gIn = legGminas.get(idx - 1), gOut = legGminas.get(idx);
+            EdgeCache.EdgeInfo eIn = edgeRouter.edge(prev, cur);
+            EdgeCache.EdgeInfo eOut = edgeRouter.edge(cur, next);
+            // REGUŁA 1: przelot (ślad PRZECHODZI przez cur) → zostaw; tniemy tylko zaułki (ślad ZAWRACA).
+            if (!isDeadEnd(eIn, eOut)) { refusal.put(cur, "przelot-zostaw"); return; }
+            // REGUŁA 2: zaułek. Gmina kryta przelotem ≥220m GDZIE INDZIEJ → wp zbędny (usuń); inaczej jedyny wjazd (skróć).
+            if (hasDeepPassElsewhere(spurArea.areaId(), gIn, gOut, count)) deleteRedundantSpur(idx, cur, spurArea);
+            else shortenSoleSpur(idx, cur, prev, next, spurArea, eIn, eOut);
+        }
+
+        /** 2a: zaułek gminy krytej PRZELOTEM gdzie indziej → usuń wp (collapse prev→next); re-anchor na przelot po pętli (1 wp/gmina). */
+        private void deleteRedundantSpur(int idx, double[] cur, UnvisitedArea spurArea) {
+            if (killLog != null) killLog.add(String.format(java.util.Locale.ROOT, "#%d %s | DRUGI-KONTAKT | zbędny→usuń+przelot", idx, spurArea.name()));
+            toDelete.add(cur);
+            delGids.add(spurArea.areaId());
+            clearLegsFromCount(idx, legGminas, count);
+            legGminas.set(idx - 1, new HashSet<>());
+            legGminas.set(idx, new HashSet<>());
+            locked[idx - 1] = locked[idx] = locked[idx + 1] = true;
+            relocated++; changed = true;
+        }
+
+        /** 2b: jedyny wjazd w gminę → skróć/pogłęb wp do 220m na WŁASNEJ nodze (relokacja JTS); nie da się → zostaw. */
+        private void shortenSoleSpur(int idx, double[] cur, double[] prev, double[] next, UnvisitedArea spurArea,
+                                     EdgeCache.EdgeInfo eIn, EdgeCache.EdgeInfo eOut) {
+            RelocResult r = relocateShallowDeferred(seed, Set.of(spurArea.areaId()), prev, cur, next, idx, spurArea, eIn, eOut,
+                    pendingRerouteCount < REROUTE_CAP);
+            if (!r.ok()) { refusal.put(cur, "jedyny-zostaw"); relocSkipped++; return; }
+            if (killLog != null) { // RUNDA 67: flaga — wynik MUSI być głęboki (kredytuje −200)
+                UnvisitedArea creditedArea = gminaIndex.findCreditedGminaForPoint(route.get(idx)[0], route.get(idx)[1]);
+                killLog.add(String.format(java.util.Locale.ROOT, "#%d %s | JEDYNY | →220m %s", idx, spurArea.name(),
+                        creditedArea != null && creditedArea.areaId() == spurArea.areaId() ? "(głęboki)" : "(PŁYTKI!)"));
+            }
+            relocated++; changed = true;
+            refreshLegCoverageAround(idx, prev, route.get(idx), next, legGminas, count);
+            if (r.pendingDeparture() != null) { relocPairs.add(r.pendingDeparture()); pendingRerouteCount++; stay.add(route.get(idx)); }
+        }
+
+        /** Log + debug-GeoJSON jednej rundy cięcia (tylko debugGeoJson). */
+        private void logRound(int round, int relRoundStart, int reroutedLegs, Set<Integer> visBeforeRound) {
+            debug.geometry(debugPhase + "-cut" + round, metrics.realGeometry(route), route, metrics.realKm(route));
+            double roundEffort = metrics.effortViaCache(route);
+            Set<Integer> visAfterRound = gminaIndex.visitedAreaIds(metrics.realGeometry(route));
+            List<String> droppedRoundNames = new ArrayList<>();
+            for (int g : visBeforeRound) if (!visAfterRound.contains(g)) {
+                UnvisitedArea ga = idToArea.get(g);
+                droppedRoundNames.add(ga != null ? ga.name() : ("id" + g));
+            }
+            boolean willContinue = reroutedLegs > 0 && (round + 1) < 3;
+            log.info("Coverage TAIL-PRUNE v6 [{}-cut{}]: relocated={}, reloc-skipped={}, passes={}, calls={}, effort {}->{} ({}%->{}%) | runda: reloc+{}, reroute={}, dropped-runda={} {} -> {}",
+                    new Object[]{debugPhase, round, relocated, relocSkipped, passes, edgeRouter.realCalls() - callsStart,
+                            Math.round(effortBefore), Math.round(roundEffort),
+                            Math.round(effortBefore * 100.0 / targetEffort), Math.round(roundEffort * 100.0 / targetEffort),
+                            relocated - relRoundStart, reroutedLegs, droppedRoundNames.size(), droppedRoundNames,
+                            willContinue ? "kolejna runda" : "KONIEC petli"});
+            log.info("Coverage USUNIETE-OGONKI [{}-cut{}]: {} pozycji: {}",
+                    new Object[]{debugPhase, round, killLog == null ? 0 : killLog.size(), killLog});
+            debug.logShots(debugPhase + "-cut" + round);
+            debugSpurAnatomyJts(route, anchors, idToArea, refusal, debugPhase + "-cut" + round);
+        }
+
+        /** Finalny pomiar + log podsumowania + debug. Zwraca realny effort. */
+        private double finishAndLog() {
+            double realEffort = metrics.effortViaCache(route);
+            Set<Integer> visitedAfter = gminaIndex.visitedAreaIds(metrics.realGeometry(route));
+            Set<Integer> dropped = new HashSet<>(visitedBefore); dropped.removeAll(visitedAfter);
+            log.info("Coverage TAIL-PRUNE v6 (JTS-clean v2): relocated={}, reloc-skipped={}, passes={}, dropped={}, calls={}, effort {}->{} ({}%->{}%)",
+                    new Object[]{relocated, relocSkipped, passes, dropped.size(), edgeRouter.realCalls() - callsStart,
+                            Math.round(effortBefore), Math.round(realEffort),
+                            Math.round(effortBefore * 100.0 / targetEffort), Math.round(realEffort * 100.0 / targetEffort)});
+            if (debugGeoJson) {
+                debugSpurAnatomyJts(route, anchors, idToArea, refusal, debugPhase);
+                debug.geometry(debugPhase, metrics.realGeometry(route), route, metrics.realKm(route));
+            }
+            return realEffort;
+        }
+    }
+
+    /** RUNDA 65: usuń zbędne zaułki (collapse prev→next) + wstaw wp na PRZELOCIE ≥220m w każdej
+     *  usuniętej gminie (re-anchor; nogę znajdujemy geometrią — lokalny i daleki przelot tą samą mechaniką). */
+    private void deleteSpursAndReanchor(SeedRoute seed, List<double[]> toDelete, Set<Integer> delGids, Set<double[]> stay) {
+        List<double[]> route = seed.route(); List<SeedSel> selected = seed.selected(); List<double[]> anchors = seed.anchors(); List<double[]> baseline = seed.baseline();
                     List<double[][]> mergedPairs = new ArrayList<>();
                     for (double[] d : toDelete) {
                         int di = GeometryUtil.identityIndexOf(route, d);
@@ -843,51 +871,6 @@ final class SeedBuilder {
                         selected.add(new SeedSel(entryArea, heartPoint, ordering.orderKey(heartPoint), 0.0, GeometryUtil.minDistToBaselineKm(heartPoint, baseline)));
                         stay.add(heartPoint);
                     }
-                }
-            }
-            reroutedLegs = edgeRouter.rerouteApproximateLegs(route); // realny re-route sliced legów → ujawnia wtórniaki
-            if (debugGeoJson) {
-                debugGeometry(debugPhase + "-cut" + round,
-                        metrics.realGeometry(route), route,
-                        metrics.realKm(route));
-                double roundEffort = metrics.effortViaCache(route);
-                Set<Integer> visAfterRound = gminaIndex.visitedAreaIds(
-                        metrics.realGeometry(route));
-                List<String> droppedRoundNames = new ArrayList<>();
-                for (int g : visBeforeRound) if (!visAfterRound.contains(g)) {
-                    UnvisitedArea ga = idToArea.get(g);
-                    droppedRoundNames.add(ga != null ? ga.name() : ("id" + g));
-                }
-                boolean willContinue = reroutedLegs > 0 && (round + 1) < 3;
-                log.info("Coverage TAIL-PRUNE v6 [{}-cut{}]: relocated={}, reloc-skipped={}, passes={}, calls={}, effort {}→{} ({}%→{}%) | runda: reloc+{}, reroute={}, dropped-runda={} {} → {}",
-                        new Object[]{debugPhase, round, relocated, relocSkipped, passes, edgeRouter.realCalls() - callsStart,
-                                Math.round(effortBefore), Math.round(roundEffort),
-                                Math.round(effortBefore * 100.0 / targetEffort), Math.round(roundEffort * 100.0 / targetEffort),
-                                relocated - relRoundStart, reroutedLegs, droppedRoundNames.size(), droppedRoundNames,
-                                willContinue ? "kolejna runda" : "KONIEC pętli"});
-                log.info("Coverage USUNIĘTE-OGONKI [{}-cut{}]: {} pozycji: {}",
-                        new Object[]{debugPhase, round, killLog == null ? 0 : killLog.size(), killLog});
-                logShots(debugPhase + "-cut" + round, shotsRoundStart);
-                debugSpurAnatomyJts(route, anchors, idToArea, refusal, debugPhase + "-cut" + round);
-            }
-            round++;
-        } while (reroutedLegs > 0 && round < 3);
-
-        double realEffort = metrics.effortViaCache(route);
-        Set<Integer> visitedAfter = gminaIndex.visitedAreaIds(
-                metrics.realGeometry(route));
-        Set<Integer> dropped = new HashSet<>(visitedBefore); dropped.removeAll(visitedAfter);
-        log.info("Coverage TAIL-PRUNE v6 (JTS-clean v2): relocated={}, reloc-skipped={}, passes={}, dropped={}, calls={}, effort {}→{} ({}%→{}%)",
-                new Object[]{relocated, relocSkipped, passes, dropped.size(), edgeRouter.realCalls() - callsStart,
-                        Math.round(effortBefore), Math.round(realEffort),
-                        Math.round(effortBefore * 100.0 / targetEffort), Math.round(realEffort * 100.0 / targetEffort)});
-        if (debugGeoJson) {
-            debugSpurAnatomyJts(route, anchors, idToArea, refusal, debugPhase);
-            debugGeometry(debugPhase,
-                    metrics.realGeometry(route), route,
-                    metrics.realKm(route));
-        }
-        return realEffort;
     }
 
 
@@ -1038,127 +1021,174 @@ final class SeedBuilder {
      * Tryby (v3.8): zwykły grow (12, 3) i TOP-UP — domykacz pasma (6, 1: pomiar po każdej szóstce,
      * nie da się przestrzelić).
      */
-    private GrowNearResult growNear(SeedRoute seed, double growTarget,
-                                    int batchSize, int checkpointEvery, int maxInserts) {
-        List<double[]> route = seed.route(); List<SeedSel> selected = seed.selected(); List<double[]> anchorOnly = seed.anchorOnly(); List<double[]> baseline = seed.baseline(); double[] baseCum = seed.baseCum();
-        final int BATCH = batchSize;
-        final int CHECKPOINT_EVERY = checkpointEvery;
-        // v3.17b: maxInserts > 0 = dobieranie wg PROPORCJI (wstaw dokładnie tyle gmin, zmierz raz na
-        // końcu — bez sterowania effort-targetem). 0 = stary tryb effort-driven (nieużywany po v3.17b).
-        long callsStart = edgeRouter.realCalls(); // v3.18: realne strzały (nie misses)
-        RouteMetrics.EvalResult ev = metrics.eval(route);
-        double effort = ev.effort();
-        if (effort >= growTarget) return new GrowNearResult(effort, 0);
-        Set<Integer> visited = ev.visited();
-        List<double[]> geomRef = ev.geometry();
+    private GrowNearResult growNear(SeedRoute seed, double growTarget, int batchSize, int checkpointEvery, int maxInserts) {
+        return new GrowRun(seed, growTarget, batchSize, checkpointEvery, maxInserts).run();
+    }
 
-        Set<Integer> myInsertAreas = new HashSet<>();
-        List<NearCand> cands = nearCandidates(visited, myInsertAreas, route);
+    /**
+     * Dobieranie BLISKICH nieodwiedzonych gmin (po distToRoute = zwartość blobu) porcjami do {@code growTarget}.
+     * Klasa stanu — inner non-static. Pętla: {wstaw porcję (cheapest-insertion) → 2opt → pomiar real co checkpoint
+     * lub gdy est blisko celu → UNDO porcji jeśli marginal 3× droższy od średniej (złapane dalekie gminy)}.
+     */
+    private final class GrowRun {
+        private final SeedRoute seed;
+        private final List<double[]> route;
+        private final List<SeedSel> selected;
+        private final List<double[]> baseline;
+        private final double growTarget;
+        private final int batch;
+        private final int checkpointEvery;
+        private final int maxInserts;
+        private final long callsStart;
+        private final List<SeedSel> allInserts = new ArrayList<>();
+        private final Set<Integer> myInsertAreas = new HashSet<>();
+        private final Set<Integer> retriedCentroid = new HashSet<>();
+        private List<NearCand> cands;
+        private Set<Integer> visited;
+        private List<double[]> geomRef;
+        private double effort, effortFactor, hav, lastMeasured;
+        private int inserted, ci, batchCount, checkpoints, refreshes, sinceMeasure;
 
-        // Estymator L2: effort ≈ haversine(route) × factor. Factor startuje z realnego stanu
-        // trasy i jest rekalibrowany na checkpointach — samodostosowuje się do terenu/profilu.
-        double hav = metrics.haversineKm(route);
-        double effortFactor = hav > 1 ? effort / hav : 2.0;
-        int inserted = 0;
-        int ci = 0;
-        int batchCount = 0;
-        int checkpoints = 0;
-        int refreshes = 0;
-        double lastMeasured = effort; // do undo: ostatni REALNY pomiar (wejściowy jest realny)
-        int sinceMeasure = 0;         // ile wstawek od ostatniego realnego pomiaru
-        List<SeedSel> allInserts = new ArrayList<>();
-        Set<Integer> retriedCentroid = new HashSet<>();
-        while (true) {
-            if (maxInserts > 0 && inserted >= maxInserts) break; // v3.17b: limit dobierania wg proporcji
+        GrowRun(SeedRoute seed, double growTarget, int batchSize, int checkpointEvery, int maxInserts) {
+            this.seed = seed;
+            this.route = seed.route();
+            this.selected = seed.selected();
+            this.baseline = seed.baseline();
+            this.growTarget = growTarget;
+            this.batch = batchSize;
+            this.checkpointEvery = checkpointEvery;
+            this.maxInserts = maxInserts;
+            this.callsStart = edgeRouter.realCalls();
+        }
+
+        /** Pomiar wejściowy → pętla dobierania porcjami → finalizacja (2opt + wyspy + kredyt-verify). */
+        GrowNearResult run() {
+            RouteMetrics.EvalResult ev = metrics.eval(route);
+            effort = ev.effort();
+            if (effort >= growTarget) return new GrowNearResult(effort, 0);
+            visited = ev.visited();
+            geomRef = ev.geometry();
+            cands = nearCandidates(visited, myInsertAreas, route);
+            hav = metrics.haversineKm(route);
+            effortFactor = hav > 1 ? effort / hav : 2.0; // estymator L2: effort ≈ haversine × factor (rekalibrowany)
+            lastMeasured = effort;
+            while (true) {
+                if (maxInserts > 0 && inserted >= maxInserts) break; // limit dobierania wg proporcji
+                List<SeedSel> batchSels = fillBatch();
+                if (batchSels.isEmpty()) { if (refresh()) break; else continue; }
+                if (processBatch(batchSels)) break;
+            }
+            return finish();
+        }
+
+        /** Wstaw porcję (≤batch) najbliższych nieodwiedzonych gmin metodą cheapest-insertion (bez tasowania trasy). */
+        private List<SeedSel> fillBatch() {
             List<SeedSel> batchSels = new ArrayList<>();
-            while (batchSels.size() < BATCH && (maxInserts <= 0 || inserted + batchSels.size() < maxInserts)
-                    && ci < cands.size()) {
+            while (batchSels.size() < batch && (maxInserts <= 0 || inserted + batchSels.size() < maxInserts) && ci < cands.size()) {
                 NearCand nc = cands.get(ci++);
-                if (visited.contains(nc.area().areaId())) continue;
-                if (myInsertAreas.contains(nc.area().areaId())) continue;
-                double[] ep = gminaIndex.deepestInteriorPoint(nc.area().areaId()); // RUNDA 51: najgłębszy
+                if (visited.contains(nc.area().areaId()) || myInsertAreas.contains(nc.area().areaId())) continue;
+                double[] ep = gminaIndex.deepestInteriorPoint(nc.area().areaId()); // najgłębszy punkt gminy
                 if (ep == null) ep = GeometryUtil.sampleNearestToGeometry(gminaIndex.samplePointsFor(nc.area()), null, geomRef);
                 if (ep == null) continue;
-                SeedSel sel = new SeedSel(nc.area(), ep, ordering.orderKey(ep), 0.0,
-                        GeometryUtil.minDistToBaselineKm(ep, baseline));
+                SeedSel sel = new SeedSel(nc.area(), ep, ordering.orderKey(ep), 0.0, GeometryUtil.minDistToBaselineKm(ep, baseline));
                 selected.add(sel);
                 batchSels.add(sel);
                 allInserts.add(sel);
                 myInsertAreas.add(nc.area().areaId());
-                // v3.9: WSUWANIE zamiast tasowania — punkt wchodzi tam, gdzie najmniej nadkłada
-                // (linijka), reszta kolejności bez zmian → BRouter pyta tylko o dojazd do nowej
-                // gminy (~2/szt), nie o pół trasy po każdym przetasowaniu z hilberta.
-                route.add(GeometryUtil.cheapestInsertPos(route, ep), ep);
+                route.add(GeometryUtil.cheapestInsertPos(route, ep), ep); // wsuń tam, gdzie najmniej nadkłada
             }
-            if (batchSels.isEmpty()) {
-                // v3.7: wyczerpanie listy ≠ koniec wzrostu — kandydaci liczeni na trasie SPRZED
-                // wstawek, a nowe segmenty mają własnych sąsiadów ≤25 km (cykl 1 stawał na 88%
-                // targetu po 48 wstawkach). Refresh na aktualnej trasie, max 2.
-                if (refreshes >= 2) break;
-                refreshes++;
-                RouteMetrics.EvalResult rev = metrics.eval(route);
-                effort = rev.effort();
-                visited = rev.visited();
-                geomRef = rev.geometry();
-                hav = metrics.haversineKm(route);
-                if (hav > 1) effortFactor = effort / hav;
-                lastMeasured = effort;
-                sinceMeasure = 0;
-                if (effort >= growTarget) break;
-                cands = nearCandidates(visited, myInsertAreas, route);
-                ci = 0;
-                if (cands.isEmpty()) break;
-                continue;
-            }
+            return batchSels;
+        }
+
+        /** Lista kandydatów wyczerpana: przelicz pokrycie i sąsiadów na AKTUALNEJ trasie (nowe segmenty mają swoich
+         *  sąsiadów ≤25 km). Max 2 refreshe. Zwraca true gdy koniec wzrostu (cel/limit/brak kandydatów). */
+        private boolean refresh() {
+            if (refreshes >= 2) return true;
+            refreshes++;
+            RouteMetrics.EvalResult rev = metrics.eval(route);
+            effort = rev.effort();
+            visited = rev.visited();
+            geomRef = rev.geometry();
+            hav = metrics.haversineKm(route);
+            if (hav > 1) effortFactor = effort / hav;
+            lastMeasured = effort;
+            sinceMeasure = 0;
+            if (effort >= growTarget) return true;
+            cands = nearCandidates(visited, myInsertAreas, route);
+            ci = 0;
+            return cands.isEmpty();
+        }
+
+        /** Po wstawieniu porcji: 2opt, estymata effortu; co checkpoint (lub blisko celu) realny pomiar + ew. UNDO porcji.
+         *  Zwraca true gdy osiągnięto cel lub cofnięto za drogą porcję (stop dobierania). */
+        private boolean processBatch(List<SeedSel> batchSels) {
             inserted += batchSels.size();
             sinceMeasure += batchSels.size();
             batchCount++;
-            // v3.22 (Twoje): pełny 2opt po KAŻDYM dobraniu w końcowych cyklach — tanie CPU, skraca
-            // trasę na bieżąco (mniej brudu przed cięciem ogonków). Bez rebuildu z hilberta (v3.9).
-            twoOptLogged(route, "growNear-batch" + batchCount);
+            ops.twoOpt(route, "growNear-batch" + batchCount); // pełny 2opt co porcja — skraca trasę na bieżąco
             hav = metrics.haversineKm(route);
             double est = hav * effortFactor;
-            boolean doReal = (batchCount % CHECKPOINT_EVERY == 0) || est >= growTarget;
-            if (doReal) {
-                // Pomiar real na uporządkowanej kolejności (2opt już zrobiony co batch wyżej).
-                hav = metrics.haversineKm(route);
-                effort = metrics.effortViaCache(route);
-                checkpoints++;
-                if (hav > 1) effortFactor = effort / hav;
-                // UNDO porcji (v3.10, wzór init-grow): blisko celu porcja 3× droższa od średniej
-                // = złapaliśmy DALEKIE gminy (topup 21:31 przestrzelił do 120% growTargetu na
-                // ostatniej porcji ~125 effortu/szt) → cofnij ostatnią porcję i zakończ dosypkę.
-                if (lastMeasured > 0 && sinceMeasure > 0 && effort >= 0.9 * growTarget) {
-                    double marginal = (effort - lastMeasured) / sinceMeasure;
-                    double ratio = effort / Math.max(1, selected.size());
-                    if (marginal > 3 * ratio) {
-                        for (SeedSel s : batchSels) {
-                            selected.remove(s);
-                            route.remove((Object) s.point());
-                            allInserts.remove(s);
-                            myInsertAreas.remove(s.area().areaId());
-                            inserted--;
-                        }
-                        twoOptLogged(route, "growNear-undo");
-                        effort = metrics.effortViaCache(route);
-                        log.info("Coverage BATCH-GROW undo porcji {}: marginal={}/gminę > 3×ratio={} (dalekie gminy) → stop na {}% growTargetu",
-                                new Object[]{batchCount, Math.round(marginal), Math.round(ratio),
-                                        Math.round(effort * 100.0 / growTarget)});
-                        break;
-                    }
-                }
-                lastMeasured = effort;
-                sinceMeasure = 0;
-            } else {
-                effort = est;
-            }
-            if (effort >= growTarget) break;
+            boolean doReal = (batchCount % checkpointEvery == 0) || est >= growTarget;
+            if (!doReal) { effort = est; return effort >= growTarget; }
+            hav = metrics.haversineKm(route);
+            effort = metrics.effortViaCache(route);
+            checkpoints++;
+            if (hav > 1) effortFactor = effort / hav;
+            if (undoIfTooFar(batchSels)) return true;
+            lastMeasured = effort;
+            sinceMeasure = 0;
+            return effort >= growTarget;
         }
 
-        // FINALIZACJA (raz, nie per batch): pełny 2opt (bez rebuildu — v3.9) → real →
-        // islands-check → kredyt-verify.
-        twoOptLogged(route, "growNear-final");
-        effort = metrics.effortViaCache(route);
+        /** Blisko celu porcja 3× droższa od średniej = złapane DALEKIE gminy → cofnij ostatnią porcję i zakończ. */
+        private boolean undoIfTooFar(List<SeedSel> batchSels) {
+            if (!(lastMeasured > 0 && sinceMeasure > 0 && effort >= 0.9 * growTarget)) return false;
+            double marginal = (effort - lastMeasured) / sinceMeasure;
+            double ratio = effort / Math.max(1, selected.size());
+            if (marginal <= 3 * ratio) return false;
+            for (SeedSel s : batchSels) {
+                selected.remove(s);
+                route.remove((Object) s.point());
+                allInserts.remove(s);
+                myInsertAreas.remove(s.area().areaId());
+                inserted--;
+            }
+            ops.twoOpt(route, "growNear-undo");
+            effort = metrics.effortViaCache(route);
+            log.info("Coverage BATCH-GROW undo porcji {}: marginal={}/gmine > 3xratio={} (dalekie gminy) -> stop na {}% growTargetu",
+                    new Object[]{batchCount, Math.round(marginal), Math.round(ratio), Math.round(effort * 100.0 / growTarget)});
+            return true;
+        }
+
+        /** Finalizacja (raz): pełny 2opt → real → usuń wstawki-wyspy → kredyt-verify (max 3 rundy). */
+        private GrowNearResult finish() {
+            ops.twoOpt(route, "growNear-final");
+            effort = metrics.effortViaCache(route);
+            int islands = removeFailedInserts(seed, allInserts, myInsertAreas);
+            inserted -= islands;
+            if (islands > 0) {
+                ops.twoOpt(route, "growNear-islands");
+                effort = metrics.effortViaCache(route);
+            }
+            for (int vr = 0; vr < 3; vr++) {
+                visited = gminaIndex.visitedAreaIds(metrics.realGeometry(route));
+                if (!verifyInsertCredit(seed, myInsertAreas, retriedCentroid, visited)) break;
+                effort = metrics.effortViaCache(route);
+            }
+            int credited = 0;
+            for (SeedSel s : selected) if (myInsertAreas.contains(s.area().areaId()) && s.score() == 0.0) credited++;
+            log.info("Coverage BATCH-GROW: batches={}, inserted={}, islands={}, checkpoints={}, refreshes={}, factor={}, calls={}, effort -> {} ({}% growTarget)",
+                    new Object[]{batchCount, Math.min(inserted, credited), islands, checkpoints, refreshes,
+                            String.format(java.util.Locale.ROOT, "%.2f", effortFactor),
+                            edgeRouter.realCalls() - callsStart,
+                            Math.round(effort), Math.round(effort * 100.0 / growTarget)});
+            return new GrowNearResult(effort, Math.min(inserted, credited));
+        }
+    }
+
+    /** Usuń z trasy wstawki growNear, których noga wjazdowa/wyjazdowa padła na wyspie (BRouter-fail). Zwraca ile usunięto. */
+    private int removeFailedInserts(SeedRoute seed, List<SeedSel> allInserts, Set<Integer> myInsertAreas) {
+        List<double[]> route = seed.route(); List<SeedSel> selected = seed.selected();
         int islands = 0;
         for (SeedSel s : allInserts) {
             int pos = -1;
@@ -1173,27 +1203,9 @@ final class SeedBuilder {
                 route.remove((Object) s.point()); // v3.9: bez rebuildu route czyścimy ręcznie
                 myInsertAreas.remove(s.area().areaId());
                 islands++;
-                inserted--;
             }
         }
-        if (islands > 0) {
-            twoOptLogged(route, "growNear-islands");
-            effort = metrics.effortViaCache(route);
-        }
-        // Kredyt-verify (wp 206): max 3 rundy (1. wykrycie → retry centroid, 2. weryfikacja centroidu → delete).
-        for (int vr = 0; vr < 3; vr++) {
-            visited = gminaIndex.visitedAreaIds(metrics.realGeometry(route));
-            if (!verifyInsertCredit(seed, myInsertAreas, retriedCentroid, visited)) break;
-            effort = metrics.effortViaCache(route);
-        }
-        int credited = 0;
-        for (SeedSel s : selected) if (myInsertAreas.contains(s.area().areaId()) && s.score() == 0.0) credited++;
-        log.info("Coverage BATCH-GROW: batches={}, inserted={}, islands={}, checkpoints={}, refreshes={}, factor={}, calls={}, effort → {} ({}% growTarget)",
-                new Object[]{batchCount, Math.min(inserted, credited), islands, checkpoints, refreshes,
-                        String.format(java.util.Locale.ROOT, "%.2f", effortFactor),
-                        edgeRouter.realCalls() - callsStart,
-                        Math.round(effort), Math.round(effort * 100.0 / growTarget)});
-        return new GrowNearResult(effort, Math.min(inserted, credited));
+        return islands;
     }
 
     /** Score-sentinel wstawek ENCLOSED-FILL — TRIM (sort score ASC, usuwa front) nigdy ich nie rusza:
@@ -1248,8 +1260,8 @@ final class SeedBuilder {
                 added.add(sel);
             }
             if (added.isEmpty()) break;
-            rebuildOrderedRoute(route, anchorOnly, selected, baseline, baseCum);
-            twoOptLogged(route, "enclosedFill");
+            ops.rebuildOrdered(seed);
+            ops.twoOpt(route, "enclosedFill");
             // Kredyt-verify: otoczona dziura też może być nieosiągalna (most/wyspa) → retry centroid → usuń.
             Set<Integer> vis = gminaIndex.visitedAreaIds(
                     metrics.realGeometry(route));
@@ -1257,16 +1269,16 @@ final class SeedBuilder {
                 if (vis.contains(s.area().areaId())) continue;
                 double[] c = gminaIndex.deepestInteriorPoint(s.area().areaId()); // RUNDA 51: najgłębszy (nie centroid)
                 if (c == null) c = new double[]{s.area().lng(), s.area().lat()};
-                swapEntryPoint(selected, s.point(), c, baseline, baseCum);
+                ops.swapEntry(selected, s.point(), c, baseline);
             }
-            rebuildOrderedRoute(route, anchorOnly, selected, baseline, baseCum);
-            twoOptLogged(route, "enclosedFill-centroid");
+            ops.rebuildOrdered(seed);
+            ops.twoOpt(route, "enclosedFill-centroid");
             vis = gminaIndex.visitedAreaIds(metrics.realGeometry(route));
             for (SeedSel s : new ArrayList<>(added)) {
                 if (!vis.contains(s.area().areaId())) { selected.remove(s); added.remove(s); unreachable++; }
             }
-            rebuildOrderedRoute(route, anchorOnly, selected, baseline, baseCum);
-            twoOptLogged(route, "enclosedFill-verify");
+            ops.rebuildOrdered(seed);
+            ops.twoOpt(route, "enclosedFill-verify");
             filled += added.size();
         }
         if (filled > 0 || unreachable > 0) {
@@ -1293,7 +1305,7 @@ final class SeedBuilder {
             if (!myInsertAreas.contains(aid) || s.score() != 0.0 || visited.contains(aid)) continue;
             if (retriedCentroid.add(aid)) {
                 double[] centroid = new double[]{s.area().lng(), s.area().lat()}; // (verifyInsertCredit nie ma gminaIndex; deep robi insert wyżej)
-                swapEntryPoint(selected, s.point(), centroid, baseline, baseCum);
+                ops.swapEntry(selected, s.point(), centroid, baseline);
             } else {
                 selected.remove(s);
                 myInsertAreas.remove(aid);
@@ -1301,8 +1313,8 @@ final class SeedBuilder {
             changedAny = true;
         }
         if (changedAny) {
-            rebuildOrderedRoute(route, anchorOnly, selected, baseline, baseCum);
-            twoOptLogged(route, "verify-insert-credit");
+            ops.rebuildOrdered(seed);
+            ops.twoOpt(route, "verify-insert-credit");
         }
         return changedAny;
     }
@@ -1388,7 +1400,7 @@ final class SeedBuilder {
                     pendingDeparture = new double[][]{prev, newWp};
                 } else continue;
             }
-            swapEntryPoint(selected, cur, newWp, baseline, baseCum);
+            ops.swapEntry(selected, cur, newWp, baseline);
             route.set(idx, newWp);
             return new RelocResult(true, newInCredit, newOutCredit, pendingDeparture);
         }
@@ -1456,75 +1468,9 @@ final class SeedBuilder {
      * {@code rebuildOrderedRoute + twoOpt} (0 BRouter — realny reroute wchodzi w {@code tailPruneJts} które leci potem).
      */
     private void anchorResetTouched(SeedRoute seed, String debugPhase) {
-        List<double[]> route = seed.route(); List<SeedSel> selected = seed.selected(); List<double[]> anchorOnly = seed.anchorOnly(); List<double[]> anchors = seed.anchors(); List<double[]> baseline = seed.baseline(); double[] baseCum = seed.baseCum();
-        long startNs = System.nanoTime();
-        Map<Integer, UnvisitedArea> areaById = new HashMap<>();
-        for (UnvisitedArea area : pool) areaById.put(area.areaId(), area);
-        // RUNDA 52: gminy z głębokim (≥220m) start/meta/via — obowiązkowy punkt pokrywa gminę → bez osobnego wp.
-        Set<Integer> deepAnchorAreaIds = new HashSet<>();
-        for (double[] anchor : anchors) {
-            UnvisitedArea anchorArea = gminaIndex.findDeeplyCreditedGminaForPoint(anchor[0], anchor[1]);
-            if (anchorArea != null) deepAnchorAreaIds.add(anchorArea.areaId());
-        }
-        // RUNDA 64: PĘTLA DO-SKUTKU. {kotwicz touched → 2opt → REROUTE}. REROUTE potrafi przeprowadzić ślad GŁĘBOKO
-        // (≥220m) przez NOWĄ gminę, której PRZED kotwiczeniem nie dotykał (Tomaszów Maz. — przelot po reorderze) → nie
-        // miała kotwicy. Powtarzaj aż żadna gmina nie jest wchodzona ≥220m bez kotwicującego wp.
-        int iteration = 0, anchoredOnEntry = 0, anchoredOnCentroid = 0, touchedCount = 0;
-        boolean foundUncoveredDeep = true;
-        List<double[]> realTrack = metrics.realGeometry(route);
-        while (foundUncoveredDeep && iteration < 5) {
-            iteration++;
-            Map<Integer, double[]> entryPoints = gminaIndex.firstBufferEntryPoints(realTrack); // gmina→pierwsze −220 (≥220m)
-            Set<Integer> touchedAreaIds = gminaIndex.touchedAreaIds(realTrack);                 // pełny wielokąt (muśnięcia → centroid)
-            touchedCount = touchedAreaIds.size();
-            List<SeedSel> freshAnchors = new ArrayList<>();
-            anchoredOnEntry = 0; anchoredOnCentroid = 0;
-            for (int areaId : touchedAreaIds) {
-                if (deepAnchorAreaIds.contains(areaId)) continue;
-                UnvisitedArea area = areaById.get(areaId);
-                if (area == null) continue;
-                double[] anchorPoint = entryPoints.get(areaId);
-                if (anchorPoint != null) {                                              // ślad wchodzi ≥220m → wp na pierwszym wejściu
-                    anchoredOnEntry++;
-                } else {                                                                // tylko muśnięcie → najgłębszy punkt gminy
-                    double[] deepest = gminaIndex.deepestInteriorPoint(areaId);
-                    anchorPoint = deepest != null ? deepest : new double[]{area.lng(), area.lat()};
-                    anchoredOnCentroid++;
-                }
-                freshAnchors.add(new SeedSel(area, anchorPoint, ordering.orderKey(anchorPoint), 0.0,
-                        GeometryUtil.minDistToBaselineKm(anchorPoint, baseline)));
-            }
-            // RESET: usuń nie-anchor wp leżące w gminie; postaw świeże; ułóż + 2opt.
-            selected.removeIf(s -> !GeometryUtil.isAnchor(s.point(), anchors)
-                    && gminaIndex.findGminaForPoint(s.point()[0], s.point()[1]) != null);
-            selected.addAll(freshAnchors);
-            rebuildOrderedRoute(route, anchorOnly, selected, baseline, baseCum);
-            twoOptLogged(route, "anchor-intersected" + (iteration > 1 ? "-i" + iteration : ""));
-            // REROUTE realny: concatRealGeometry liczy nowe nogi (BRouter) → ujawnia głębokie przeloty nowego porządku.
-            realTrack = metrics.realGeometry(route);
-            // KONIEC gdy żadna gmina nie jest wchodzona ≥220m bez kredytującego wp.
-            Map<Integer, double[]> deepEntriesNow = gminaIndex.firstBufferEntryPoints(realTrack);
-            Set<Integer> anchoredAreaIds = new HashSet<>();
-            for (SeedSel s : selected) {
-                UnvisitedArea creditedArea = gminaIndex.findCreditedGminaForPoint(s.point()[0], s.point()[1]);
-                if (creditedArea != null) anchoredAreaIds.add(creditedArea.areaId());
-            }
-            for (double[] anchor : anchors) {
-                UnvisitedArea creditedArea = gminaIndex.findCreditedGminaForPoint(anchor[0], anchor[1]);
-                if (creditedArea != null) anchoredAreaIds.add(creditedArea.areaId());
-            }
-            foundUncoveredDeep = false;
-            int uncoveredDeepCount = 0;
-            for (int areaId : deepEntriesNow.keySet())
-                if (!anchoredAreaIds.contains(areaId) && !deepAnchorAreaIds.contains(areaId) && areaById.containsKey(areaId)) {
-                    foundUncoveredDeep = true; uncoveredDeepCount++;
-                }
-            log.info("Coverage ANCHOR-INTERSECTS [{}] iter {}: touched={}, wejście={} centroid={}, nowe-głębokie-bez-kotwicy={}",
-                    new Object[]{debugPhase, iteration, touchedAreaIds.size(), anchoredOnEntry, anchoredOnCentroid, uncoveredDeepCount});
-        }
-        log.info("Coverage ANCHOR-INTERSECTS [{}]: KONIEC po {} iter, touched={}, dt={}ms",
-                new Object[]{debugPhase, iteration, touchedCount, (System.nanoTime() - startNs) / 1_000_000});
+        new Anchorer(ctx, seed, debugPhase).run();
     }
+
 
 
 
@@ -1554,35 +1500,7 @@ final class SeedBuilder {
 
 
 
-    /** Podmień entry-point danej gminy w {@code selected} (identity po starym punkcie) + przelicz sortKey. */
-    private void swapEntryPoint(List<SeedSel> selected, double[] oldPoint, double[] newPoint,
-                                List<double[]> baseline, double[] baseCum) {
-        for (int i = 0; i < selected.size(); i++) {
-            if (selected.get(i).point() == oldPoint) {
-                SeedSel old = selected.get(i);
-                selected.set(i, new SeedSel(old.area(), newPoint, ordering.orderKey(newPoint),
-                        old.score(), GeometryUtil.minDistToBaselineKm(newPoint, baseline)));
-                return;
-            }
-        }
-    }
 
-    /** Buduje route = anchory + selected entry-pointy posortowane wg {@link #orderKey} (projekcja lub serpentyna). */
-    private void rebuildOrderedRoute(List<double[]> route, List<double[]> anchorOnly,
-                                     List<SeedSel> selected, List<double[]> baseline, double[] baseCum) {
-        record RoutePt(double[] p, double key) {}
-        List<RoutePt> ordered = new ArrayList<>(anchorOnly.size() + selected.size());
-        for (int i = 0; i < anchorOnly.size(); i++) {
-            double key = (i == 0) ? Double.NEGATIVE_INFINITY
-                    : (i == anchorOnly.size() - 1) ? Double.MAX_VALUE
-                    : ordering.orderKey(anchorOnly.get(i));
-            ordered.add(new RoutePt(anchorOnly.get(i), key));
-        }
-        for (SeedSel s : selected) ordered.add(new RoutePt(s.point(), s.proj()));
-        ordered.sort(Comparator.comparingDouble(RoutePt::key));
-        route.clear();
-        for (RoutePt rp : ordered) route.add(rp.p());
-    }
 
 
 
@@ -1615,17 +1533,6 @@ final class SeedBuilder {
 
 
 
-    /** RUNDA 41: 2-opt z logiem (gdy debugGeoJson) — user „chcę wiedzieć kiedy to idzie". Mierzy TANIO przez
-     *  haversine km (0 BRouter/elewacji → OK w pętlach growa). Etykieta `phase` = które miejsce i kiedy. */
-    private void twoOptLogged(List<double[]> route, String phase) {
-        if (!debugGeoJson) { CoverageLocalSearch.twoOpt(route); return; }
-        double kmBefore = metrics.haversineKm(route);
-        int wp = route.size();
-        CoverageLocalSearch.twoOpt(route);
-        double kmAfter = metrics.haversineKm(route);
-        log.info("Coverage 2-OPT [{}]: havKm {}→{} (Δ{}), wps={}", new Object[]{phase,
-                Math.round(kmBefore), Math.round(kmAfter), Math.round(kmAfter - kmBefore), wp});
-    }
 
 
 
@@ -1636,146 +1543,12 @@ final class SeedBuilder {
     // User: breakpoint/kopiuj z konsoli → wklej na mapę. Szkielet (waypointy+numery) na fazach pośrednich,
     // realna geometria (debugGeometry) na końcu.
 
-    /** Szkielet: LineString kolejnych waypointów + ponumerowane Pointy (props idx). */
-    private void debugSkeleton(String phase, List<double[]> route) {
-        if (!debugGeoJson || route == null || route.isEmpty()) return;
-        StringBuilder sb = new StringBuilder(route.size() * 48);
-        sb.append("{\"type\":\"FeatureCollection\",\"features\":[");
-        // 1) LineString trasy
-        sb.append("{\"type\":\"Feature\",\"properties\":{\"phase\":\"").append(phase)
-                .append("\",\"kind\":\"skeleton\"},\"geometry\":{\"type\":\"LineString\",\"coordinates\":[");
-        appendCoords(sb, route);
-        sb.append("]}}");
-        // 2) ponumerowane Pointy
-        for (int i = 0; i < route.size(); i++) {
-            double[] p = route.get(i);
-            sb.append(",{\"type\":\"Feature\",\"properties\":{\"idx\":").append(i)
-                    .append(",\"phase\":\"").append(phase).append("\"},\"geometry\":{\"type\":\"Point\",\"coordinates\":[");
-            appendPt(sb, p);
-            sb.append("]}}");
-        }
-        sb.append("]}");
-        System.out.println("dupa");
-       // log.warn("GEOJSON-DEBUG [{}] n={}: {}", new Object[]{phase, route.size(), sb});
-        System.out.println("pupa");
-    }
 
-    /** Realna geometria: pojedynczy LineString (np. finalna trasa po BRouterze). */
-    void debugGeometry(String phase, List<double[]> geometry) {
-        debugGeometry(phase, geometry, null, -1);
-    }
 
-    void debugGeometry(String phase, List<double[]> geometry, List<double[]> waypoints) {
-        debugGeometry(phase, geometry, waypoints, -1);
-    }
 
-    /** Realna geometria (LineString) + opcjonalnie ponumerowane waypointy (Pointy z idx) NA tej trasie.
-     *  realKm = autorytatywny dystans (BRouter/cache); jeśli ≤0 → ROUTE-STATS liczy haversine z geometrii. */
-    void debugGeometry(String phase, List<double[]> geometry, List<double[]> waypoints, double realKm) {
-        if (!debugGeoJson || geometry == null || geometry.size() < 2) return;
-        StringBuilder sb = new StringBuilder(geometry.size() * 24);
-        sb.append("{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\",\"properties\":{\"phase\":\"")
-                .append(phase).append("\",\"kind\":\"geometry\"},\"geometry\":{\"type\":\"LineString\",\"coordinates\":[");
-        appendCoords(sb, geometry);
-        sb.append("]}}");
-        if (waypoints != null) {
-            for (int i = 0; i < waypoints.size(); i++) {
-                sb.append(",{\"type\":\"Feature\",\"properties\":{\"idx\":").append(i)
-                        .append(",\"phase\":\"").append(phase).append("\"},\"geometry\":{\"type\":\"Point\",\"coordinates\":[");
-                appendPt(sb, waypoints.get(i));
-                sb.append("]}}");
-            }
-        }
-        sb.append("]}");
-        System.out.println("dupa");
-//        log.info("GEOJSON-DEBUG [{}] pts={} wps={}: {}",
-//                new Object[]{phase, geometry.size(), waypoints == null ? 0 : waypoints.size(), sb});
-        debugStats(phase, geometry, waypoints, realKm);
-        if (waypoints != null) debugSkeleton(phase, waypoints); // RUNDA 24: skeleton ZAWSZE obok debugGeometry (życzenie usera)
-        System.out.println("pupa");
-    }
 
-    /** ADMIN DEBUG: zwięzła linia metryk trasy dla fazy — dystans/wznios/effort vs budżet + gminy per kategoria. */
-    private void debugStats(String phase, List<double[]> geometry, List<double[]> waypoints, double realKm) {
-        if (geometry == null || geometry.size() < 2) return;
-        int wps = waypoints == null ? 0 : waypoints.size();
-        double km = realKm; // autorytatywny (BRouter/cache) — spójny z effortem algorytmu
-        if (km <= 0) {       // fallback: haversine z geometrii (gdy brak realKm)
-            km = 0;
-            for (int i = 0; i < geometry.size() - 1; i++) {
-                km += velomarker.service.planning.WaypointSelector.haversineKm(geometry.get(i), geometry.get(i + 1));
-            }
-        }
-        double climb = metrics.climbM(geometry);
-        double effort = km + params.alphaKmPerMeter() * climb;
-        String budgetStr = debugBudget > 0
-                ? Math.round(effort) + "/" + Math.round(debugBudget) + " (" + Math.round(effort * 100.0 / debugBudget) + "%)"
-                : "n/a";
-        String areasStr = "n/a";
-        int total = 0, deep = 0;
-        String noDeepStr = "";
-        if (debugGminaIndex != null) {
-            Map<Integer, Integer> visits = countVisitsPerArea(geometry, debugGminaIndex);
-            total = visits.size(); // pełny wielokąt (findGminaForPoint) — DOTKNIĘTE, w tym muśnięte (<200m)
-            Map<String, Integer> byCat = new java.util.TreeMap<>();
-            for (Integer id : visits.keySet()) {
-                byCat.merge(debugAreaCat != null ? debugAreaCat.getOrDefault(id, "?") : "?", 1, Integer::sum);
-            }
-            areasStr = byCat.toString();
-            // RUNDA 61: drugi licznik = ≥200m kredyt (bufor −200, visitedAreaIds) — uczciwy. + lista gmin pokrytych
-            // ≥200m BEZ głębokiego wp (findCreditedGminaForPoint) = zaliczonych tylko tranzytem/muśnięciem, bez kotwicy.
-            Set<Integer> deepCov = debugGminaIndex.visitedAreaIds(geometry);
-            deep = deepCov.size();
-            if (waypoints != null) {
-                Set<Integer> wpDeep = new HashSet<>();
-                for (double[] wp : waypoints) {
-                    UnvisitedArea a = debugGminaIndex.findCreditedGminaForPoint(wp[0], wp[1]);
-                    if (a != null) wpDeep.add(a.areaId());
-                }
-                Map<Integer, String> idName = new HashMap<>();
-                for (double[] p : geometry) {
-                    UnvisitedArea a = debugGminaIndex.findGminaForPoint(p[0], p[1]);
-                    if (a != null) idName.putIfAbsent(a.areaId(), a.name());
-                }
-                List<String> noDeep = new ArrayList<>();
-                for (int gid : deepCov) if (!wpDeep.contains(gid)) noDeep.add(idName.getOrDefault(gid, "id" + gid));
-                noDeep.sort(null);
-                noDeepStr = " | bez-głębokiego-wp(≥200m, " + noDeep.size() + "): " + noDeep;
-            }
-        }
-        // RUNDA 40 (A): gminy z >1 wp (łamanie inwariantu 1 wp/gmina). Mapuj każdy wp → gmina (findGminaForPoint), tally.
-        String dupStr = "n/a";
-        if (waypoints != null && debugGminaIndex != null) {
-            Map<Integer, Integer> wpPerArea = new HashMap<>();
-            Map<Integer, String> areaName = new HashMap<>();
-            for (double[] wp : waypoints) {
-                UnvisitedArea a = debugGminaIndex.findGminaForPoint(wp[0], wp[1]);
-                if (a == null) continue;
-                wpPerArea.merge(a.areaId(), 1, Integer::sum);
-                areaName.putIfAbsent(a.areaId(), a.name());
-            }
-            List<String> dups = new ArrayList<>();
-            for (Map.Entry<Integer, Integer> e : wpPerArea.entrySet())
-                if (e.getValue() > 1) dups.add(areaName.get(e.getKey()) + "(" + e.getValue() + ")");
-            dups.sort(null);
-            dupStr = dups.size() + " " + dups;
-        }
-        log.info("ROUTE-STATS [{}]: dist={} km, climb={} m, effort={} budżetu, wps={}, gminy={} (≥200m: {}) {} | dup-wp={}{}",
-                new Object[]{phase, Math.round(km), Math.round(climb), budgetStr, wps, total, deep, areasStr, dupStr, noDeepStr});
-    }
 
-    private static void appendCoords(StringBuilder sb, List<double[]> pts) {
-        for (int i = 0; i < pts.size(); i++) {
-            if (i > 0) sb.append(',');
-            sb.append('[');
-            appendPt(sb, pts.get(i));
-            sb.append(']');
-        }
-    }
 
-    private static void appendPt(StringBuilder sb, double[] p) {
-        sb.append(String.format(java.util.Locale.ROOT, "%.6f,%.6f", p[0], p[1]));
-    }
 
 
 
@@ -1794,4 +1567,172 @@ final class SeedBuilder {
 
 
 
+
+    /** Wynik naprawy wysp: effort po przebiegach + ile wp usunięto (wyspy) + ile entry-pointów ponowiono. */
+    private record IslandFixResult(double realEffort, int pruned, int retried) {}
+
+    /** ISLANDS-FIX (max 3 przebiegi): waypointy nieosiągalne BRouterem → ponów entry-point (route-nearest→
+     *  centroid) albo usuń jako wyspę. Zwraca effort + liczniki. Cięciem ogonków zajmuje się tailPrune. */
+    private IslandFixResult fixIslands(SeedRoute seed, Map<Integer, Integer> entryAttempt) {
+        List<double[]> route = seed.route(); List<SeedSel> selected = seed.selected(); List<double[]> anchorOnly = seed.anchorOnly(); List<double[]> anchors = seed.anchors(); List<double[]> baseline = seed.baseline(); double[] baseCum = seed.baseCum();
+        double realEffort = 0; int pruned = 0, retried = 0;
+            for (int islPass = 0; islPass < 3; islPass++) {
+                long _tEval = System.nanoTime();
+                RouteMetrics.EvalResult ev = metrics.eval(route);
+                tEvalNs += System.nanoTime() - _tEval;
+                realEffort = ev.effort();
+                long _tVis = System.nanoTime();
+                Map<Integer, Integer> visits = countVisitsPerArea(ev.geometry(), gminaIndex);
+                tVisitsNs += System.nanoTime() - _tVis;
+                Set<double[]> toRemove = new HashSet<>(); // wyspy (identity — double[] nie nadpisuje equals)
+                boolean swapped = false;
+                int unreachable = 0;
+                long _tPrune = System.nanoTime();
+                for (int i = 1; i < route.size() - 1; i++) {
+                    double[] cur = route.get(i);
+                    if (GeometryUtil.isAnchor(cur, anchors)) continue;
+                    UnvisitedArea g = findGminaCached.apply(cur);
+                    int gv = (g == null) ? 0 : visits.getOrDefault(g.areaId(), 0);
+                    // Wyspa: BRouter nie dojechał do tego waypointu z którejś strony (edgeRouter.failedEdges()) —
+                    // nawet jeśli geometria fallback (prosta) fałszywie „zalicza" gminę (gv>0).
+                    boolean island = edgeRouter.failedEdges().contains(GeometryUtil.edgeKey(route.get(i - 1), cur))
+                            || edgeRouter.failedEdges().contains(GeometryUtil.edgeKey(cur, route.get(i + 1)));
+                    if (gv != 0 && !island) continue;
+                    // NIEOSIĄGALNA: próba 0: route-nearest sample (płytko, od strony trasy).
+                    // Próba 1: centroid (najgłębiej). Wyczerpane → wyspa, usuń.
+                    unreachable++;
+                    if (g == null) { toRemove.add(cur); continue; }
+                    int id = g.areaId();
+                    int att = entryAttempt.getOrDefault(id, 0);
+                    double[] alt = null;
+                    if (att == 0) {
+                        double[][] samples = gminaIndex.samplePointsFor(g);
+                        alt = GeometryUtil.sampleNearestToGeometry(samples, cur, ev.geometry()); // od strony trasy
+                    } else if (att == 1) {
+                        alt = gminaIndex.deepestInteriorPoint(g.areaId());           // RUNDA 51: najgłębszy (nie centroid)
+                        if (alt == null) alt = new double[]{g.lng(), g.lat()};
+                    }
+                    if (alt != null && (alt[0] != cur[0] || alt[1] != cur[1])) {
+                        ops.swapEntry(selected, cur, alt, baseline);
+                        swapped = true;
+                        retried++;
+                        entryAttempt.put(id, att + 1);
+                    } else if (att <= 1) {
+                        entryAttempt.put(id, att + 1); // ta próba odpadła (np. alt==cur) — następny pass
+                    } else {
+                        toRemove.add(cur); // route-nearest + centroid wyczerpane → naprawdę wyspa
+                    }
+                }
+                tPruneNs += System.nanoTime() - _tPrune;
+                if (toRemove.isEmpty() && !swapped) break; // czysto — koniec passów
+                selected.removeIf(s -> toRemove.contains(s.point()));
+                pruned += toRemove.size();
+                ops.rebuildOrdered(seed);
+                ops.twoOpt(route, "init-grow-islands-prune");
+                realEffort = metrics.effortViaCache(route);
+                log.info("Coverage seed islands pass {}: removed={}, unreachable={}, retried={} entry-points (total)",
+                        new Object[]{islPass, toRemove.size(), unreachable, retried});
+            }
+        return new IslandFixResult(realEffort, pruned, retried);
+    }
+
+    /** INIT-GROW (v3): jedna runda grow ze scored (baseline-score) do pasma [1.0,1.1]×budżet + islands-fix.
+     *  Dalsze dobieranie przejmuje COMPACT-LOOP. Zwraca effort + liczniki (usunięte wyspy / ponowione entry). */
+    private IslandFixResult seedInitGrow(SeedRoute seed, List<SeedSel> scored, double targetEffort,
+                                        double hiBand, double growCeiling, Map<Integer, Integer> entryAttempt) {
+        List<double[]> route = seed.route(); List<SeedSel> selected = seed.selected(); List<double[]> anchorOnly = seed.anchorOnly(); List<double[]> baseline = seed.baseline(); double[] baseCum = seed.baseCum();
+        final int round = 0, BATCH = 20, CHECKPOINT_EVERY = 5, PROGRESS_EVERY = 500;
+        int idx = 0, lastProgressMilestone = 0, pruned = 0, retried = 0;
+        double realEffort = 0;
+            long roundStartTs = System.currentTimeMillis();
+            int roundStartSelected = selected.size();
+            log.info("Coverage seed round {} START: dotąd dodano {} obszarów, effort={}/{} ({}%), elapsed={}s",
+                    new Object[]{round, selected.size(), Math.round(realEffort), Math.round(targetEffort),
+                            realEffort > 0 ? Math.round(realEffort * 100.0 / targetEffort) : 0,
+                            (System.currentTimeMillis() - seedStartTs) / 1000});
+            int batchCounter = 0;
+            while (idx < scored.size()) {
+                // PRECYZJA: od 80% budżetu (est ≥ 0.80×target) zmniejsz batch 20→6 i przejdź na real +
+                // pełny 2opt CO BATCH (dokładny pomiar długości dróg w terenie zanim dobijemy do 110%).
+                // Poniżej 80% rośniemy szybko (batch 20, est, real tylko na checkpoincie).
+                boolean precise = metrics.haversineKm(route) * effortFactor >= targetEffort * 0.80;
+                int batchSize = precise ? 6 : BATCH;
+                for (int b = 0; b < batchSize && idx < scored.size(); b++, idx++) {
+                    selected.add(scored.get(idx));
+                }
+                long _tReb = System.nanoTime();
+                ops.rebuildOrdered(seed);
+                tRebuildNs += System.nanoTime() - _tReb;
+                // 2-opt incremental po każdym batchu (window ±80 od końca trasy = lokalne ulepszenia),
+                // PEŁNY twoOpt co 5 batchy = 100 obszarów = global cleanup. Dla FR 34746 obszarów / 5
+                // batchy 20 = 347 pełnych twoOpt zamiast 1737 → ~5× szybsze (z 4h 16min do ~1-1.5h
+                // łącznie z routeEffortViaCache). Dla małych scope (≤500 wp) twoOpt(route) i tak
+                // wewnętrznie robi pełen skan (FULL_SCAN_MAX), więc bez regresji.
+                batchCounter++;
+                long _tTwo = System.nanoTime();
+                if (precise || batchCounter % 5 == 0) {
+                    ops.twoOpt(route, "init-grow-batch" + batchCounter);
+                } else {
+                    CoverageLocalSearch.twoOptIncremental(route, route.size() - 1, 80);
+                }
+                tTwoOptNs += System.nanoTime() - _tTwo;
+                // L2: tani estymator effortu = Σhaversine × effortFactor. Realny BRouter tylko na checkpoincie
+                // lub gdy est zbliża się do pasma → confirm-before-stop (nie przerywamy na samym szacunku).
+                double hav = metrics.haversineKm(route);
+                double estEffort = hav * effortFactor;
+                // batchCounter==1: wczesna kalibracja effortFactor (init 1.69 zaniża → bez tego małe plany
+                // przestrzeliwały do 129% zanim 1. checkpoint trafił w %5). Potem co CHECKPOINT_EVERY.
+                boolean doReal = (batchCounter == 1) || (batchCounter % CHECKPOINT_EVERY == 0) || estEffort >= hiBand
+                        || precise; // od 80% budżetu real co batch (est bywa nieświeży po prune)
+                if (doReal) {
+                    long _tRE = System.nanoTime();
+                    realEffort = metrics.effortViaCache(route);
+                    tRouteEffortNs += System.nanoTime() - _tRE;
+                    realCheckpoints++;
+                    if (hav > 1) effortFactor = realEffort / hav;   // rekalibruj jeden factor (km+wznios+detour razem)
+                    // ADMIN DEBUG: na checkpoincie cache krawędzi jest CIEPŁY → złóż realną geometrię dróg (cache-hity, 0 nowych calli) + waypointy
+                    if (debugGeoJson) debug.geometry("round" + round + "-batch" + batchCounter + "-real",
+                            metrics.realGeometry(route), route,
+                            metrics.realKm(route));
+                } else {
+                    realEffort = estEffort;
+                }
+                debug.skeleton("round" + round + "-batch" + batchCounter, route); // ADMIN DEBUG: szkielet (kolejność+numery) po każdym batchu
+                // Progress co 500 obszarów (user widzi tempo i może oszacować ETA dla mega-scope)
+                int currentMilestone = selected.size() / PROGRESS_EVERY;
+                if (currentMilestone > lastProgressMilestone) {
+                    lastProgressMilestone = currentMilestone;
+                    long elapsedS = (System.currentTimeMillis() - seedStartTs) / 1000;
+                    double pct = realEffort * 100.0 / targetEffort;
+                    double avgSecPerArea = elapsedS / (double) Math.max(1, selected.size());
+                    int remainingToTarget = (int) Math.max(0, (targetEffort - realEffort) / Math.max(0.01, realEffort / Math.max(1, selected.size())));
+                    long etaS = (long) (remainingToTarget * avgSecPerArea);
+                    log.info("Coverage seed progress: +{} obszarów (round={}), effort={}/{} ({}%), elapsed={}s, tempo={}ms/area, eta≈{}min",
+                            new Object[]{selected.size(), round, Math.round(realEffort), Math.round(targetEffort),
+                                    Math.round(pct), elapsedS, Math.round(avgSecPerArea * 1000), etaS / 60});
+                }
+                if (realEffort >= growCeiling) { // grow do 110% budżetu; COMPACT-LOOP/TRIM ściągnie do pasma [95,105]%
+                    log.info("Coverage INIT-GROW: osiągnięto {}% (≥110%) → stop rundy 0",
+                            Math.round(realEffort * 100.0 / targetEffort));
+                    break;
+                }
+            }
+            long roundDurMs = System.currentTimeMillis() - roundStartTs;
+            log.info("Coverage seed round {} END: dodano {} obszarów w tej rundzie ({} → {}), trwało {}s",
+                    new Object[]{round, selected.size() - roundStartSelected, roundStartSelected, selected.size(), roundDurMs / 1000});
+            // ISLANDS-FIX (v3, max 3 przebiegi): TYLKO wyspy/nieosiągalne. Stary transit-bet prune
+            // (lollipop/spur + restore 25 km) WYCIĘTY — robił dziury (restore promieniowy nie trafiał,
+            // grow nie umiał wrócić) i thrashował (removed 6/restored 37). Cięciem ogonków zajmuje się
+            // wyłącznie tailPrune v2 w COMPACT-LOOP (realna geometria, weryfikacja przed akceptacją).
+            IslandFixResult islandFix = fixIslands(seed, entryAttempt);
+            realEffort = islandFix.realEffort();
+            pruned += islandFix.pruned();
+            retried += islandFix.retried();
+            // ADMIN DEBUG: stan po INIT-GROW + islands (przed COMPACT-LOOP)
+            debug.skeleton("round0-grown", route);
+            if (debugGeoJson) debug.geometry("round0-grown-real",
+                    metrics.realGeometry(route), route,
+                    metrics.realKm(route));
+        return new IslandFixResult(realEffort, pruned, retried);
+    }
 }
