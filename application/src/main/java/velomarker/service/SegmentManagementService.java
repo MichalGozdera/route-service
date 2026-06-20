@@ -7,7 +7,6 @@ import velomarker.entity.SegmentName;
 import velomarker.port.in.DeleteSegmentUseCase;
 import velomarker.port.in.DownloadSegmentUseCase;
 import velomarker.port.in.ListSegmentsUseCase;
-import velomarker.port.out.BrouterControlClient;
 import velomarker.port.out.SegmentRemoteSource;
 import velomarker.port.out.SegmentRemoteSource.RemoteSegment;
 import velomarker.port.out.SegmentStorage;
@@ -32,16 +31,13 @@ public class SegmentManagementService
 
     private final SegmentRemoteSource remoteSource;
     private final SegmentStorage storage;
-    private final BrouterControlClient controlClient;
     private final ExecutorService downloadExecutor;
     private final Map<String, SegmentTask> tasks = new HashMap<>();
 
     public SegmentManagementService(SegmentRemoteSource remoteSource,
-                                     SegmentStorage storage,
-                                     BrouterControlClient controlClient) {
+                                     SegmentStorage storage) {
         this.remoteSource = remoteSource;
         this.storage = storage;
-        this.controlClient = controlClient;
         this.downloadExecutor = Executors.newFixedThreadPool(2, namedThreadFactory());
     }
 
@@ -114,7 +110,7 @@ public class SegmentManagementService
             sink.close();
             out = null;
             storage.commit(name);
-            controlClient.rollingRestart();
+            // Embedded BRouter czyta segmenty .rd5 z dysku per-call (mmap) — brak restartu do przeładowania.
             updateTask(taskId, Status.COMPLETED);
             log.info("Downloaded segment {}", name.name());
         } catch (Exception e) {
@@ -143,7 +139,6 @@ public class SegmentManagementService
             boolean deleted = storage.delete(name);
             if (deleted) {
                 log.info("Deleted segment {}", name.name());
-                controlClient.rollingRestart();
             }
         } catch (IOException e) {
             throw new RuntimeException("Failed to delete segment " + name.name(), e);

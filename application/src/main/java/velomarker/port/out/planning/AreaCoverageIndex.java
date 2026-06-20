@@ -16,10 +16,9 @@ import java.util.Set;
  *
  * <p><b>v3.15:</b> port wystawia też operacje przestrzenne, których planner dotąd DUBLOWAŁ ręcznie
  * (ray-casting/sampling na surowych lng/lat) — co rozjeżdżało się z kryterium kredytu i tworzyło
- * zbędne spury/dziury. Teraz JEDEN silnik (JTS, kryterium kredytu = skurczona geometria) liczy:
- * gdzie leg wchodzi w gminę ({@link #creditedCrossings}), które legi gminę kredytują
- * ({@link #creditingLegs}), które dziury są otoczone ({@link #enclosedUnvisited}) i jak daleko
- * gmina jest od trasy ({@link #distanceToRouteKm}).
+ * zbędne spury/dziury. Teraz JEDEN silnik (JTS, kryterium kredytu = skurczona geometria) liczy m.in.
+ * punkty pierwszego wejścia śladu w gminę ({@link #firstBufferEntryPoints}) i które dziury są
+ * otoczone ({@link #enclosedUnvisited}).
  */
 public interface AreaCoverageIndex {
 
@@ -49,40 +48,15 @@ public interface AreaCoverageIndex {
     UnvisitedArea findDeeplyCreditedAreaForPoint(double lng, double lat);
 
     /**
-     * Maksymalny ciągły odcinek geometrii legu LEŻĄCY w gminie {@code areaId} wg kryterium KREDYTU
-     * (skurczona geometria — to samo, czym liczone jest „zaliczona"). Punkty w lng/lat.
-     * {@code null} gdy leg gminy nie kredytuje. Zastępuje ręczne crossingRunKm/midpointOfCrossing/
-     * walkInsideFromBoundary/pointInArea — spójne z kredytem.
-     */
-    Crossing creditedCrossing(List<double[]> legGeometry, int areaId);
-
-    /** Jak {@link #creditedCrossing}, ale z wielu wejść w rdzeń kredytu wybiera to o NAJWCZEŚNIEJSZEJ pozycji
-     *  {@code entry} WZDŁUŻ śladu (nie najdłuższe). RUNDA 24: „jeśli ślad w kilku miejscach wpada w gminę >200m,
-     *  bierzemy pierwszy przypadek". {@code null} gdy ślad nigdzie nie wchodzi ≥200m (muśnięcie). */
-    Crossing firstCreditedCrossing(List<double[]> legGeometry, int areaId);
-
-    /**
      * RUNDA 27: JEDEN przebieg śladu — dla każdej gminy, której ŚLAD WCHODZI w bufor kredytu (−200m), punkt PIERWSZEGO
      * wejścia + ~20m w głąb (≈220m od granicy gminy). O(ślad × kandydaci/segment) przez STRtree; overlay tylko na
      * 2-punktowych segmentach (nigdy nie wisi). Gmin BEZ wejścia w bufor nie ma w mapie (caller → centroid).
-     * Zastępuje per-gminowe {@code firstCreditedCrossing} na CAŁYM śladzie (które wisiało na splocie macek).
      */
     Map<Integer, double[]> firstBufferEntryPoints(List<double[]> routeGeometry);
 
     /** RUNDA 31: najgłębszy punkt gminy (środek największego wpisanego okręgu, najdalej od KAŻDEJ granicy) — „głęboki
      *  centroid" dla muśnięć (zamiast {@code area.lng/lat}, które bywa przy granicy). {@code null} gdy brak gminy. */
     double[] deepestInteriorPoint(int areaId);
-
-    /** Odcinek legu wewnątrz gminy: wejście przy granicy, środek (po długości), wyjście, długość km. */
-    record Crossing(double[] entry, double[] mid, double[] exit, double lengthKm) {}
-
-    /**
-     * areaId → indeksy legów (z {@code legGeometries}), które gminę KREDYTUJĄ — jeden autorytatywny
-     * przebieg (STRtree, kryterium kredytu). Zastępuje ręczny crossCount/edgeCrossings, który dryfował
-     * (inkrementalna księgowość) i mylił klasyfikację spurów. Spur zbędny ⟺ każda jego gmina ma w tej
-     * mapie INNY leg niż własne dwa.
-     */
-    Map<Integer, int[]> creditingLegs(List<List<double[]>> legGeometries);
 
     /**
      * Gminy NIEZALICZONE OTOCZONE: nieprzecięte, dla których {@link #allNeighborsVisited} = true (KAŻDY
@@ -99,10 +73,4 @@ public interface AreaCoverageIndex {
      * (0 sąsiadów) nie jest otoczona.
      */
     boolean allNeighborsVisited(int areaId, Set<Integer> visited);
-
-    /**
-     * Gminy NIEZALICZONE leżące ≤ {@code maxKm} od trasy (bufor+STRtree, JEDEN przebieg). Szybkie
-     * łapanie dziur przy trasie do domykania budżetu. {@code visited} pomijane.
-     */
-    Set<Integer> unvisitedWithinKm(List<double[]> routeGeometry, Set<Integer> visited, double maxKm);
 }

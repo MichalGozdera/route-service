@@ -22,7 +22,7 @@ class UnvisitedAreaTest {
                 {lng - dLng, lat - dLat}, {lng + dLng, lat - dLat},
                 {lng + dLng, lat + dLat}, {lng - dLng, lat + dLat}
         };
-        var a = new UnvisitedArea(1, "n", null, lat, lng, ring, 1, 1, "gmina", null);
+        var a = new UnvisitedArea(1, "n", lat, lng, ring, 1, 1, "gmina", null);
         assertThat(a.areaKm2()).isCloseTo(30, within(5.0));
     }
 
@@ -35,37 +35,29 @@ class UnvisitedAreaTest {
                 {lng - dLng, lat - dLat}, {lng + dLng, lat - dLat},
                 {lng + dLng, lat + dLat}, {lng - dLng, lat + dLat}
         };
-        var a = new UnvisitedArea(1, "n", null, lat, lng, ring, 1, 2, "okres", null);
+        var a = new UnvisitedArea(1, "n", lat, lng, ring, 1, 2, "okres", null);
         assertThat(a.areaKm2()).isCloseTo(600, within(80.0));
     }
 
     @Test
     void areaKm2_nullRing_returnsZero() {
-        var a = UnvisitedArea.level(1, "n", null, 50.0, 14.5, null, 1, 1, "gmina");
+        var a = UnvisitedArea.level(1, "n", 50.0, 14.5, null, 1, 1, "gmina");
         assertThat(a.areaKm2()).isZero();
     }
 
     @Test
     void areaKm2_tooFewPoints_returnsZero() {
-        var a = new UnvisitedArea(1, "n", null, 50.0, 14.5,
+        var a = new UnvisitedArea(1, "n", 50.0, 14.5,
                 new double[][]{{14.5, 50.0}, {14.6, 50.0}}, 1, 1, "gmina", null);
         assertThat(a.areaKm2()).isZero();
     }
 
     @Test
     void isSpecial_trueWhenSpecialGroupIdSet() {
-        var special = new UnvisitedArea(1, "n", null, 50.0, 14.5, (double[][]) null, 1, 1, "gmina", 42);
-        var regular = UnvisitedArea.level(2, "n", null, 50.0, 14.5, null, 1, 1, "gmina");
+        var special = new UnvisitedArea(1, "n", 50.0, 14.5, (double[][]) null, 1, 1, "gmina", 42);
+        var regular = UnvisitedArea.level(2, "n", 50.0, 14.5, null, 1, 1, "gmina");
         assertThat(special.isSpecial()).isTrue();
         assertThat(regular.isSpecial()).isFalse();
     }
 
-    @Test
-    void dedupKey_distinguishesCountryLevelSpecial() {
-        var a1 = UnvisitedArea.level(1, "Praha", null, 50.0, 14.5, null, 1, 1, "obec");
-        var a2 = UnvisitedArea.level(1, "Praha", null, 50.0, 14.5, null, 2, 1, "obec"); // inny kraj
-        var a3 = new UnvisitedArea(1, "Praha", null, 50.0, 14.5, (double[][]) null, 1, 1, "obec", 42); // special
-        assertThat(a1.dedupKey()).isNotEqualTo(a2.dedupKey());
-        assertThat(a1.dedupKey()).isNotEqualTo(a3.dedupKey());
-    }
 }

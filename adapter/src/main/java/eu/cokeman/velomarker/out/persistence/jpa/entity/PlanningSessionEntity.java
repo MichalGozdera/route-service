@@ -52,20 +52,8 @@ public class PlanningSessionEntity {
     @Column(name = "summary_initial_pool_size")
     private Integer summaryInitialPoolSize;
 
-    @Column(name = "summary_reconcile_iters")
-    private Integer summaryReconcileIters;
-
-    @Column(name = "summary_reconcile_trims")
-    private Integer summaryReconcileTrims;
-
-    @Column(name = "summary_reconcile_grows")
-    private Integer summaryReconcileGrows;
-
     @Column(name = "summary_baseline_km")
     private Double summaryBaselineKm;
-
-    @Column(name = "summary_road_anchors")
-    private Double summaryRoadAnchors;
 
     @Column(name = "summary_road_areas")
     private Double summaryRoadAreas;
@@ -103,16 +91,8 @@ public class PlanningSessionEntity {
     public void setSummaryPoolSize(Integer v) { this.summaryPoolSize = v; }
     public Integer getSummaryInitialPoolSize() { return summaryInitialPoolSize; }
     public void setSummaryInitialPoolSize(Integer v) { this.summaryInitialPoolSize = v; }
-    public Integer getSummaryReconcileIters() { return summaryReconcileIters; }
-    public void setSummaryReconcileIters(Integer v) { this.summaryReconcileIters = v; }
-    public Integer getSummaryReconcileTrims() { return summaryReconcileTrims; }
-    public void setSummaryReconcileTrims(Integer v) { this.summaryReconcileTrims = v; }
-    public Integer getSummaryReconcileGrows() { return summaryReconcileGrows; }
-    public void setSummaryReconcileGrows(Integer v) { this.summaryReconcileGrows = v; }
     public Double getSummaryBaselineKm() { return summaryBaselineKm; }
     public void setSummaryBaselineKm(Double v) { this.summaryBaselineKm = v; }
-    public Double getSummaryRoadAnchors() { return summaryRoadAnchors; }
-    public void setSummaryRoadAnchors(Double v) { this.summaryRoadAnchors = v; }
     public Double getSummaryRoadAreas() { return summaryRoadAreas; }
     public void setSummaryRoadAreas(Double v) { this.summaryRoadAreas = v; }
     public Boolean getSummaryClimbWarning() { return summaryClimbWarning; }

@@ -11,8 +11,6 @@ import velomarker.entity.planning.PlanningSession;
 import velomarker.entity.planning.PlanningSessionDay;
 import velomarker.entity.planning.PlanningSummary;
 import velomarker.entity.planning.RoutePreferences;
-import velomarker.entity.planning.RouteStyle;
-import velomarker.entity.planning.Tempo;
 import velomarker.entity.planning.Waypoint;
 
 import java.util.ArrayList;
@@ -72,11 +70,7 @@ public final class PlanningJpaMapper {
             e.setSummarySurplusKm(null);
             e.setSummaryPoolSize(null);
             e.setSummaryInitialPoolSize(null);
-            e.setSummaryReconcileIters(null);
-            e.setSummaryReconcileTrims(null);
-            e.setSummaryReconcileGrows(null);
             e.setSummaryBaselineKm(null);
-            e.setSummaryRoadAnchors(null);
             e.setSummaryRoadAreas(null);
             e.setSummaryClimbWarning(null);
             return;
@@ -88,11 +82,7 @@ public final class PlanningJpaMapper {
         e.setSummarySurplusKm(s.surplusKm());
         e.setSummaryPoolSize(s.poolSize());
         e.setSummaryInitialPoolSize(s.initialPoolSize());
-        e.setSummaryReconcileIters(s.reconcileIters());
-        e.setSummaryReconcileTrims(s.reconcileTrims());
-        e.setSummaryReconcileGrows(s.reconcileGrows());
         e.setSummaryBaselineKm(s.baselineKm());
-        e.setSummaryRoadAnchors(s.roadAnchors());
         e.setSummaryRoadAreas(s.roadAreas());
         e.setSummaryClimbWarning(s.climbWarning());
     }
@@ -107,11 +97,7 @@ public final class PlanningJpaMapper {
                 e.getSummarySurplusKm() != null ? e.getSummarySurplusKm() : 0,
                 e.getSummaryPoolSize() != null ? e.getSummaryPoolSize() : 0,
                 e.getSummaryInitialPoolSize() != null ? e.getSummaryInitialPoolSize() : 0,
-                e.getSummaryReconcileIters() != null ? e.getSummaryReconcileIters() : 0,
-                e.getSummaryReconcileTrims() != null ? e.getSummaryReconcileTrims() : 0,
-                e.getSummaryReconcileGrows() != null ? e.getSummaryReconcileGrows() : 0,
                 e.getSummaryBaselineKm(),
-                e.getSummaryRoadAnchors(),
                 e.getSummaryRoadAreas(),
                 e.getSummaryClimbWarning() != null && e.getSummaryClimbWarning()
         );
@@ -196,8 +182,6 @@ public final class PlanningJpaMapper {
             if (p.kmPerDay() != null) n.put("kmPerDay", p.kmPerDay());
             if (p.elevationPerDayM() != null) n.put("elevationPerDayM", p.elevationPerDayM());
             if (p.profile() != null) n.put("profile", p.profile());
-            if (p.style() != null) n.put("style", p.style().name());
-            if (p.tempo() != null) n.put("tempo", p.tempo().name());
             return objectMapper.writeValueAsString(n);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Failed to serialize preferences", e);
@@ -221,9 +205,7 @@ public final class PlanningJpaMapper {
                     n.has("days") ? n.get("days").asInt() : null,
                     n.has("kmPerDay") ? n.get("kmPerDay").asInt() : null,
                     n.has("elevationPerDayM") ? n.get("elevationPerDayM").asInt() : null,
-                    n.has("profile") ? n.get("profile").asText() : null,
-                    n.has("style") ? RouteStyle.valueOf(n.get("style").asText()) : null,
-                    n.has("tempo") ? Tempo.valueOf(n.get("tempo").asText()) : null
+                    n.has("profile") ? n.get("profile").asText() : null
             );
         } catch (Exception e) {
             throw new IllegalStateException("Failed to deserialize preferences: " + json, e);

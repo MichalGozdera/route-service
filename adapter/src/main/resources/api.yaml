@@ -394,89 +394,6 @@ paths:
         '204':
           description: Deleted (workers will be rolling-restarted)
 
-  /admin/route/status:
-    get:
-      summary: BRouter worker status (proxies brouter container's control-api)
-      operationId: getBrouterStatus
-      tags: [Status]
-      responses:
-        '200':
-          description: Per-worker state
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/WorkerStatusResponse'
-
-  /admin/route/rolling-restart:
-    post:
-      summary: Rolling restart of all BRouter workers
-      operationId: rollingRestart
-      tags: [Status]
-      responses:
-        '204':
-          description: Triggered
-
-  /admin/route/logs:
-    get:
-      summary: List available BRouter log sources
-      operationId: listLogs
-      tags: [Status]
-      responses:
-        '200':
-          description: Available log sources
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/LogSourceResponse'
-
-  /admin/route/logs/{name}:
-    get:
-      summary: Tail the last N lines of a log file (plain text)
-      operationId: tailLog
-      tags: [Status]
-      parameters:
-        - name: name
-          in: path
-          required: true
-          description: Log source name from /admin/route/logs (e.g. worker-0, nginx-access)
-          schema:
-            type: string
-        - name: lines
-          in: query
-          required: false
-          schema:
-            type: integer
-            default: 200
-            minimum: 1
-            maximum: 5000
-      responses:
-        '200':
-          description: Tail content
-          content:
-            text/plain:
-              schema:
-                type: string
-
-  /admin/route/workers/{index}/restart:
-    post:
-      summary: Restart a single BRouter worker
-      operationId: restartWorker
-      tags: [Status]
-      parameters:
-        - name: index
-          in: path
-          required: true
-          schema:
-            type: integer
-            minimum: 0
-      responses:
-        '204':
-          description: Triggered
-
   /admin/route/profiles:
     get:
       summary: List BRouter profiles available on disk (filesystem)
@@ -1172,41 +1089,6 @@ components:
           type: string
           enum: [QUEUED, RUNNING, COMPLETED, FAILED, CANCELLED]
 
-    LogSourceResponse:
-      type: object
-      required: [name, sizeBytes]
-      properties:
-        name:
-          type: string
-        path:
-          type: string
-        sizeBytes:
-          type: integer
-          format: int64
-        modifiedAt:
-          type: integer
-          format: int64
-          nullable: true
-          description: Unix epoch seconds
-
-    WorkerStatusResponse:
-      type: object
-      required: [name, state]
-      properties:
-        name:
-          type: string
-          example: worker-0
-        state:
-          type: string
-          example: RUNNING
-        pid:
-          type: integer
-          nullable: true
-        uptime:
-          type: string
-          nullable: true
-          description: Free-form supervisorctl uptime string
-
     ProfileSummary:
       type: object
       required: [name, sizeBytes]
@@ -1251,14 +1133,6 @@ components:
     PlanningIntent:
       type: string
       enum: [COVERAGE, AB, FREESTYLE]
-
-    PlanningRouteStyle:
-      type: string
-      enum: [KRAJOWKI, SCIEZKI, GRAVEL, WZDLUZ_RZEK, PRZEZ_MIASTA]
-
-    PlanningTempo:
-      type: string
-      enum: [TURYSTYCZNIE, SZYBKO]
 
     Waypoint:
       type: object
@@ -1324,10 +1198,6 @@ components:
           type: string
           nullable: true
           description: Direct BRouter profile name (fastbike/trekking/safety/fastbike-lowtraffic)
-        style:
-          $ref: '#/components/schemas/PlanningRouteStyle'
-        tempo:
-          $ref: '#/components/schemas/PlanningTempo'
 
     PlanningSessionDay:
       type: object
@@ -1463,7 +1333,7 @@ components:
     PlanningSummary:
       type: object
       description: Podsumowanie policzonej wyprawy. Null gdy sesja jeszcze nie była policzona.
-      required: [totalDistanceKm, totalElevationGain, budgetKm, verdict, surplusKm, poolSize, initialPoolSize, reconcileIters, reconcileTrims, reconcileGrows]
+      required: [totalDistanceKm, totalElevationGain, budgetKm, verdict, surplusKm, poolSize, initialPoolSize]
       properties:
         totalDistanceKm:    { type: number, format: double }
         totalElevationGain: { type: integer }
@@ -1473,21 +1343,13 @@ components:
           enum: [OK, SURPLUS, DEFICIT, BUDGET_IMPOSSIBLE]
           description: "BUDGET_IMPOSSIBLE = sam baseline (start→via→meta) przekracza budżet — user musi poprawić parametry."
         surplusKm:          { type: integer }
-        poolSize:           { type: integer, description: "Liczba obszarów po reconcile (finalna pula)" }
-        initialPoolSize:    { type: integer, description: "Liczba obszarów PRZED reconcile (cap MAX_TSP_AREAS)" }
-        reconcileIters:     { type: integer }
-        reconcileTrims:     { type: integer }
-        reconcileGrows:     { type: integer }
+        poolSize:           { type: integer, description: "Wybrana pula obszarów (finalna)" }
+        initialPoolSize:    { type: integer, description: "Pula kandydatów po scoringu (przed wyborem)" }
         baselineKm:
           type: number
           format: double
           nullable: true
           description: "Baseline BRouter (start→via→meta bez gmin). Dolna granica trasy."
-        roadAnchors:
-          type: number
-          format: double
-          nullable: true
-          description: "Współczynnik road/straight dla anchors-only (probe baseline). Diagnostyka."
         roadAreas:
           type: number
           format: double

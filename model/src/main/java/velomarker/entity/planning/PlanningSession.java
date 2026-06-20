@@ -56,12 +56,6 @@ public final class PlanningSession {
         touch();
     }
 
-    /** Pełne podmienienie preferencji (np. po reset). */
-    public void replacePreferences(RoutePreferences newPreferences) {
-        this.preferences = newPreferences != null ? newPreferences : RoutePreferences.empty();
-        touch();
-    }
-
     public void setLastTaskId(UUID taskId) {
         this.lastTaskId = taskId;
         touch();

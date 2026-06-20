@@ -16,10 +16,6 @@ public class BrouterUnavailableException extends DomainException {
         this.retryAfterSeconds = retryAfterSeconds;
     }
 
-    public int getRetryAfterSeconds() {
-        return retryAfterSeconds;
-    }
-
     @Override public int httpStatus() { return 429; }
     @Override public String errorCode() { return "BROUTER_UNAVAILABLE"; }
 

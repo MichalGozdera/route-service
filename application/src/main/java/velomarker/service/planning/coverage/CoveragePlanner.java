@@ -9,6 +9,7 @@ import velomarker.entity.planning.UnvisitedArea;
 import velomarker.entity.planning.Waypoint;
 import velomarker.port.out.ElevationDataSource;
 import velomarker.port.out.planning.AreaCoverageIndexFactory;
+import velomarker.port.out.planning.SpatialIndexFactory;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -66,18 +67,22 @@ public class CoveragePlanner {
     private final int brouterParallelism;
     /** Fabryka JTS coverage indexu (PEŁNA geometria, plain intersect) — budowana per plan() nad pulą. */
     private final AreaCoverageIndexFactory coverageFactory;
+    /** Fabryka indeksu przestrzennego (STRtree) — sąsiedztwo/reward/density per plan(). */
+    private final SpatialIndexFactory spatialIndexFactory;
     /** ADMIN DEBUG: gdy true, loguje GeoJSON snapshot trasy na każdej fazie seeda. application.yml: planning.coverage.debug-geojson. */
     private final boolean debugGeoJson;
 
     /** Planner pokrycia — porządkowanie obszarów krzywą Hilberta (space-filling). */
     public CoveragePlanner(CoveragePlannerParameters params, ElevationDataSource elevation,
                                 int brouterParallelism,
-                                AreaCoverageIndexFactory coverageFactory, boolean debugGeoJson) {
+                                AreaCoverageIndexFactory coverageFactory, SpatialIndexFactory spatialIndexFactory,
+                                boolean debugGeoJson) {
         this.params = params;
         this.elevation = elevation;
         this.rand = new Random(42);
         this.brouterParallelism = Math.max(1, brouterParallelism);
         this.coverageFactory = coverageFactory;
+        this.spatialIndexFactory = spatialIndexFactory;
         this.debugGeoJson = debugGeoJson;
     }
 
@@ -114,7 +119,7 @@ public class CoveragePlanner {
                         params.alphaKmPerMeter(), elevPerDay, days, candidatePool.size()});
 
         // Index + cache. Coverage (zaliczenia) liczy JTS na PEŁNEJ geometrii (plain intersect jak front).
-        GminaIndex gminaIndex = new GminaIndex(candidatePool, coverageFactory.build(candidatePool));
+        GminaIndex gminaIndex = new GminaIndex(candidatePool, coverageFactory.build(candidatePool), spatialIndexFactory);
         EdgeRouter edgeRouter = new EdgeRouter(brouter, profile, params.alphaKmPerMeter(), elevation, brouterParallelism);
         RouteMetrics metrics = new RouteMetrics(edgeRouter, gminaIndex, elevation, params.alphaKmPerMeter());
         // Bbox kandydatów — dla Hilbert space-filling. Liczony raz.
@@ -122,7 +127,7 @@ public class CoveragePlanner {
         ordering.computeBbox(candidatePool);
 
         // Reward per kategoria (Iter 11 Fix 2: NN-distance proportion, logged inside)
-        Map<String, Double> rewards = RewardModel.rewardPerCategory(candidatePool);
+        Map<String, Double> rewards = RewardModel.rewardPerCategory(candidatePool, spatialIndexFactory);
         // areaId → human kategoria (do per-iter coverage breakdown w logach)
         Map<Integer, String> areaCat = new HashMap<>();
         for (UnvisitedArea a : candidatePool) {

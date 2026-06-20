@@ -2,7 +2,8 @@ package velomarker.service.planning.coverage;
 
 import velomarker.entity.planning.UnvisitedArea;
 import velomarker.port.out.planning.AreaCoverageIndex;
-import velomarker.service.planning.SpatialGrid;
+import velomarker.port.out.planning.SpatialIndex;
+import velomarker.port.out.planning.SpatialIndexFactory;
 import velomarker.service.planning.WaypointSelector;
 
 import java.util.ArrayList;
@@ -31,6 +32,7 @@ public class GminaIndex {
 
     private final List<UnvisitedArea> allAreas;
     private final AreaCoverageIndex coverage;
+    private final SpatialIndexFactory spatialIndexFactory;
     private final Map<Integer, double[][]> samplePointsCache = new HashMap<>();
     /** Ile entry-pointów (ring vertices) generować per gmina — fallback dla null-MIC + retry wysp. */
     private static final int SAMPLE_POINTS = 8;
@@ -40,9 +42,10 @@ public class GminaIndex {
     /** areaId → id-ki HOLE_KNN najbliższych obszarów (po centroidzie). Leniwie liczone raz (O(n²)). */
     private Map<Integer, int[]> kNearestCache;
 
-    public GminaIndex(List<UnvisitedArea> areas, AreaCoverageIndex coverage) {
+    public GminaIndex(List<UnvisitedArea> areas, AreaCoverageIndex coverage, SpatialIndexFactory spatialIndexFactory) {
         this.allAreas = new ArrayList<>(areas);
         this.coverage = coverage;
+        this.spatialIndexFactory = spatialIndexFactory;
     }
 
     /** Najmniejszy powierzchniowo obszar zawierający punkt (obwarzanek: miasto w dziurze wiejskiej),
@@ -83,16 +86,6 @@ public class GminaIndex {
 
     // === v3.15: operacje przestrzenne przez port (jeden silnik JTS, kryterium kredytu) ===
 
-    /** Najdłuższy odcinek legu wewnątrz gminy wg kredytu (wejście/środek/wyjście/długość). null gdy brak. */
-    public AreaCoverageIndex.Crossing creditedCrossing(List<double[]> legGeometry, int areaId) {
-        return coverage.creditedCrossing(legGeometry, areaId);
-    }
-
-    /** RUNDA 24: PIERWSZE wejście w rdzeń wzdłuż śladu (nie najdłuższe). null gdy muśnięcie (nigdzie ≥200m). */
-    public AreaCoverageIndex.Crossing firstCreditedCrossing(List<double[]> legGeometry, int areaId) {
-        return coverage.firstCreditedCrossing(legGeometry, areaId);
-    }
-
     /** RUNDA 27: JEDEN przebieg śladu → gmina → punkt pierwszego wejścia w bufor (+20m w głąb). Brak gminy = muśnięcie. */
     public Map<Integer, double[]> firstBufferEntryPoints(List<double[]> routeGeometry) {
         return coverage.firstBufferEntryPoints(routeGeometry);
@@ -103,11 +96,6 @@ public class GminaIndex {
         return coverage.deepestInteriorPoint(areaId);
     }
 
-    /** areaId → indeksy legów które gminę kredytują (autorytatywny przebieg, zastępuje crossCount). */
-    public Map<Integer, int[]> creditingLegs(List<List<double[]>> legGeometries) {
-        return coverage.creditingLegs(legGeometries);
-    }
-
     /** Gminy nieprzecięte OTOCZONE śladem z każdej strony (≥1 sąsiad, wszyscy zaliczeni, cross-border, bez progu). */
     public Set<Integer> enclosedUnvisited(Set<Integer> visited) {
         return coverage.enclosedUnvisited(visited);
@@ -116,11 +104,6 @@ public class GminaIndex {
     /** Czy gmina jest otoczona śladem: ≥1 sąsiad wielokątowy i WSZYSCY zaliczeni (bez progu, cross-border). */
     public boolean allNeighborsVisited(int areaId, Set<Integer> visited) {
         return coverage.allNeighborsVisited(areaId, visited);
-    }
-
-    /** Gminy nieprzecięte ≤ maxKm od trasy (bufor+STRtree, szybkie łapanie dziur). */
-    public Set<Integer> unvisitedWithinKm(List<double[]> routeGeometry, Set<Integer> visited, double maxKm) {
-        return coverage.unvisitedWithinKm(routeGeometry, visited, maxKm);
     }
 
     /**
@@ -200,17 +183,6 @@ public class GminaIndex {
         return WaypointSelector.haversineKm(new double[]{px, py}, new double[]{projX, projY});
     }
 
-    /**
-     * Dziura WEWNĘTRZNA = obszar otoczony świeżo zaliczonymi, NIE peryferyjna obwódka przy trasie.
-     * Kryterium: ≥ {@code minFraction} z {@link #HOLE_KNN} najbliższych sąsiadów (po centroidach z puli)
-     * jest w zbiorze {@code visited} (świeżo zaliczone). Peryferyjna gmina ma sąsiadów w otwartym
-     * nieodwiedzonym terenie → niski ułamek → odrzucona. Odległość-do-trasy tego nie odróżnia
-     * (skrajna i wewnętrzna mogą być tak samo blisko linii).
-     */
-    public boolean isEnclosedHole(UnvisitedArea a, Set<Integer> visited, double minFraction) {
-        return enclosedFraction(a.areaId(), visited) >= minFraction;
-    }
-
     /** Ułamek z {@link #HOLE_KNN} najbliższych sąsiadów (po centroidzie), który jest świeżo zaliczony. */
     public double enclosedFraction(int areaId, Set<Integer> visited) {
         int[] nn = kNearest().get(areaId);
@@ -228,7 +200,7 @@ public class GminaIndex {
         int n = allAreas.size();
         double[][] pts = new double[n][];
         for (int i = 0; i < n; i++) pts[i] = new double[]{allAreas.get(i).lng(), allAreas.get(i).lat()};
-        SpatialGrid grid = new SpatialGrid(pts);
+        SpatialIndex grid = spatialIndexFactory.build(pts);
         int k = Math.min(HOLE_KNN, Math.max(0, n - 1));
         Map<Integer, int[]> result = new HashMap<>(n * 2);
         for (int i = 0; i < n; i++) {
@@ -249,7 +221,7 @@ public class GminaIndex {
      * @param categoryAreas obszary jednej kategorii
      * @return średni dystans NN w km (lub 0 gdy < 2 obszary)
      */
-    public static double avgNearestNeighborDistKm(List<UnvisitedArea> categoryAreas) {
+    public static double avgNearestNeighborDistKm(List<UnvisitedArea> categoryAreas, SpatialIndexFactory factory) {
         int n = categoryAreas.size();
         if (n < 2) return 0;
         // Siatka spatial: średni NN w ~O(n) zamiast O(n²) — kluczowe dla dużych puli (cały kraj).
@@ -258,7 +230,7 @@ public class GminaIndex {
             UnvisitedArea a = categoryAreas.get(i);
             pts[i] = new double[]{a.lng(), a.lat()};
         }
-        SpatialGrid grid = new SpatialGrid(pts);
+        SpatialIndex grid = factory.build(pts);
         double sumNN = 0;
         for (int i = 0; i < n; i++) {
             double d = grid.nearestDistKm(i);

@@ -22,13 +22,6 @@ public final class BudgetReconciler {
     public record Result(Verdict verdict, int budgetKm, int surplusKm) {}
 
     /**
-     * Verdict dla policzonej trasy (po reconcile + BRouter).
-     */
-    public static Result evaluate(double routeKm, Integer days, Integer kmPerDay) {
-        return evaluateWithClimb(routeKm, 0, days, kmPerDay, 0);
-    }
-
-    /**
      * Verdict uwzgledniajacy formule kary-nagrody: km overshoot jest USPRAWIEDLIWIONY gdy
      * wznios undershoot (1m mniej wzniosu = 0.0667 km extra dla szosy, 0.1 km dla offroad).
      * Trasa 2229 km / 16954 m climb przy budget 1800/21370 = -4400m climb -> +293 km usprawiedliwione.

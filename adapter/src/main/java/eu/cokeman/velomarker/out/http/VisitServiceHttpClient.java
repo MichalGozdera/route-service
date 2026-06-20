@@ -87,7 +87,7 @@ public class VisitServiceHttpClient implements VisitServiceClient {
                         id, str(a.get("name")));
                 continue;
             }
-            out.add(UnvisitedArea.levelMulti(id, str(a.get("name")), str(a.get("name")), c[1], c[0],
+            out.add(UnvisitedArea.levelMulti(id, str(a.get("name")), c[1], c[0],
                     parts, countryId, levelId, levelName));
             if (out.size() >= limit) {
                 log.warn("Osiągnięto limit {} nieodwiedzonych — reszta ucięta", limit);
@@ -144,7 +144,7 @@ public class VisitServiceHttpClient implements VisitServiceClient {
                 skippedNoCentroid++;
                 continue;
             }
-            out.add(UnvisitedArea.special(id, str(a.get("name")), str(a.get("name")), c[1], c[0],
+            out.add(UnvisitedArea.special(id, str(a.get("name")),  c[1], c[0],
                     parts, countryId != null ? countryId : 0, groupName, groupId));
             if (out.size() >= limit) {
                 break;
@@ -299,13 +299,6 @@ public class VisitServiceHttpClient implements VisitServiceClient {
         return out;
     }
 
-    private double[] centroidOf(Object geometry) {
-        return GeoJson.centroid(geometry, mapper);
-    }
-
-    private double[][] ringOf(Object geometry) {
-        return GeoJson.sampledRing(geometry, mapper, Integer.MAX_VALUE);
-    }
     private java.util.List<velomarker.entity.planning.AreaPart> partsOf(Object geometry) {
         // Pełna (już uproszczona na visit-service) geometria — BEZ downsamplingu. 48-cap wygładzał
         // meandry granic (np. Prosna pod Gorzowem Śląskim) → false-positives zaliczeń. JTS coverage

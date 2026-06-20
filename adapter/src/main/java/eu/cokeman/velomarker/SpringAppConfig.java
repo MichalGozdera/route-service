@@ -13,7 +13,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 import velomarker.port.in.CalculateElevationUseCase;
 import velomarker.port.in.CalculateRouteUseCase;
 import velomarker.port.in.RouteDraftUseCase;
-import velomarker.port.out.BrouterControlClient;
 import velomarker.port.out.BrouterRoutingClient;
 import velomarker.port.out.DemTileRemoteSource;
 import velomarker.port.out.DemTileStorage;
@@ -30,7 +29,6 @@ import velomarker.port.out.planning.PlanTaskRepository;
 import velomarker.port.out.planning.PlanningSessionDayRepository;
 import velomarker.port.out.planning.PlanningSessionRepository;
 import velomarker.port.out.planning.VisitServiceClient;
-import velomarker.service.BrouterStatusService;
 import velomarker.service.CalculateElevationService;
 import velomarker.service.CalculateRouteService;
 import velomarker.service.DemTileManagementService;
@@ -42,7 +40,6 @@ import velomarker.service.planning.DaySplitter;
 import velomarker.service.planning.PlanTaskService;
 import velomarker.service.planning.PlanningOrchestrationService;
 import velomarker.service.planning.PlanningSessionService;
-import velomarker.service.planning.ProfileMapper;
 import velomarker.service.planning.WaypointSelector;
 
 import java.util.concurrent.ExecutorService;
@@ -56,14 +53,8 @@ public class SpringAppConfig {
 
     @Bean
     SegmentManagementService segmentManagementService(SegmentRemoteSource remoteSource,
-                                                       SegmentStorage storage,
-                                                       BrouterControlClient controlClient) {
-        return new SegmentManagementService(remoteSource, storage, controlClient);
-    }
-
-    @Bean
-    BrouterStatusService brouterStatusService(BrouterControlClient controlClient) {
-        return new BrouterStatusService(controlClient);
+                                                       SegmentStorage storage) {
+        return new SegmentManagementService(remoteSource, storage);
     }
 
     @Bean
@@ -110,11 +101,6 @@ public class SpringAppConfig {
     }
 
     @Bean
-    ProfileMapper planningProfileMapper() {
-        return new ProfileMapper();
-    }
-
-    @Bean
     ComputationRegistry planningComputationRegistry() {
         return new ComputationRegistry();
     }
@@ -141,10 +127,11 @@ public class SpringAppConfig {
             // Zostawiamy `route.calculate.max-concurrent` jako fallback dla legacy http mode.
             @org.springframework.beans.factory.annotation.Value("${route.brouter.max-concurrent:${route.calculate.max-concurrent:8}}") int maxConcurrent,
             @org.springframework.beans.factory.annotation.Value("${planning.coverage.debug-geojson:false}") boolean debugGeoJson,
-            velomarker.port.out.planning.AreaCoverageIndexFactory coverageIndexFactory) {
+            velomarker.port.out.planning.AreaCoverageIndexFactory coverageIndexFactory,
+            velomarker.port.out.planning.SpatialIndexFactory spatialIndexFactory) {
         return new velomarker.service.planning.coverage.CoveragePlanner(
                 params, elevation, maxConcurrent,
-                coverageIndexFactory, debugGeoJson);
+                coverageIndexFactory, spatialIndexFactory, debugGeoJson);
     }
 
     @Bean
@@ -155,13 +142,13 @@ public class SpringAppConfig {
             CalculateRouteUseCase routeUseCase,
             BrouterRoutingClient brouterClient,
             velomarker.port.out.planning.AreaCoverageIndexFactory coverageIndexFactory,
+            velomarker.port.out.planning.SpatialIndexFactory spatialIndexFactory,
             ElevationDataSource elevation,
             WaypointSelector waypointSelector,
-            ProfileMapper profileMapper,
             DaySplitter daySplitter,
             velomarker.service.planning.coverage.CoveragePlanner coveragePlanner) {
         return new PlanningOrchestrationService(sessionRepository, dayRepository, visitClient, routeUseCase,
-                brouterClient, coverageIndexFactory, elevation, waypointSelector, profileMapper, daySplitter, coveragePlanner);
+                brouterClient, coverageIndexFactory, spatialIndexFactory, elevation, waypointSelector, daySplitter, coveragePlanner);
     }
 
     /** Virtual-thread executor — każde liczenie planu w osobnym wątku wirtualnym (tanio). */

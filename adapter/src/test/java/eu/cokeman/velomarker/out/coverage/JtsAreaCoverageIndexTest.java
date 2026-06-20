@@ -26,7 +26,7 @@ class JtsAreaCoverageIndexTest {
     }
 
     private static UnvisitedArea squareGmina(int id, double lng, double lat, double sideHalfDeg) {
-        return UnvisitedArea.level(id, "G" + id, null, lat, lng, square(lng, lat, sideHalfDeg), 1, 4, "gmina");
+        return UnvisitedArea.level(id, "G" + id, lat, lng, square(lng, lat, sideHalfDeg), 1, 4, "gmina");
     }
 
     @Test
@@ -66,7 +66,7 @@ class JtsAreaCoverageIndexTest {
                 {15.0 - 0.001817, 50.0 - 0.003}, {15.0 + 0.001817, 50.0 - 0.003},
                 {15.0 + 0.001817, 50.0 + 0.003}, {15.0 - 0.001817, 50.0 + 0.003}
         };
-        return UnvisitedArea.level(1, "Waska", null, 50.0, 15.0, rect, 1, 4, "gmina");
+        return UnvisitedArea.level(1, "Waska", 50.0, 15.0, rect, 1, 4, "gmina");
     }
 
     @Test
@@ -118,7 +118,7 @@ class JtsAreaCoverageIndexTest {
         // ma zaliczyć gminę.
         AreaPart big = new AreaPart(square(15.0, 50.0, 0.05), null);
         AreaPart small = new AreaPart(square(15.5, 50.0, 0.04), null);
-        UnvisitedArea g = UnvisitedArea.levelMulti(1, "Multi", null, 50.0, 15.0,
+        UnvisitedArea g = UnvisitedArea.levelMulti(1, "Multi", 50.0, 15.0,
                 List.of(big, small), 1, 4, "okres");
         AreaCoverageIndex idx = FACTORY.build(List.of(g));
         assertThat(idx.findAreaForPoint(15.5, 50.0)).isNotNull();
@@ -127,35 +127,6 @@ class JtsAreaCoverageIndexTest {
     }
 
     // === v3.15: operacje przestrzenne portu (jeden silnik, kryterium kredytu) ===
-
-    @Test
-    void creditedCrossing_longestRunThroughGmina() {
-        AreaCoverageIndex idx = FACTORY.build(List.of(squareGmina(1, 15.0, 50.0, 0.05)));
-        // Leg przelatuje gminę poziomo na lat 50 (wchodzi lewą krawędzią, wychodzi prawą).
-        List<double[]> leg = List.of(new double[]{14.9, 50.0}, new double[]{15.1, 50.0});
-        AreaCoverageIndex.Crossing c = idx.creditedCrossing(leg, 1);
-        assertThat(c).isNotNull();
-        assertThat(c.lengthKm()).isBetween(5.0, 8.0);          // szerokość skurczonej gminy ~6.8 km
-        assertThat(c.mid()[0]).isBetween(14.99, 15.01);        // środek ~ centroid lng
-        assertThat(c.mid()[1]).isCloseTo(50.0, org.assertj.core.api.Assertions.within(0.01));
-    }
-
-    @Test
-    void creditedCrossing_legOutsideGmina_null() {
-        AreaCoverageIndex idx = FACTORY.build(List.of(squareGmina(1, 15.0, 50.0, 0.05)));
-        assertThat(idx.creditedCrossing(List.of(new double[]{20.0, 60.0}, new double[]{20.1, 60.0}), 1)).isNull();
-    }
-
-    @Test
-    void creditingLegs_mapsAreaToCreditingLegIndices() {
-        AreaCoverageIndex idx = FACTORY.build(List.of(squareGmina(1, 15.0, 50.0, 0.05)));
-        List<List<double[]>> legs = List.of(
-                List.of(new double[]{14.9, 50.0}, new double[]{15.0, 50.0}),  // leg 0 — wjazd głęboko → kredytuje
-                List.of(new double[]{20.0, 60.0}, new double[]{20.1, 60.0})); // leg 1 — daleko → nie kredytuje
-        var map = idx.creditingLegs(legs);
-        assertThat(map).containsKey(1);
-        assertThat(map.get(1)).containsExactly(0);
-    }
 
     @Test
     void enclosedUnvisited_centerSurroundedByVisitedNeighbors() {
@@ -173,25 +144,14 @@ class JtsAreaCoverageIndexTest {
     }
 
     @Test
-    void unvisitedWithinKm_nearRouteOnly() {
-        AreaCoverageIndex idx = FACTORY.build(List.of(
-                squareGmina(1, 15.0, 50.0, 0.05),
-                squareGmina(2, 20.0, 60.0, 0.05)));
-        List<double[]> route = List.of(new double[]{14.8, 50.0}, new double[]{15.2, 50.0}); // przez g1
-        Set<Integer> near = idx.unvisitedWithinKm(route, Set.of(), 1.0);
-        assertThat(near).contains(1);
-        assertThat(near).doesNotContain(2);
-    }
-
-    @Test
     void donutHole_cityNotShadowedByRural() {
         // Gmina wiejska = duży kwadrat z DZIURĄ w środku; gmina miejska = mały kwadrat w dziurze.
         double[][] outer = square(15.0, 50.0, 0.1);
         double[][] hole = square(15.0, 50.0, 0.03);
         AreaPart ruralPart = new AreaPart(outer, new double[][][]{hole});
-        UnvisitedArea rural = UnvisitedArea.levelMulti(1, "RawaWiejska", null, 50.08, 15.08,
+        UnvisitedArea rural = UnvisitedArea.levelMulti(1, "RawaWiejska", 50.08, 15.08,
                 List.of(ruralPart), 1, 4, "gmina");
-        UnvisitedArea city = UnvisitedArea.level(2, "RawaMiejska", null, 50.0, 15.0,
+        UnvisitedArea city = UnvisitedArea.level(2, "RawaMiejska", 50.0, 15.0,
                 square(15.0, 50.0, 0.025), 1, 4, "gmina"); // wypełnia dziurę
         AreaCoverageIndex idx = FACTORY.build(List.of(rural, city));
         // środek = w dziurze wiejskiej (więc NIE wiejska) i w miejskiej → MIEJSKA
@@ -213,7 +173,7 @@ class JtsAreaCoverageIndexTest {
         for (int row = -1; row <= 1; row++) {
             for (int col = -1; col <= 1; col++) {
                 int country = (row == 0 && col == 0) ? 1 : 2; // środek kraj 1, reszta kraj 2
-                grid.add(UnvisitedArea.level(id++, "g", null, 50.0 + row * 0.1, 15.0 + col * 0.1,
+                grid.add(UnvisitedArea.level(id++, "g", 50.0 + row * 0.1, 15.0 + col * 0.1,
                         square(15.0 + col * 0.1, 50.0 + row * 0.1, 0.05), country, 4, "gmina"));
             }
         }

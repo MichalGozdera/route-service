@@ -36,10 +36,6 @@ public final class ComputationRegistry {
         }
     }
 
-    public boolean isComputing(UUID taskId) {
-        return taskId != null && computing.contains(taskId);
-    }
-
     /** Z innego żądania: poproś o przerwanie trwającego liczenia tego taska. */
     public void requestCancel(UUID taskId) {
         if (taskId != null) {
@@ -51,9 +47,4 @@ public final class ComputationRegistry {
         return taskId != null && cancelRequested.contains(taskId);
     }
 
-    public void clearCancel(UUID taskId) {
-        if (taskId != null) {
-            cancelRequested.remove(taskId);
-        }
-    }
 }

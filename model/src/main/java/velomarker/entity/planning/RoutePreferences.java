@@ -20,14 +20,12 @@ public record RoutePreferences(
         Integer days,
         Integer kmPerDay,
         Integer elevationPerDayM,
-        String profile,                  // jawny profil BRouter (fastbike/trekking/safety/fastbike-lowtraffic)
-        RouteStyle style,                // opcjonalny, gdy brak `profile`
-        Tempo tempo                      // opcjonalny, ma priorytet nad `style` przy mapowaniu na profil
+        String profile                   // jawny profil BRouter (fastbike/trekking/safety/fastbike-lowtraffic)
 ) {
 
     public static RoutePreferences empty() {
         return new RoutePreferences(List.of(), List.of(), List.of(), null, null, List.of(),
-                null, null, null, null, null, null, null);
+                null, null, null, null, null);
     }
 
     /**
@@ -47,9 +45,7 @@ public record RoutePreferences(
                 o.days != null ? o.days : days,
                 o.kmPerDay != null ? o.kmPerDay : kmPerDay,
                 o.elevationPerDayM != null ? o.elevationPerDayM : elevationPerDayM,
-                o.profile != null ? o.profile : profile,
-                o.style != null ? o.style : style,
-                o.tempo != null ? o.tempo : tempo
+                o.profile != null ? o.profile : profile
         );
     }
 

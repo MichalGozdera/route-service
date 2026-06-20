@@ -31,20 +31,14 @@ spring:
 brouter:
   segments-dir: ${BROUTER_SEGMENTS_DIR:./brouter-deploy/segments4}
   profiles-dir: ${BROUTER_PROFILES_DIR:./brouter-deploy/profiles2}
-  control-api-url: ${BROUTER_CONTROL_API_URL:http://localhost:17779}
-  routing-api-url: ${BROUTER_ROUTING_API_URL:http://localhost:17777}
   remote:
     base-url: ${BROUTER_REMOTE_BASE_URL:https://brouter.de/brouter/segments4/}
 
 # Route planning — limity i konfiguracja
 route:
   brouter:
-    # embedded = JAR załadowany do route-service, method calls (zero HTTP) — DEFAULT (kontener
-    # velomarker-brouter już nie istnieje). Współbieżność ograniczona semaforem poniżej. Segments .rd5
-    # mmap-owane przez OS page cache; przy aktywnym planie zdekodowane kafle są współdzielone (shared-rd5-store).
-    # http = legacy HTTP do kontenera velomarker-brouter (już nieużywane; zostaje tylko jako awaryjny fallback).
-    # Sterowane zmienną ENV — restart route-service przepina implementację (ConditionalOnProperty).
-    mode: ${ROUTE_BROUTER_MODE:embedded}
+    # BRouter JAR załadowany w proces route-service (zero HTTP, kontener velomarker-brouter już nie
+    # istnieje). Współbieżność ograniczona semaforem poniżej. Segments .rd5 mmap-owane przez OS page cache.
     # Maks. równocześnie wykonywanych routing calls. BRouter container miał 10 workerów × 1g heap;
     # embedded dzieli jeden heap JVM, więc 16 jest bezpieczne na start. Monitoring saturacji semafora
     # w Grafanie zdecyduje czy podnosić/obniżać.

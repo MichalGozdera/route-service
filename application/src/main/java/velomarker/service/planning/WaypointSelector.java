@@ -20,14 +20,6 @@ public class WaypointSelector {
     private static final int TWO_OPT_MAX_PASSES = 60;
     private static final int OR_OPT_MAX_PASSES = 30;
     /**
-     * Margines waypointu ZA granicą gminy (metry, do wnętrza). Wystarczy MUSNĄĆ gminę (intersect zalicza) — nie
-     * jedziemy do centroidu. ~100 m za krawędź = minimalny objazd, ale na tyle, by brouter nie przyciągnął punktu
-     * do drogi TUŻ ZA granicą (wtedy gmina niezaliczona). Credit z realnej geometrii i tak łapie przecięcia.
-     */
-    private static final double SNAP_MARGIN_METERS = 100.0;
-    private static final double METERS_PER_DEG_LAT = 111_320.0;
-
-    /**
      * Optymalizuje kolejność obszarów (TSP: NN seed + 2-opt) z kotwicami start/end.
      * Zwraca obszary w nowej kolejności (bez start/end — te dokleja wołający).
      */
@@ -105,111 +97,6 @@ public class WaypointSelector {
         double[] left = (k == 0) ? start : point(route.get(k - 1));
         double[] right = (k == route.size()) ? end : point(route.get(k));
         return edge(left, p) + edge(p, right) - edge(left, right);
-    }
-
-    /** Pojedyncza trasa: start + uporządkowane obszary + (pętla|koniec). Zwraca punkty [lng,lat]. */
-    public List<double[]> selectWaypoints(List<UnvisitedArea> cluster, double[] start, double[] end, boolean loop) {
-        List<UnvisitedArea> ordered = orderAreas(cluster, start, end);
-        List<double[]> result = new ArrayList<>();
-        if (start != null) {
-            result.add(start);
-        }
-        for (UnvisitedArea a : ordered) {
-            result.add(point(a));
-        }
-        if (loop && start != null) {
-            result.add(start);
-        } else if (end != null) {
-            result.add(end);
-        }
-        return result;
-    }
-
-    /**
-     * Dosuwa każdy obszar do korytarza trasy (najbliższy punkt odcinka prev–next), zostając WEWNĄTRZ obrysu.
-     * Eliminuje odnogi „w głąb gminy" do centroidu — wystarczy zahaczyć gminę, by ją zaliczyć.
-     * Zwraca kopie obszarów ze zsnapowanym lat/lng (kolejność, nazwy, id, ring bez zmian).
-     */
-    public List<UnvisitedArea> snapAreasToCorridor(List<UnvisitedArea> ordered, double[] start, double[] end) {
-        List<UnvisitedArea> out = new ArrayList<>(ordered.size());
-        for (int i = 0; i < ordered.size(); i++) {
-            UnvisitedArea a = ordered.get(i);
-            double[] prev = (i == 0) ? start : point(ordered.get(i - 1));
-            double[] next = (i == ordered.size() - 1) ? end : point(ordered.get(i + 1));
-            double[] snapped = snapToCorridor(point(a), a.ring(), prev, next);
-            out.add(new UnvisitedArea(a.areaId(), a.name(), a.mainCity(), snapped[1], snapped[0], a.parts(),
-                    a.countryId(), a.levelId(), a.levelName(), a.specialGroupId()));
-        }
-        return out;
-    }
-
-    /**
-     * Od centroidu w stronę korytarza — najdalej jak się da, ale punkt musi zostać wewnątrz obrysu
-     * Z MARGINESEM od granicy (SNAP_MARGIN_METERS). Bez marginesu waypoint lądował tuż przy granicy,
-     * a brouter przyciągał go do drogi za granicą → gmina niezaliczona. Fallback: centroid (gdy gmina
-     * za cienka, by zmieścić margines — i tak najgłębszy dostępny punkt).
-     */
-    private static double[] snapToCorridor(double[] centroid, double[][] ring, double[] prev, double[] next) {
-        if (ring == null || ring.length < 3) {
-            return centroid;
-        }
-        double[] target;
-        if (prev != null && next != null) {
-            target = closestPointOnSegment(centroid, prev, next);
-        } else if (prev != null) {
-            target = prev;
-        } else if (next != null) {
-            target = next;
-        } else {
-            return centroid;
-        }
-        for (double t = 0.9; t > 0.0; t -= 0.05) {
-            double[] p = {centroid[0] + (target[0] - centroid[0]) * t,
-                    centroid[1] + (target[1] - centroid[1]) * t};
-            if (pointInRing(p, ring) && minDistanceToRingMeters(p, ring) >= SNAP_MARGIN_METERS) {
-                return p;
-            }
-        }
-        return centroid;
-    }
-
-    /** Najmniejsza odległość (m) punktu [lng,lat] od obrysu (lokalne przybliżenie planarne). */
-    private static double minDistanceToRingMeters(double[] p, double[][] ring) {
-        double mPerDegLng = METERS_PER_DEG_LAT * Math.cos(Math.toRadians(p[1]));
-        double min = Double.MAX_VALUE;
-        for (int i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-            double d = pointToSegmentMeters(p, ring[j], ring[i], mPerDegLng);
-            if (d < min) {
-                min = d;
-            }
-        }
-        return min;
-    }
-
-    /** Odległość (m) punktu od odcinka a–b, rzutując stopnie na metry lokalnie (lat stały, lng×cos). */
-    private static double pointToSegmentMeters(double[] p, double[] a, double[] b, double mPerDegLng) {
-        double px = (p[0] - a[0]) * mPerDegLng;
-        double py = (p[1] - a[1]) * METERS_PER_DEG_LAT;
-        double bx = (b[0] - a[0]) * mPerDegLng;
-        double by = (b[1] - a[1]) * METERS_PER_DEG_LAT;
-        double len2 = bx * bx + by * by;
-        double t = len2 < 1e-9 ? 0.0 : Math.max(0.0, Math.min(1.0, (px * bx + py * by) / len2));
-        double dx = px - bx * t;
-        double dy = py - by * t;
-        return Math.sqrt(dx * dx + dy * dy);
-    }
-
-    /** Najbliższy punkt odcinka a–b do p (w stopniach lng/lat; wystarczające na małych dystansach gminy). */
-    private static double[] closestPointOnSegment(double[] p, double[] a, double[] b) {
-        double dx = b[0] - a[0];
-        double dy = b[1] - a[1];
-        double len2 = dx * dx + dy * dy;
-        if (len2 < 1e-12) {
-            return new double[]{a[0], a[1]};
-        }
-        double t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2;
-        t = Math.max(0.0, Math.min(1.0, t));
-        return new double[]{a[0] + dx * t, a[1] + dy * t};
     }
 
     /** Ray casting: czy punkt [lng,lat] leży wewnątrz obrysu (ring punktów [lng,lat]). */

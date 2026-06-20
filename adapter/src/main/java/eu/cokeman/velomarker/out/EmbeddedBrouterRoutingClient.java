@@ -9,7 +9,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import velomarker.entity.RouteCalculation;
 import velomarker.entity.RouteStats;
@@ -40,12 +39,11 @@ import java.util.regex.Pattern;
  * Java-side data structures + per-request buffory). Heap kosztu rośnie liniowo z liczbą równoczesnych
  * calls, ale jeden plan 300d odpala ~37k calls SEKWENCYJNIE z różnych krawędzi — nie wszystkie naraz.
  * <p>
- * Aktywowany przez {@code route.brouter.mode=embedded}; default {@code http} → fallback do
- * {@link HttpBrouterRoutingClient}. Błędy mapowane na te same domain exceptions co HTTP wariant,
- * by warstwa wyżej (CalculateRouteService, ControllerAdvice) nie wiedziała o trybie.
+ * Jedyny klient routingu BRoutera — JAR załadowany w proces route-service (zero HTTP, kontener
+ * velomarker-brouter już nie istnieje). Błędy mapowane na domain exceptions, by warstwa wyżej
+ * (CalculateRouteService, ControllerAdvice) nie znała szczegółów transportu.
  */
 @Component
-@ConditionalOnProperty(name = "route.brouter.mode", havingValue = "embedded")
 public class EmbeddedBrouterRoutingClient implements BrouterRoutingClient {
 
     private static final Logger log = LoggerFactory.getLogger(EmbeddedBrouterRoutingClient.class);

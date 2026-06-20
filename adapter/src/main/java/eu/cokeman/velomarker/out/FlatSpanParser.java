@@ -11,9 +11,8 @@ import java.util.List;
  *   <li>HTTP: JSON {@code [[header_col1, header_col2,...], [v1,v2,...], ...]}</li>
  *   <li>embedded: {@code List<String>} z każdym wierszem rozdzielonym {@code \t}</li>
  * </ul>
- * Logika dopasowania endpointów do indeksów wierzchołków identyczna jak w
- * {@link HttpBrouterRoutingClient#parseFlatSpans} — endpointy są dokładnymi
- * wierzchołkami geometrii (mikrostopnie/1e6 == coord), forward-pointer bez dryfu.
+ * Endpointy są dokładnymi wierzchołkami geometrii (mikrostopnie/1e6 == coord), dopasowanie
+ * forward-pointer bez dryfu.
  */
 final class FlatSpanParser {
 

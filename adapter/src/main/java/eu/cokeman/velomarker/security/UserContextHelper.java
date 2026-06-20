@@ -7,12 +7,9 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtAut
 import org.springframework.stereotype.Component;
 
 import java.util.UUID;
-import java.util.logging.Logger;
 
 @Component
 public class UserContextHelper {
-    private static final Logger logger = Logger.getLogger(UserContextHelper.class.getName());
-
     public UUID getCurrentUserId() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication == null || !authentication.isAuthenticated()
@@ -34,9 +31,4 @@ public class UserContextHelper {
         throw new IllegalStateException("Unsupported authentication type: " + authentication.getClass().getName());
     }
 
-    public boolean isCurrentUserAdmin() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        return authentication != null && authentication.getAuthorities().stream()
-                .anyMatch(a -> "ADMIN".equals(a.getAuthority()));
-    }
 }

@@ -139,3 +139,15 @@ ALTER TABLE planning.session_day ADD COLUMN IF NOT EXISTS stats_json TEXT;
 -- array — źródło prawdy dla kolorowania na froncie (zamiast re-derywacji turfem plain-touch).
 -- Nullable: stare/ręczne dni bez danych backendowych → front liczy turfem (fallback).
 ALTER TABLE planning.session_day ADD COLUMN IF NOT EXISTS covered_area_ids TEXT;
+
+-- changeset cokeman:20_06_2026_01_drop_summary_road_anchors
+-- RoadFactorCalibrator: usunięto osobny współczynnik road_anchors (start→meta). Realny stosunek
+-- start→meta seeduje teraz road_areas, a sam anchors był tylko diagnostyką w raporcie. Zostaje road_areas.
+ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_road_anchors;
+
+-- changeset cokeman:20_06_2026_02_drop_summary_reconcile_counters
+-- Pętla reconcile dawno zastąpiona snap-to-baseline → liczniki reconcile_iters/trims/grows były ZAWSZE 0
+-- (martwa diagnostyka). Usuwamy kolumny.
+ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_reconcile_iters;
+ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_reconcile_trims;
+ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_reconcile_grows;

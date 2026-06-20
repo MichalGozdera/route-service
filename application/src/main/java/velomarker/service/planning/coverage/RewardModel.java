@@ -3,6 +3,7 @@ package velomarker.service.planning.coverage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import velomarker.entity.planning.UnvisitedArea;
+import velomarker.port.out.planning.SpatialIndexFactory;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -53,7 +54,7 @@ final class RewardModel {
      * Reward per kategoria = avg_nearest_neighbor_dist / {@value #REFERENCE_DIST_KM} km, clamp do
      * [0.1, ∞). Liczone na WYSELEKCJONOWANYCH (bbox pool) — gęstość zależy od regionu.
      */
-    static Map<String, Double> rewardPerCategory(List<UnvisitedArea> pool) {
+    static Map<String, Double> rewardPerCategory(List<UnvisitedArea> pool, SpatialIndexFactory factory) {
         Map<String, List<UnvisitedArea>> byCategory = new HashMap<>();
         for (UnvisitedArea a : pool) {
             byCategory.computeIfAbsent(categoryKey(a), k -> new ArrayList<>()).add(a);
@@ -61,7 +62,7 @@ final class RewardModel {
         Map<String, Double> reward = new HashMap<>();
         StringBuilder logLine = new StringBuilder();
         for (var entry : byCategory.entrySet()) {
-            double avgNearestKm = GminaIndex.avgNearestNeighborDistKm(entry.getValue());
+            double avgNearestKm = GminaIndex.avgNearestNeighborDistKm(entry.getValue(), factory);
             double r = Math.max(0.1, avgNearestKm > 0 ? avgNearestKm / REFERENCE_DIST_KM : 1.0);
             reward.put(entry.getKey(), r);
             if (logLine.length() > 0) logLine.append(", ");

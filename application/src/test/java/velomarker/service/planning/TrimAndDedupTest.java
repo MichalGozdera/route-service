@@ -31,30 +31,30 @@ class TrimAndDedupTest {
                 {lng - halfSizeDeg, lat - halfSizeDeg}, {lng + halfSizeDeg, lat - halfSizeDeg},
                 {lng + halfSizeDeg, lat + halfSizeDeg}, {lng - halfSizeDeg, lat + halfSizeDeg}
         };
-        return new UnvisitedArea(id, "A" + id, null, lat, lng, ring, 1, 1, "gmina", null);
+        return new UnvisitedArea(id, "A" + id, lat, lng, ring, 1, 1, "gmina", null);
     }
 
-    private static PlanningOrchestrationService.AreaCandidate scored(int id, double lng, double lat, double half, List<double[]> baseline) {
+    private static AreaCandidate scored(int id, double lng, double lat, double half, List<double[]> baseline) {
         var a = squareArea(id, lng, lat, half);
-        return PlanningOrchestrationService.scoreAreaAgainstBaseline(a, baseline);
+        return CoverageAreaSelection.scoreAreaAgainstBaseline(a, baseline, false);
     }
 
     private static RoutePreferences prefs(Waypoint start, Waypoint end, List<Waypoint> via) {
         return new RoutePreferences(List.of(), List.of(), List.of(), start, end, via,
-                false, 10, 100, 1000, "fastbike", null, null);
+                false, 10, 100, 1000, "fastbike");
     }
 
     private static PlanningOrchestrationService.CoverageBuildInfo coverageInfo(
-            List<PlanningOrchestrationService.AreaCandidate> picked, List<double[]> baselineGeom) {
+            List<AreaCandidate> picked, List<double[]> baselineGeom) {
         return new PlanningOrchestrationService.CoverageBuildInfo(
-                List.of(), 0, picked.size(), 0, 0, 0,
-                BudgetReconciler.Verdict.OK, 100.0, 1.4, 1.1, picked, List.of(), baselineGeom);
+                List.of(), 0, picked.size(),
+                100.0, 1.1, picked, List.of(), baselineGeom);
     }
 
     @Test
     void trimExpensiveGminy_drops30Percent_byDetour() {
         var baseline = straightBaseline();
-        var picked = new ArrayList<PlanningOrchestrationService.AreaCandidate>();
+        var picked = new ArrayList<AreaCandidate>();
         // 10 gmin: 0..4 = cheap (5 km off), 5..9 = expensive (40 km off).
         for (int i = 0; i < 5; i++) picked.add(scored(i, 14.5 + i * 0.5, 50.05, 0.02, baseline));
         for (int i = 5; i < 10; i++) picked.add(scored(i, 14.5 + (i - 5) * 0.5, 50.36, 0.02, baseline));
@@ -64,7 +64,7 @@ class TrimAndDedupTest {
         var info = coverageInfo(picked, baseline);
 
         // Wyrzuć 30% (3 najdroższe).
-        var trimmedWps = PlanningOrchestrationService.trimExpensiveGminy(prefs(startWp, endWp, List.of()), info, 0.3);
+        var trimmedWps = CoverageAreaSelection.trimExpensiveGminy(prefs(startWp, endWp, List.of()), info, 0.3);
         // Final list = start + 7 gmin + end = 9 wp.
         assertThat(trimmedWps).hasSize(9);
         assertThat(trimmedWps.get(0)).isEqualTo(startWp);
@@ -81,7 +81,7 @@ class TrimAndDedupTest {
         var startWp = new Waypoint(14.0, 50.0, "start");
         var endWp = new Waypoint(17.96, 50.0, "end");
 
-        var trimmedWps = PlanningOrchestrationService.trimExpensiveGminy(prefs(startWp, endWp, List.of()), info, 1.0);
+        var trimmedWps = CoverageAreaSelection.trimExpensiveGminy(prefs(startWp, endWp, List.of()), info, 1.0);
         // Wszystkie gminy wyrzucone → tylko start + end.
         assertThat(trimmedWps).hasSize(2);
         assertThat(trimmedWps.get(0)).isEqualTo(startWp);
@@ -100,7 +100,7 @@ class TrimAndDedupTest {
         var viaWp = new Waypoint(16.0, 50.0, "via");
         var endWp = new Waypoint(17.96, 50.0, "end");
 
-        var result = PlanningOrchestrationService.buildWaypointsFromPicked(
+        var result = CoverageAreaSelection.buildWaypointsFromPicked(
                 prefs(startWp, endWp, List.of(viaWp)),
                 List.of(g1, g2, g3),
                 baseline);
@@ -155,7 +155,7 @@ class TrimAndDedupTest {
         var entry = new Waypoint(g1.getEntryLng(), g1.getEntryLat(), g1.getArea().name());
         var currentWps = List.of(startWp, entry, endWp);
 
-        var deduped = PlanningOrchestrationService.removeNaturallyCoveredEntries(
+        var deduped = CoverageAreaSelection.removeNaturallyCoveredEntries(
                 prefs(startWp, endWp, List.of()), info, newGeom, currentWps);
         // G1 naturalnie pokryta → entry-point wyrzucony.
         assertThat(deduped).hasSize(2);
@@ -183,7 +183,7 @@ class TrimAndDedupTest {
 
         var currentWps = List.of(startWp, collidingVia, new Waypoint(g1.getEntryLng(), g1.getEntryLat(), "A1"), endWp);
 
-        var deduped = PlanningOrchestrationService.removeNaturallyCoveredEntries(
+        var deduped = CoverageAreaSelection.removeNaturallyCoveredEntries(
                 prefs(startWp, endWp, List.of(collidingVia)), info, newGeom, currentWps);
         // collidingVia + gmina entry-point z tą samą nazwą — bez zmian (safety preferred).
         assertThat(deduped).hasSize(4);
@@ -196,7 +196,7 @@ class TrimAndDedupTest {
         // To jest dokumentacja zachowania greedy_pick (które wbudowane w buildCoverageWaypointsWithInfo),
         // tu testujemy że IDEA reserve działa: candidates sorted ASC, picked = prefix do budgetu, reserve = sufiks.
         var baseline = straightBaseline();
-        List<PlanningOrchestrationService.AreaCandidate> sorted = new ArrayList<>(List.of(
+        List<AreaCandidate> sorted = new ArrayList<>(List.of(
                 scored(1, 14.5, 50.05, 0.02, baseline),
                 scored(2, 15.5, 50.05, 0.02, baseline),
                 scored(3, 16.5, 50.05, 0.02, baseline),
@@ -207,8 +207,8 @@ class TrimAndDedupTest {
         // Simulate budget surplus = 60 km (tylko najtańsze 3 wejdą).
         double surplus = 60;
         double roadAreas = 1.5;
-        List<PlanningOrchestrationService.AreaCandidate> picked = new ArrayList<>();
-        List<PlanningOrchestrationService.AreaCandidate> reserve = new ArrayList<>();
+        List<AreaCandidate> picked = new ArrayList<>();
+        List<AreaCandidate> reserve = new ArrayList<>();
         double used = 0;
         for (var c : sorted) {
             double real = c.isIntersected() ? 0 : c.getDetourStraightKm() * roadAreas;
@@ -222,8 +222,8 @@ class TrimAndDedupTest {
         assertThat(picked.size() + reserve.size()).isEqualTo(5);
         assertThat(reserve).isNotEmpty();
         // Najtańsze w picked, najdroższe w reserve:
-        double maxPickedDetour = picked.stream().mapToDouble(PlanningOrchestrationService.AreaCandidate::getDetourStraightKm).max().orElseThrow();
-        double minReserveDetour = reserve.stream().mapToDouble(PlanningOrchestrationService.AreaCandidate::getDetourStraightKm).min().orElseThrow();
+        double maxPickedDetour = picked.stream().mapToDouble(AreaCandidate::getDetourStraightKm).max().orElseThrow();
+        double minReserveDetour = reserve.stream().mapToDouble(AreaCandidate::getDetourStraightKm).min().orElseThrow();
         assertThat(maxPickedDetour).isLessThanOrEqualTo(minReserveDetour);
     }
 
@@ -233,30 +233,30 @@ class TrimAndDedupTest {
         // Zachowaj tę z mniejszym detour.
         var baseline = straightBaseline();
         // A: large gmina centroid (15.0, 50.05) ringi ±0.05° (~5km half-width)
-        var a = new UnvisitedArea(1, "A", null, 50.05, 15.0,
+        var a = new UnvisitedArea(1, "A", 50.05, 15.0,
                 new double[][]{{14.95, 50.0}, {15.05, 50.0}, {15.05, 50.10}, {14.95, 50.10}},
                 1, 1, "gmina", null);
         // B: small gmina inside A — entry-point ~(14.98, 50.04) leży w A.ring
-        var b = new UnvisitedArea(2, "B", null, 50.04, 14.98,
+        var b = new UnvisitedArea(2, "B", 50.04, 14.98,
                 new double[][]{{14.975, 50.035}, {14.985, 50.035}, {14.985, 50.045}, {14.975, 50.045}},
                 1, 1, "gmina", null);
         // C: gmina daleko od A i B — nie skipowalna
-        var c = new UnvisitedArea(3, "C", null, 50.05, 17.0,
+        var c = new UnvisitedArea(3, "C", 50.05, 17.0,
                 new double[][]{{16.95, 50.0}, {17.05, 50.0}, {17.05, 50.10}, {16.95, 50.10}},
                 1, 1, "gmina", null);
 
-        var ca = PlanningOrchestrationService.scoreAreaAgainstBaseline(a, baseline);
-        var cb = PlanningOrchestrationService.scoreAreaAgainstBaseline(b, baseline);
-        var cc = PlanningOrchestrationService.scoreAreaAgainstBaseline(c, baseline);
+        var ca = CoverageAreaSelection.scoreAreaAgainstBaseline(a, baseline, false);
+        var cb = CoverageAreaSelection.scoreAreaAgainstBaseline(b, baseline, false);
+        var cc = CoverageAreaSelection.scoreAreaAgainstBaseline(c, baseline, false);
 
         var picked = new java.util.ArrayList<>(java.util.List.of(ca, cb, cc));
-        var deduped = PlanningOrchestrationService.dedupByMutualCoverage(picked);
+        var deduped = CoverageAreaSelection.dedupByMutualCoverage(picked);
 
         // Iter 9 Fix #1: NIE usuwamy areas z listy, tylko flagujemy mutually-covered.
         // A i B overlap → JEDNA z nich oznaczona flagą (większy detour). C bez flagi.
         assertThat(deduped).hasSize(3);
         long flaggedCount = deduped.stream()
-                .filter(PlanningOrchestrationService.AreaCandidate::isMutuallyCoveredByNeighbor)
+                .filter(AreaCandidate::isMutuallyCoveredByNeighbor)
                 .count();
         assertThat(flaggedCount).isGreaterThanOrEqualTo(1);
         // C bez flagi
@@ -272,14 +272,14 @@ class TrimAndDedupTest {
                 scored(2, 15.5, 50.05, 0.02, baseline),
                 scored(3, 16.5, 50.05, 0.02, baseline)
         );
-        var deduped = PlanningOrchestrationService.dedupByMutualCoverage(picked);
+        var deduped = CoverageAreaSelection.dedupByMutualCoverage(picked);
         assertThat(deduped).hasSize(3);
     }
 
     @Test
     void segmentIntersectsRing_endpointInside_returnsTrue() {
         double[][] ring = {{14.0, 50.0}, {15.0, 50.0}, {15.0, 51.0}, {14.0, 51.0}};
-        assertThat(PlanningOrchestrationService.segmentIntersectsRing(
+        assertThat(PlanningGeom.segmentIntersectsRing(
                 new double[]{14.5, 50.5}, new double[]{13.0, 49.0}, ring)).isTrue();
     }
 
@@ -287,7 +287,7 @@ class TrimAndDedupTest {
     void segmentIntersectsRing_crossingSegment_returnsTrue() {
         double[][] ring = {{14.0, 50.0}, {15.0, 50.0}, {15.0, 51.0}, {14.0, 51.0}};
         // Segment crosses ring left-to-right
-        assertThat(PlanningOrchestrationService.segmentIntersectsRing(
+        assertThat(PlanningGeom.segmentIntersectsRing(
                 new double[]{13.5, 50.5}, new double[]{15.5, 50.5}, ring)).isTrue();
     }
 
@@ -295,7 +295,7 @@ class TrimAndDedupTest {
     void segmentIntersectsRing_outsideBbox_returnsFalse() {
         double[][] ring = {{14.0, 50.0}, {15.0, 50.0}, {15.0, 51.0}, {14.0, 51.0}};
         // Segment far away
-        assertThat(PlanningOrchestrationService.segmentIntersectsRing(
+        assertThat(PlanningGeom.segmentIntersectsRing(
                 new double[]{20.0, 60.0}, new double[]{21.0, 60.0}, ring)).isFalse();
     }
 
@@ -313,7 +313,7 @@ class TrimAndDedupTest {
         var entry = new Waypoint(g1.getEntryLng(), g1.getEntryLat(), g1.getArea().name());
         var currentWps = List.of(startWp, entry, endWp);
 
-        var deduped = PlanningOrchestrationService.removeNaturallyCoveredEntries(
+        var deduped = CoverageAreaSelection.removeNaturallyCoveredEntries(
                 prefs(startWp, endWp, List.of()), info, newGeom, currentWps);
         assertThat(deduped).hasSize(3); // bez zmian
     }

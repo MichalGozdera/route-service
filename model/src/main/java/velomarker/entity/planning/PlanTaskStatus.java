@@ -7,7 +7,4 @@ public enum PlanTaskStatus {
     FAILED,
     CANCELLED;
 
-    public boolean isTerminal() {
-        return this != RUNNING;
-    }
 }

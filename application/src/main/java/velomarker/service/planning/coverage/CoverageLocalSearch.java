@@ -4,7 +4,6 @@ import velomarker.service.planning.WaypointSelector;
 
 import java.util.Collections;
 import java.util.List;
-import java.util.function.ToDoubleFunction;
 
 /**
  * Local search dla Coverage: 2-opt, relocate, swap. Wszystkie operatorów zachowują
@@ -183,16 +182,4 @@ public class CoverageLocalSearch {
         return cost;
     }
 
-    /** Suma haversine wszystkich edges trasy (proxy dla effort). */
-    public static double totalHaversine(List<double[]> route) {
-        return totalCost(route, p -> 0); // 0 unused
-    }
-
-    private static double totalCost(List<double[]> route, ToDoubleFunction<double[]> ignored) {
-        double sum = 0;
-        for (int i = 0; i < route.size() - 1; i++) {
-            sum += WaypointSelector.haversineKm(route.get(i), route.get(i + 1));
-        }
-        return sum;
-    }
 }

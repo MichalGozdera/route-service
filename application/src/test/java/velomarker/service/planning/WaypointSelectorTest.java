@@ -14,7 +14,7 @@ class WaypointSelectorTest {
     private final WaypointSelector selector = new WaypointSelector();
 
     private static UnvisitedArea area(int id, double lng, double lat) {
-        return UnvisitedArea.level(id, "A" + id, null, lat, lng, null, 1, 1, "gmina");
+        return UnvisitedArea.level(id, "A" + id, lat, lng, null, 1, 1, "gmina");
     }
 
     /** Mała kwadratowa gmina wokół punktu (lng, lat) o boku ~5 km. */
@@ -24,7 +24,7 @@ class WaypointSelectorTest {
                 {lng - d, lat - d}, {lng + d, lat - d},
                 {lng + d, lat + d}, {lng - d, lat + d}
         };
-        return new UnvisitedArea(id, "A" + id, null, lat, lng, ring, 1, 1, "gmina", null);
+        return new UnvisitedArea(id, "A" + id, lat, lng, ring, 1, 1, "gmina", null);
     }
 
     @Test
@@ -91,27 +91,6 @@ class WaypointSelectorTest {
     }
 
     @Test
-    void selectWaypoints_addsStartAndEnd() {
-        List<UnvisitedArea> cluster = List.of(area(1, 14.5, 50.0));
-        double[] start = {14.0, 50.0};
-        double[] end = {15.0, 50.0};
-        var result = selector.selectWaypoints(cluster, start, end, false);
-        assertThat(result).hasSize(3);
-        assertThat(result.get(0)).isEqualTo(start);
-        assertThat(result.get(result.size() - 1)).isEqualTo(end);
-    }
-
-    @Test
-    void selectWaypoints_loop_addsStartAtEnd() {
-        List<UnvisitedArea> cluster = List.of(area(1, 14.5, 50.0));
-        double[] start = {14.0, 50.0};
-        var result = selector.selectWaypoints(cluster, start, null, true);
-        assertThat(result).hasSize(3);
-        assertThat(result.get(0)).isEqualTo(start);
-        assertThat(result.get(result.size() - 1)).isEqualTo(start);
-    }
-
-    @Test
     void pointInRing_inside() {
         double[][] ring = {{14.0, 50.0}, {15.0, 50.0}, {15.0, 51.0}, {14.0, 51.0}};
         assertThat(WaypointSelector.pointInRing(new double[]{14.5, 50.5}, ring)).isTrue();
@@ -121,19 +100,6 @@ class WaypointSelectorTest {
     void pointInRing_outside() {
         double[][] ring = {{14.0, 50.0}, {15.0, 50.0}, {15.0, 51.0}, {14.0, 51.0}};
         assertThat(WaypointSelector.pointInRing(new double[]{13.0, 50.5}, ring)).isFalse();
-    }
-
-    @Test
-    void snapAreasToCorridor_movesPointTowardsCorridor() {
-        // Area z ringem, centroid (14.5, 50.0). Sąsiedzi prev (14.0, 50.0) i next (15.0, 50.0).
-        // Korytarz to oś 50.0 latitude. Snap powinien zostawić punkt w ringu BLISKO osi.
-        UnvisitedArea a = ringArea(1, 14.5, 50.0);
-        var ordered = List.of(a);
-        var snapped = selector.snapAreasToCorridor(ordered, new double[]{14.0, 50.0}, new double[]{15.0, 50.0});
-        assertThat(snapped).hasSize(1);
-        // Punkt zostaje w ringu (lat między 49.975 a 50.025).
-        assertThat(snapped.get(0).lat()).isBetween(49.975, 50.025);
-        assertThat(snapped.get(0).lng()).isBetween(14.475, 14.525);
     }
 
     @Test

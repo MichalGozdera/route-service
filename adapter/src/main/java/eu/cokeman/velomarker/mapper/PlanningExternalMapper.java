@@ -3,11 +3,9 @@ package eu.cokeman.velomarker.mapper;
 import eu.cokeman.velomarker.openapi.model.PlanTaskDto;
 import eu.cokeman.velomarker.openapi.model.PlanTaskStatusDto;
 import eu.cokeman.velomarker.openapi.model.PlanningIntentDto;
-import eu.cokeman.velomarker.openapi.model.PlanningRouteStyleDto;
 import eu.cokeman.velomarker.openapi.model.PlanningSessionDayDto;
 import eu.cokeman.velomarker.openapi.model.PlanningSessionResponseDto;
 import eu.cokeman.velomarker.openapi.model.PlanningSummaryDto;
-import eu.cokeman.velomarker.openapi.model.PlanningTempoDto;
 import eu.cokeman.velomarker.openapi.model.RoutePreferencesDto;
 import eu.cokeman.velomarker.openapi.model.WaypointDto;
 import org.springframework.stereotype.Component;
@@ -17,8 +15,6 @@ import velomarker.entity.planning.PlanningSession;
 import velomarker.entity.planning.PlanningSessionDay;
 import velomarker.entity.planning.PlanningSummary;
 import velomarker.entity.planning.RoutePreferences;
-import velomarker.entity.planning.RouteStyle;
-import velomarker.entity.planning.Tempo;
 import velomarker.entity.planning.Waypoint;
 
 import java.util.List;
@@ -62,11 +58,7 @@ public class PlanningExternalMapper {
         dto.setSurplusKm(s.surplusKm());
         dto.setPoolSize(s.poolSize());
         dto.setInitialPoolSize(s.initialPoolSize());
-        dto.setReconcileIters(s.reconcileIters());
-        dto.setReconcileTrims(s.reconcileTrims());
-        dto.setReconcileGrows(s.reconcileGrows());
         if (s.baselineKm() != null) dto.setBaselineKm(s.baselineKm());
-        if (s.roadAnchors() != null) dto.setRoadAnchors(s.roadAnchors());
         if (s.roadAreas() != null) dto.setRoadAreas(s.roadAreas());
         dto.setClimbWarning(s.climbWarning());
         return dto;
@@ -116,8 +108,6 @@ public class PlanningExternalMapper {
         if (p.kmPerDay() != null) dto.setKmPerDay(p.kmPerDay());
         if (p.elevationPerDayM() != null) dto.setElevationPerDayM(p.elevationPerDayM());
         if (p.profile() != null) dto.setProfile(p.profile());
-        if (p.style() != null) dto.setStyle(toDto(p.style()));
-        if (p.tempo() != null) dto.setTempo(toDto(p.tempo()));
         return dto;
     }
 
@@ -134,9 +124,7 @@ public class PlanningExternalMapper {
                 dto.getDays(),
                 dto.getKmPerDay(),
                 dto.getElevationPerDayM(),
-                dto.getProfile(),
-                fromDto(dto.getStyle()),
-                fromDto(dto.getTempo())
+                dto.getProfile()
         );
     }
 
@@ -161,23 +149,5 @@ public class PlanningExternalMapper {
 
     public PlanningIntent fromDto(PlanningIntentDto dto) {
         return PlanningIntent.valueOf(dto.getValue());
-    }
-
-    public PlanningRouteStyleDto toDto(RouteStyle style) {
-        return PlanningRouteStyleDto.fromValue(style.name());
-    }
-
-    public RouteStyle fromDto(PlanningRouteStyleDto dto) {
-        if (dto == null) return null;
-        return RouteStyle.valueOf(dto.getValue());
-    }
-
-    public PlanningTempoDto toDto(Tempo tempo) {
-        return PlanningTempoDto.fromValue(tempo.name());
-    }
-
-    public Tempo fromDto(PlanningTempoDto dto) {
-        if (dto == null) return null;
-        return Tempo.valueOf(dto.getValue());
     }
 }

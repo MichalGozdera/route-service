@@ -1,6 +1,11 @@
 package eu.cokeman.velomarker.out.http;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.locationtech.jts.algorithm.construct.MaximumInscribedCircle;
+import org.locationtech.jts.geom.Coordinate;
+import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.LinearRing;
+import org.locationtech.jts.geom.Polygon;
 import velomarker.entity.planning.AreaPart;
 
 import java.util.ArrayList;
@@ -99,13 +104,66 @@ final class GeoJson {
         if (largest == null) {
             return null;
         }
+        double[] mic = maximumInscribedCircleCenter(largest);
+        if (mic != null) {
+            return mic;
+        }
+        // Fallback (MIC padł/zdegenerowane): średnia wierzchołków + łatka gdy wpadnie w dziurę.
         double[] c = ringCentroidAvg(largest.outer());
         if (!inAnyHole(c, largest)) {
             return c;
         }
-        // centroid wpadł w dziurę (obwarzanek) → punkt w paśmie: wierzchołek przesunięty 10% ku centroidowi
         double[] v = largest.outer()[0];
         return new double[]{v[0] + (c[0] - v[0]) * 0.1, v[1] + (c[1] - v[1]) * 0.1};
+    }
+
+    /** Środek największego wpisanego okręgu (MIC) największej części — [lng,lat]. Spójne z seed-plannerem
+     *  (deepestInteriorPoint), odporne na kształty wklęsłe/obwarzankowe. null gdy geometria zdegenerowana /
+     *  MIC padnie. Tolerancja ~0.001° (≈100 m) = szybki, dość dokładny środek. */
+    private static double[] maximumInscribedCircleCenter(AreaPart part) {
+        try {
+            GeometryFactory gf = new GeometryFactory();
+            LinearRing shell = toLinearRing(gf, part.outer());
+            if (shell == null) {
+                return null;
+            }
+            LinearRing[] holes = null;
+            if (part.holes() != null && part.holes().length > 0) {
+                List<LinearRing> hs = new ArrayList<>();
+                for (double[][] h : part.holes()) {
+                    LinearRing hr = toLinearRing(gf, h);
+                    if (hr != null) {
+                        hs.add(hr);
+                    }
+                }
+                holes = hs.toArray(new LinearRing[0]);
+            }
+            Polygon poly = gf.createPolygon(shell, holes);
+            if (poly.isEmpty()) {
+                return null;
+            }
+            Coordinate ctr = new MaximumInscribedCircle(poly, 0.001).getCenter().getCoordinate();
+            return new double[]{ctr.x, ctr.y};
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** Zamknięty JTS LinearRing z [lng,lat] (dokleja pierwszy wierzchołek gdy otwarty). null gdy <3 wierzchołki. */
+    private static LinearRing toLinearRing(GeometryFactory gf, double[][] ring) {
+        if (ring == null || ring.length < 3) {
+            return null;
+        }
+        int n = ring.length;
+        boolean closed = ring[0][0] == ring[n - 1][0] && ring[0][1] == ring[n - 1][1];
+        Coordinate[] cs = new Coordinate[closed ? n : n + 1];
+        for (int i = 0; i < n; i++) {
+            cs[i] = new Coordinate(ring[i][0], ring[i][1]);
+        }
+        if (!closed) {
+            cs[n] = new Coordinate(ring[0][0], ring[0][1]);
+        }
+        return gf.createLinearRing(cs);
     }
 
     private static boolean inAnyHole(double[] p, AreaPart part) {

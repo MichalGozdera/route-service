@@ -12,9 +12,6 @@ import org.locationtech.jts.geom.prep.PreparedGeometry;
 import org.locationtech.jts.geom.prep.PreparedGeometryFactory;
 import org.locationtech.jts.algorithm.construct.MaximumInscribedCircle;
 import org.locationtech.jts.index.strtree.STRtree;
-import org.locationtech.jts.linearref.LengthIndexedLine;
-import org.locationtech.jts.operation.overlayng.OverlayNG;
-import org.locationtech.jts.operation.overlayng.OverlayNGRobust;
 import velomarker.entity.planning.AreaPart;
 import velomarker.entity.planning.UnvisitedArea;
 import velomarker.port.out.planning.AreaCoverageIndex;
@@ -357,59 +354,6 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
     }
 
     @Override
-    public Crossing creditedCrossing(List<double[]> legGeometry, int areaId) {
-        List<LineString> comps = coreCrossingComponents(legGeometry, areaId, null);
-        if (comps == null) {
-            return null;
-        }
-        LineString best = null;
-        double bestLen = -1;
-        for (LineString ls : comps) {
-            double len = ls.getLength(); // jednostki projekcji (izotropowe)
-            if (len > bestLen) {
-                bestLen = len;
-                best = ls;
-            }
-        }
-        if (best == null || bestLen <= 0) {
-            return null;
-        }
-        return buildCrossing(best, false, 0); // entry na granicy rdzenia (używane przez inline-PRZESUŃ na śladzie)
-    }
-
-    @Override
-    public Crossing firstCreditedCrossing(List<double[]> legGeometry, int areaId) {
-        LineString[] legOut = new LineString[1];
-        List<LineString> comps = coreCrossingComponents(legGeometry, areaId, legOut);
-        if (comps == null) {
-            return null;
-        }
-        // RUNDA 24: wybierz odcinek o NAJWCZEŚNIEJSZEJ pozycji wzdłuż śladu (LengthIndexedLine), entry = wcześniejszy
-        // koniec idąc po śladzie (mniejszy indeks). „Pierwszy przypadek" z kilku wejść w rdzeń.
-        LengthIndexedLine lil = new LengthIndexedLine(legOut[0]);
-        LineString bestComp = null;
-        boolean bestReversed = false;
-        double bestStart = Double.MAX_VALUE;
-        for (LineString ls : comps) {
-            if (ls.getLength() <= 0) {
-                continue;
-            }
-            Coordinate[] cs = ls.getCoordinates();
-            double i0 = lil.indexOf(cs[0]);
-            double i1 = lil.indexOf(cs[cs.length - 1]);
-            double start = Math.min(i0, i1);
-            if (start < bestStart) {
-                bestStart = start;
-                bestComp = ls;
-                bestReversed = i1 < i0; // entry = koniec o mniejszym indeksie wzdłuż śladu
-            }
-        }
-        // RUNDA 26: entry COFNIĘTY o FIRST_ENTRY_DEPTH_M w głąb przejścia (~220m od granicy gminy) — żeby wp realnie
-        // wjechał w rdzeń (dziobek na granicy = długość 0 = brak kredytu → Sochocin count=0).
-        return bestComp == null ? null : buildCrossing(bestComp, bestReversed, FIRST_ENTRY_DEPTH_M);
-    }
-
-    @Override
     public Map<Integer, double[]> firstBufferEntryPoints(List<double[]> routeGeometry) {
         // RUNDA 34/56/57: JEDEN przebieg śladu + STRtree. DWUPOZIOMOWO:
         //  • PLACEMENT (preferowany) = PIERWSZE przecięcie z buforem −220 (prepCreditDeep) → wp na pierwszym wjeździe
@@ -511,108 +455,11 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
         return dp;
     }
 
-    /**
-     * RUNDA 23/24 wspólny rdzeń: przytnij ślad do otoczenia (bbox+margines) gminy i policz odcinki wewnątrz RDZENIA
-     * kredytu (skurczona geometria) przez OverlayNGRobust (robust noding — nie wiesza się na near-zero segmentach).
-     * Komponenty w przestrzeni projekcji. {@code legOut[0]} (gdy != null) = sprojektowany pełny ślad (do pozycji wzdłuż).
-     */
-    private List<LineString> coreCrossingComponents(List<double[]> legGeometry, int areaId, LineString[] legOut) {
-        if (empty || legGeometry == null || legGeometry.size() < 2) {
-            return null;
-        }
-        AreaGeom ag = byId.get(areaId);
-        if (ag == null) {
-            return null;
-        }
-        LineString leg = projectLineCached(legGeometry); // RUNDA 26: cache — ten sam ślad × N gmin
-        if (leg == null) {
-            return null;
-        }
-        if (legOut != null) {
-            legOut[0] = leg;
-        }
-        Geometry clipped = clipToEnvelope(leg, ag.credit.getEnvelopeInternal());
-        if (clipped == null || clipped.isEmpty()) {
-            return null;
-        }
-        Geometry inter;
-        try {
-            inter = OverlayNGRobust.overlay(clipped, ag.credit, OverlayNG.INTERSECTION);
-        } catch (RuntimeException e) {
-            return null;
-        }
-        if (inter == null || inter.isEmpty()) {
-            return null;
-        }
-        List<LineString> comps = new ArrayList<>();
-        collectLines(inter, comps);
-        return comps.isEmpty() ? null : comps;
-    }
-
     /** RUNDA 26: o ile metrów ZA granicę rdzenia (−200m) cofnąć `entry` w głąb — żeby wp na pierwszym wejściu realnie
      *  wjechał w rdzeń (granica = długość 0 = brak kredytu; +20m = ślad przez rdzeń = kredyt). Razem ~220m od granicy gminy. */
     private static final double FIRST_ENTRY_DEPTH_M = 20.0;
-    /** RUNDA 27: okno (liczba wierzchołków śladu od segmentu wejścia) szukania pierwszego punktu w buforze. */
-    private static final int ENTRY_SCAN_WINDOW = 200;
     /** RUNDA 30: minimalna głębokość (m od granicy gminy) NAJGŁĘBSZEGO punktu śladu, by postawić tam wp; płycej → centroid. */
     private static final double DEEP_DEPTH_M = 220.0;
-
-    /** Buduje {@link Crossing} z odcinka: entry=cs[0] przesunięty o {@code depthOffsetM} w głąb przejścia (cap=połowa),
-     *  mid=środek po długości, exit=cs[last]. {@code depthOffsetM=0} → entry dokładnie na granicy rdzenia. */
-    private Crossing buildCrossing(LineString comp, boolean reversed, double depthOffsetM) {
-        Coordinate[] cs = comp.getCoordinates();
-        if (reversed) {
-            Coordinate[] r = new Coordinate[cs.length];
-            for (int i = 0; i < cs.length; i++) {
-                r[i] = cs[cs.length - 1 - i];
-            }
-            cs = r;
-        }
-        double len = comp.getLength();
-        Coordinate entry = interpAlong(cs, Math.min(depthOffsetM / METERS_PER_DEG, len / 2)); // głębiej w rdzeń
-        Coordinate mid = interpAlong(cs, len / 2);
-        double lengthKm = len * METERS_PER_DEG / 1000.0;
-        return new Crossing(unproject(entry), unproject(mid), unproject(cs[cs.length - 1]), lengthKm);
-    }
-
-    /** Punkt na łamanej {@code cs} odległy o {@code dist} (jednostki projekcji) od początku; interpolowany w segmencie. */
-    private static Coordinate interpAlong(Coordinate[] cs, double dist) {
-        if (dist <= 0) {
-            return cs[0];
-        }
-        double acc = 0;
-        for (int i = 1; i < cs.length; i++) {
-            double seg = cs[i].distance(cs[i - 1]);
-            if (acc + seg >= dist) {
-                double t = seg <= 0 ? 0 : (dist - acc) / seg;
-                return new Coordinate(cs[i - 1].x + (cs[i].x - cs[i - 1].x) * t, cs[i - 1].y + (cs[i].y - cs[i - 1].y) * t);
-            }
-            acc += seg;
-        }
-        return cs[cs.length - 1];
-    }
-
-    @Override
-    public Map<Integer, int[]> creditingLegs(List<List<double[]>> legGeometries) {
-        if (empty || legGeometries == null || legGeometries.isEmpty()) {
-            return Map.of();
-        }
-        Map<Integer, List<Integer>> acc = new HashMap<>();
-        for (int li = 0; li < legGeometries.size(); li++) {
-            for (int id : visitedAreaIds(legGeometries.get(li))) { // to samo kryterium co kredyt
-                acc.computeIfAbsent(id, k -> new ArrayList<>()).add(li);
-            }
-        }
-        Map<Integer, int[]> out = new HashMap<>(acc.size() * 2);
-        for (Map.Entry<Integer, List<Integer>> e : acc.entrySet()) {
-            int[] arr = new int[e.getValue().size()];
-            for (int i = 0; i < arr.length; i++) {
-                arr[i] = e.getValue().get(i);
-            }
-            out.put(e.getKey(), arr);
-        }
-        return out;
-    }
 
     @Override
     public Set<Integer> enclosedUnvisited(Set<Integer> visited) {
@@ -648,116 +495,7 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
         return true;
     }
 
-    @Override
-    public Set<Integer> unvisitedWithinKm(List<double[]> routeGeometry, Set<Integer> visited, double maxKm) {
-        Set<Integer> out = new HashSet<>();
-        if (empty || routeGeometry == null || routeGeometry.size() < 2) {
-            return out;
-        }
-        LineString line = projectLine(routeGeometry);
-        if (line == null) {
-            return out;
-        }
-        double projDist = maxKm * 1000.0 / METERS_PER_DEG;
-        Envelope env = new Envelope(line.getEnvelopeInternal());
-        env.expandBy(projDist);
-        @SuppressWarnings("unchecked")
-        List<AreaGeom> cands = tree.query(env);
-        for (AreaGeom ag : cands) {
-            int id = ag.area.areaId();
-            if (visited.contains(id)) {
-                continue;
-            }
-            if (ag.full.distance(line) <= projDist) {
-                out.add(id);
-            }
-        }
-        return out;
-    }
 
-    /** LineString w projekcji z [lng,lat][]; null gdy &lt;2 punkty. */
-    private LineString projectLine(List<double[]> geom) {
-        if (geom == null || geom.size() < 2) {
-            return null;
-        }
-        Coordinate[] cs = new Coordinate[geom.size()];
-        for (int i = 0; i < geom.size(); i++) {
-            cs[i] = project(geom.get(i)[0], geom.get(i)[1]);
-        }
-        try {
-            return GF.createLineString(cs);
-        } catch (IllegalArgumentException e) {
-            return null;
-        }
-    }
-
-    // RUNDA 26: cache projekcji śladu (1-elementowy, po IDENTITY). anchorResetTouched woła firstCreditedCrossing(track,…)
-    // z TYM SAMYM `track` × N gmin → projectLine(36k) liczone raz zamiast N razy (główny koszt zwisu cycle1). Seed
-    // jest jednowątkowy, więc bez synchronizacji.
-    private List<double[]> projTrackRef;
-    private LineString projTrackProjected;
-
-    private LineString projectLineCached(List<double[]> geom) {
-        if (geom == projTrackRef) {
-            return projTrackProjected;
-        }
-        LineString ls = projectLine(geom);
-        projTrackRef = geom;
-        projTrackProjected = ls;
-        return ls;
-    }
-
-    /** Margines (jednostki projekcji ≈ stopnie) wokół bbox gminy przy przycinaniu śladu w {@link #creditedCrossing}.
-     *  ~3 km — większy niż promień typowej gminy/2, więc odcinki wewnątrz gminy są zachowane w całości. */
-    private static final double CLIP_MARGIN = 0.03;
-
-    /**
-     * RUNDA 23: przytnij sprojektowaną linię do prostokąta {@code env}+margines, zbierając MAKSYMALNE ciągłe biegi
-     * punktów wewnątrz (z jednym wierzchołkiem poza na każdym końcu, by segment graniczny był pełny). ZERO JTS
-     * overlay na pełnej 36k-linii → brak patologii nodingu, koszt O(n) bbox-test. Wynik = {@code LineString} /
-     * {@code MultiLineString} ograniczony do okolicy gminy.
-     */
-    private Geometry clipToEnvelope(LineString leg, Envelope env) {
-        Envelope wide = new Envelope(env);
-        wide.expandBy(CLIP_MARGIN);
-        Coordinate[] cs = leg.getCoordinates();
-        List<LineString> parts = new ArrayList<>();
-        List<Coordinate> cur = new ArrayList<>();
-        Coordinate prev = null;
-        for (Coordinate c : cs) {
-            if (wide.contains(c)) {
-                if (cur.isEmpty() && prev != null) {
-                    cur.add(prev); // wierzchołek tuż przed wejściem — pełny segment graniczny
-                }
-                cur.add(c);
-            } else if (!cur.isEmpty()) {
-                cur.add(c); // wierzchołek tuż po wyjściu
-                parts.add(GF.createLineString(cur.toArray(new Coordinate[0])));
-                cur = new ArrayList<>();
-            }
-            prev = c;
-        }
-        if (cur.size() >= 2) {
-            parts.add(GF.createLineString(cur.toArray(new Coordinate[0])));
-        }
-        if (parts.isEmpty()) {
-            return null;
-        }
-        return parts.size() == 1 ? parts.get(0) : GF.createMultiLineString(parts.toArray(new LineString[0]));
-    }
-
-    /** Zbierz wszystkie komponenty LineString z geometrii (LineString / MultiLineString / kolekcja). */
-    private static void collectLines(Geometry g, List<LineString> out) {
-        if (g instanceof LineString ls) {
-            if (!ls.isEmpty()) {
-                out.add(ls);
-            }
-            return;
-        }
-        for (int i = 0; i < g.getNumGeometries(); i++) {
-            collectLines(g.getGeometryN(i), out);
-        }
-    }
 
     /** Buduj JTS Geometry (Polygon/MultiPolygon z dziurami) z części obszaru, w projekcji. null gdy brak ringów. */
     private Geometry toGeometry(UnvisitedArea a) {

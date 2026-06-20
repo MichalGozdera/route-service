@@ -19,7 +19,6 @@ import java.util.function.Function;
  */
 final class SpurCutter {
     private static final Logger log = LoggerFactory.getLogger(SpurCutter.class);
-    private static final double SLICE_SNAP_KM = 0.05;
     private static final double RETRACE_TOL_KM = 0.06;
     /** Spur (zaułek) — punkt trasy + indeks + lokalny detour (objazd) względem prostej prev→next. */
     private record Cand(double[] point, int idx, double detour) {}
