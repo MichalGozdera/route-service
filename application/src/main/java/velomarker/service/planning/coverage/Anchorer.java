@@ -10,6 +10,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 /**
  * ANCHOR-INTERSECTS — jeden przebieg do-skutku: {postaw 1 wp w KAŻDEJ dotkniętej gminie → 2opt → reroute}, aż
@@ -24,6 +25,7 @@ final class Anchorer {
     private final RouteMetrics metrics;
     private final HilbertOrdering ordering;
     private final SeedOps ops;
+    private final Consumer<Boolean> snapToggle;
     private final SeedRoute seed;
     private final List<double[]> route;
     private final List<double[]> anchors;
@@ -41,6 +43,7 @@ final class Anchorer {
         this.metrics = ctx.metrics();
         this.ordering = ctx.ordering();
         this.ops = ctx.ops();
+        this.snapToggle = ctx.snapToggle();
         this.seed = seed;
         this.route = seed.route();
         this.selected = seed.selected();
@@ -56,13 +59,19 @@ final class Anchorer {
 
     /** Pętla do-skutku (max 5 iter): kotwicz dotknięte gminy → sprawdź czy zostały głębokie bez kotwicy. */
     void run() {
-        boolean foundUncoveredDeep = true;
-        List<double[]> realTrack = metrics.realGeometry(route);
-        while (foundUncoveredDeep && iteration < 5) {
-            iteration++;
-            anchorTouchedAreas(realTrack);
-            realTrack = metrics.realGeometry(route); // po RESET + 2opt — ujawnia głębokie przeloty nowego porządku
-            foundUncoveredDeep = hasUncoveredDeep(realTrack);
+        // Instrument A: snap-log BRoutera TYLKO na czas fazy anchor (routing w realGeometry poniżej).
+        snapToggle.accept(true);
+        try {
+            boolean foundUncoveredDeep = true;
+            List<double[]> realTrack = metrics.realGeometry(route);
+            while (foundUncoveredDeep && iteration < 5) {
+                iteration++;
+                anchorTouchedAreas(realTrack);
+                realTrack = metrics.realGeometry(route); // po RESET + 2opt — ujawnia głębokie przeloty nowego porządku
+                foundUncoveredDeep = hasUncoveredDeep(realTrack);
+            }
+        } finally {
+            snapToggle.accept(false);
         }
         log.info("Coverage ANCHOR-INTERSECTS [{}]: KONIEC po {} iter, touched={}, dt={}ms",
                 new Object[]{debugPhase, iteration, touchedCount, (System.nanoTime() - startNs) / 1_000_000});

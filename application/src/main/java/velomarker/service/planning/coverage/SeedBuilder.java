@@ -15,6 +15,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -58,7 +59,7 @@ final class SeedBuilder {
     SeedBuilder(GminaIndex gminaIndex, List<UnvisitedArea> pool, Map<String, Double> rewards,
                 EdgeRouter edgeRouter, RouteMetrics metrics, HilbertOrdering ordering,
                 ElevationDataSource elevation, CoveragePlannerParameters params, boolean debugGeoJson,
-                double debugBudget, Map<Integer, String> debugAreaCat) {
+                double debugBudget, Map<Integer, String> debugAreaCat, Consumer<Boolean> snapToggle) {
         this.gminaIndex = gminaIndex;
         this.pool = pool;
         this.rewards = rewards;
@@ -70,7 +71,7 @@ final class SeedBuilder {
         this.debugGeoJson = debugGeoJson;
         this.debug = new CoverageDebug(debugGeoJson, edgeRouter, metrics, gminaIndex, params, debugBudget, debugAreaCat);
         this.ops = new SeedOps(ordering, metrics, debugGeoJson);
-        this.ctx = new SeedContext(edgeRouter, metrics, gminaIndex, ordering, pool, rewards, debug, ops, debugGeoJson);
+        this.ctx = new SeedContext(edgeRouter, metrics, gminaIndex, ordering, pool, rewards, debug, ops, debugGeoJson, snapToggle);
     }
     /**
      * SEED przez BASELINE-PROJECTION — O(N log N), zamiast cheapest-insertion O(N × E² × S).
@@ -93,8 +94,8 @@ final class SeedBuilder {
     /**
      * FAZA 1 seeda: dla każdej gminy licz punkt (najgłębszy interior / fallback sample), jego odległość
      * od korytarza (baseline) i score = reward/detour; zwróć listę posortowaną wg distBase ważonego
-     * rewardem (blisko korytarza + cenne pierwsze). Hilbert (orderKey) zaszyty w `proj` do późniejszego
-     * porządkowania 2D trasy.
+     * rewardem (blisko korytarza + cenne pierwsze). Sort po distBase/Reward (asc) = wstawki blisko korytarza
+     * w kolejności wstawiania. Właściwa kolejność na trasie ustalana przez rebuildOrderedSequence.
      */
     private List<SeedSel> seedScoreAndOrder(List<double[]> baseline, double effortMultiplier) {
         int baselineSize = baseline.size();
@@ -124,8 +125,8 @@ final class SeedBuilder {
 
     /**
      * FAZA COMPACT-LOOP seeda (≤8 cykli): anchor-intersects → tailPrune (podwójne cięcie) → zmierz
-     * G gmin @ E% → jeśli &lt;95% dobierz proporcjonalnie growNear, aż effort w paśmie [95%,105%]
-     * (lub &gt;105% → przerwij, TRIM utnie). Mutuje route/selected; akumuluje grow w {@code growNearAcc[0]};
+     * G gmin @ E% → jeśli <95% dobierz proporcjonalnie growNear, aż effort w paśmie [95%,105%]
+     * (lub >105% → przerwij, TRIM utnie). Mutuje route/selected; akumuluje grow w {@code growNearAcc[0]};
      * zwraca nowy realEffort.
      */
     private double seedCompactLoop(SeedRoute seed, double hiBand,
@@ -216,8 +217,8 @@ final class SeedBuilder {
             if (!enclosedHF.contains(a.areaId())) continue;
             double[] deep = gminaIndex.deepestInteriorPoint(a.areaId());
             if (deep == null) continue;
-            selected.add(new SeedSel(a, deep, ordering.orderKey(deep), ENCLOSED_PROTECTED_SCORE,
-                    GeometryUtil.minDistToBaselineKm(deep, baseline)));
+            selected.add(new SeedSel(a, deep, ordering.orderKey(deep),
+                    ENCLOSED_PROTECTED_SCORE, GeometryUtil.minDistToBaselineKm(deep, baseline)));
             enclosedAdded++;
         }
         ops.rebuildOrdered(seed);
@@ -236,9 +237,9 @@ final class SeedBuilder {
     }
 
     /**
-     * FAZA TRIM seeda (gdy effort &gt;105%): peeling peryferii wg reward/koszt-objazdu (tnij tylko
+     * FAZA TRIM seeda (gdy effort >105%): peeling peryferii wg reward/koszt-objazdu (tnij tylko
      * NIE-otoczone — bez dziur), pełny 2-opt, realny BRouter co rundę; raz na rundę anchor + doubleCut;
-     * gdy zjechało &lt;95% → reward-aware growNear. Mutuje route/selected; akumuluje ucięte w
+     * gdy zjechało <95% → reward-aware growNear. Mutuje route/selected; akumuluje ucięte w
      * {@code trimmedAcc[0]} i grow w {@code growNearAcc[0]}; zwraca nowy realEffort.
      */
     private double seedTrim(SeedRoute seed, double hiBand, double targetEffort, double realEffort,
@@ -369,7 +370,7 @@ final class SeedBuilder {
                 metrics.realKm(route));
 
         log.info("Coverage seed ({}): +{} obszarów, removed={} islands, trimmed={}, grow-near={}, retried={} entry-points, real effort={}/{} ({}%) [v3.8: init-grow + compact-loop(grow→2opt→anchor→enclosed→tailPrune→topup)], route size={}",
-                new Object[]{"hilbert", selected.size(), totalPruned,
+                new Object[]{"distBase-sort", selected.size(), totalPruned,
                         trimmed, densified, totalRetried,
                         Math.round(realEffort), Math.round(targetEffort),
                         Math.round(realEffort * 100.0 / targetEffort), route.size()});
@@ -423,7 +424,6 @@ final class SeedBuilder {
 
 
 
-
     /**
      * RUNDA 69 — PODWÓJNE CIĘCIE „dla pewności": cut → 2opt → reroute → cut. Po pierwszym cięciu 2-opt przestawia
      * kolejność wp (haversine), a drugie cięcie {@code tailPruneJts2(phase+"-recut")} liczy legGminas przez getEdge
@@ -439,23 +439,14 @@ final class SeedBuilder {
 
 
 
-
-
-
-
-
     private double tailPruneJts2(SeedRoute seed, double targetEffort, int maxPasses, String debugPhase) {
         return new SpurCutter(ctx, findGminaCached, seed, targetEffort, maxPasses, debugPhase).run();
     }
 
 
 
-
     /* RUNDA 11: deleteSweepCoveredElse USUNIĘTE — unifikacja USUŃ→PRZESUŃ (anchor inline po deletach w passie)
        trzyma pokrycie na bieżąco, więc nie ma „chwilowych tranzytów" do dosprzątania osobnym sweepem. */
-
-
-
 
 
 
@@ -519,8 +510,8 @@ final class SeedBuilder {
                 double[] ep = gminaIndex.deepestInteriorPoint(a.areaId()); // RUNDA 51: najgłębszy
                 if (ep == null) ep = GeometryUtil.sampleNearestToGeometry(gminaIndex.samplePointsFor(a), null, geom);
                 if (ep == null) continue;
-                SeedSel sel = new SeedSel(a, ep, ordering.orderKey(ep), ENCLOSED_PROTECTED_SCORE,
-                        GeometryUtil.minDistToBaselineKm(ep, baseline));
+                SeedSel sel = new SeedSel(a, ep, ordering.orderKey(ep),
+                        ENCLOSED_PROTECTED_SCORE, GeometryUtil.minDistToBaselineKm(ep, baseline));
                 selected.add(sel);
                 added.add(sel);
             }
@@ -560,18 +551,6 @@ final class SeedBuilder {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
     /**
      * RUNDA 24 — ANCHOR-INTERSECTS (główny silnik pokrycia, raz na cykl). RESET wszystkich: dla KAŻDEJ gminy którą
      * ślad DOTYKA (pełny wielokąt, {@code touchedAreaIds} — nawet muśnięcie rogiem) ustawia świeży wp wg reguły:
@@ -586,7 +565,6 @@ final class SeedBuilder {
     private void anchorResetTouched(SeedRoute seed, String debugPhase) {
         new Anchorer(ctx, seed, debugPhase).run();
     }
-
 
 
 
@@ -611,19 +589,8 @@ final class SeedBuilder {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
     /**
-     * Liczba ODRĘBNYCH wizyt per gmina (segmenty geometrii w ringu oddzielone gap &gt; 10 km).
+     * Liczba ODRĘBNYCH wizyt per gmina (segmenty geometrii w ringu oddzielone gap > 10 km).
      * ≥2 = gmina pokryta w kilku miejscach trasy → jej explicit waypoint jest redundantny (stub
      * można wyrzucić, naturalny przejazd nadal ją zalicza). Jeden przebieg O(geom) grid-lookup.
      */
@@ -649,11 +616,6 @@ final class SeedBuilder {
 
 
 
-
-
-
-
-
     // ── ADMIN DEBUG: GeoJSON snapshot trasy per faza (do paste-to-map w mapie rysowania) ──────────────
     // Guarded flagą debugGeoJson (default OFF). Loguje JEDNĄ linię GEOJSON-DEBUG [faza] = {FeatureCollection}.
     // User: breakpoint/kopiuj z konsoli → wklej na mapę. Szkielet (waypointy+numery) na fazach pośrednich,
@@ -665,21 +627,7 @@ final class SeedBuilder {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
     // ── Helpers ────────────────────────────────────────────────────────────────────────
-
-
 
 
 

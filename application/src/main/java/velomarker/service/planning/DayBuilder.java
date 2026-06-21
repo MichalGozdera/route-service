@@ -88,8 +88,6 @@ final class DayBuilder {
                 List<UnvisitedArea> coveragePool = new ArrayList<>();
                 if (coverageInfo.pickedCandidates() != null)
                     for (AreaCandidate c : coverageInfo.pickedCandidates()) coveragePool.add(c.area);
-                if (coverageInfo.reserveCandidates() != null)
-                    for (AreaCandidate c : coverageInfo.reserveCandidates()) coveragePool.add(c.area);
                 if (!coveragePool.isEmpty()) coverageIndex = coverageIndexFactory.build(coveragePool);
             }
             List<PlanningSessionDay> days = new ArrayList<>(boundaries.size());

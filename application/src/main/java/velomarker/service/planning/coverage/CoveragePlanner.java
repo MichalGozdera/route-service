@@ -20,7 +20,6 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
-import java.util.function.BiFunction;
 import java.util.function.Consumer;
 
 /**
@@ -102,8 +101,8 @@ public class CoveragePlanner {
                              List<double[]> baselineGeom,
                              RoutePreferences prefs,
                              String profile,
-                             BiFunction<List<Waypoint>, String, RouteCalculation> brouter,
-                             BiFunction<List<Waypoint>, String, RouteCalculation> brouterFinal,
+                             BrouterFn brouter,
+                             Consumer<Boolean> snapToggle,
                              Consumer<UUID> checkCancel) {
         long startTs = System.currentTimeMillis();
 
@@ -120,12 +119,10 @@ public class CoveragePlanner {
 
         // Index + cache. Coverage (zaliczenia) liczy JTS na PEŁNEJ geometrii (plain intersect jak front).
         GminaIndex gminaIndex = new GminaIndex(candidatePool, coverageFactory.build(candidatePool), spatialIndexFactory);
-        EdgeRouter edgeRouter = new EdgeRouter(brouter, profile, params.alphaKmPerMeter(), elevation, brouterParallelism);
-        RouteMetrics metrics = new RouteMetrics(edgeRouter, gminaIndex, elevation, params.alphaKmPerMeter());
-        // Bbox kandydatów — dla Hilbert space-filling. Liczony raz.
         HilbertOrdering ordering = new HilbertOrdering();
         ordering.computeBbox(candidatePool);
-
+        EdgeRouter edgeRouter = new EdgeRouter(brouter, profile, params.alphaKmPerMeter(), elevation, brouterParallelism);
+        RouteMetrics metrics = new RouteMetrics(edgeRouter, gminaIndex, elevation, params.alphaKmPerMeter());
         // Reward per kategoria (Iter 11 Fix 2: NN-distance proportion, logged inside)
         Map<String, Double> rewards = RewardModel.rewardPerCategory(candidatePool, spatialIndexFactory);
         // areaId → human kategoria (do per-iter coverage breakdown w logach)
@@ -136,7 +133,7 @@ public class CoveragePlanner {
 
         // Silnik budowy seeda — kolaboratory wstrzyknięte; mutuje route w miejscu.
         SeedBuilder seedBuilder = new SeedBuilder(gminaIndex, candidatePool, rewards, edgeRouter, metrics,
-                ordering, elevation, params, debugGeoJson, totalLimit, areaCat);
+                ordering, elevation, params, debugGeoJson, totalLimit, areaCat, snapToggle);
 
         // Start = anchory (start→via→end) + baseline (korytarz). Reużywamy baseline z orkiestracji gdy podany.
         SeedStart start = buildInitialRoute(prefs, baselineGeom, brouter, profile);
@@ -217,9 +214,9 @@ public class CoveragePlanner {
                         edgeRouter.hits(), Math.round(edgeRouter.hitRatio() * 100),
                         accepted, rejected, elapsedMs});
 
-        // FINAL RECOMPUTE: jeden ostatni call z brouterFinal (computeStats=true) → pełne stats (surface/road/
+        // FINAL RECOMPUTE: jeden ostatni call z computeStats=true → pełne stats (surface/road/
         // spans) dla orchestratora; wewnętrzne ~10k calle szły z computeStats=false (oszczędność CPU).
-        RouteCalculation withStats = recomputeWithStats(bestWps, profile, brouterFinal);
+        RouteCalculation withStats = recomputeWithStats(bestWps, profile, brouter);
         if (withStats != null) { bestCalc = withStats; brouterCalls++; }
         // ADMIN DEBUG: finalna realna geometria trasy + ponumerowane waypointy
         if (debugGeoJson) {
@@ -235,7 +232,7 @@ public class CoveragePlanner {
 
     /** Zbuduj start: waypointy start→via→end → anchory + wąska route; baseline z orkiestracji (reużycie) lub świeży BRouter. */
     private SeedStart buildInitialRoute(RoutePreferences prefs, List<double[]> baselineGeom,
-                                        BiFunction<List<Waypoint>, String, RouteCalculation> brouter, String profile) {
+                                        BrouterFn brouter, String profile) {
         List<Waypoint> initialWps = new ArrayList<>();
         initialWps.add(prefs.start());
         if (prefs.via() != null) initialWps.addAll(prefs.via());
@@ -247,7 +244,7 @@ public class CoveragePlanner {
         if (baselineGeom != null && baselineGeom.size() >= 2) {
             baseline = GeometryUtil.downsample(baselineGeom, 200); // reużycie baseline z orkiestracji (oszczędza ~50s/Alpy)
         } else {
-            RouteCalculation initialCalc = brouter.apply(initialWps, profile); // degenerat → świeży routing
+            RouteCalculation initialCalc = brouter.route(initialWps, profile, false); // degenerat → świeży routing
             brouterCalls = 1;
             baseline = GeometryUtil.downsample(initialCalc.coordinates(), 200);
         }
@@ -258,10 +255,10 @@ public class CoveragePlanner {
 
     /** Finalny REALNY chunked BRouter na best; gdy padnie (klaster wysp) — fallback do per-edge geometrii (haversine). */
     private RouteCalculation finalChunkedRoute(List<Waypoint> bestWps, List<double[]> bestRoute,
-                                               BiFunction<List<Waypoint>, String, RouteCalculation> brouter,
+                                               BrouterFn brouter,
                                                String profile, RouteMetrics metrics) {
         try {
-            return brouter.apply(bestWps, profile);
+            return brouter.route(bestWps, profile, false);
         } catch (RuntimeException ex) {
             log.warn("Coverage final chunked BRouter failed ({}) — fallback do per-edge geometrii", ex.getMessage());
             List<double[]> geom = metrics.eval(bestRoute).geometry();
@@ -273,11 +270,11 @@ public class CoveragePlanner {
         }
     }
 
-    /** Ostatni call z brouterFinal (computeStats=true) → RouteCalculation z pełnymi stats; null gdy padł (zwracamy bez stats). */
+    /** Ostatni call z computeStats=true → RouteCalculation z pełnymi stats; null gdy padł (zwracamy bez stats). */
     private RouteCalculation recomputeWithStats(List<Waypoint> bestWps, String profile,
-                                                BiFunction<List<Waypoint>, String, RouteCalculation> brouterFinal) {
+                                                BrouterFn brouter) {
         try {
-            RouteCalculation finalBestCalc = brouterFinal.apply(bestWps, profile);
+            RouteCalculation finalBestCalc = brouter.route(bestWps, profile, true);
             log.info("Coverage final recompute z stats: distanceKm={} stats.totalMeters={}",
                     new Object[]{Math.round(finalBestCalc.distanceKm()),
                             finalBestCalc.stats() != null ? finalBestCalc.stats().totalMeters() : 0});

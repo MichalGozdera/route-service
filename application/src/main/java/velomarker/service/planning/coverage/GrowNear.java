@@ -30,8 +30,8 @@ final class GrowNear {
 
     private final EdgeRouter edgeRouter;
     private final RouteMetrics metrics;
-    private final GminaIndex gminaIndex;
     private final HilbertOrdering ordering;
+    private final GminaIndex gminaIndex;
     private final List<UnvisitedArea> pool;
     private final Map<String, Double> rewards;
     private final SeedOps ops;
@@ -56,8 +56,8 @@ final class GrowNear {
     GrowNear(SeedContext ctx, SeedRoute seed, double growTarget, int batchSize, int checkpointEvery, int maxInserts) {
         this.edgeRouter = ctx.edgeRouter();
         this.metrics = ctx.metrics();
-        this.gminaIndex = ctx.gminaIndex();
         this.ordering = ctx.ordering();
+        this.gminaIndex = ctx.gminaIndex();
         this.pool = ctx.pool();
         this.rewards = ctx.rewards();
         this.ops = ctx.ops();

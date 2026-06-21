@@ -54,6 +54,15 @@ public interface AreaCoverageIndex {
      */
     Map<Integer, double[]> firstBufferEntryPoints(List<double[]> routeGeometry);
 
+    /**
+     * WSZYSTKIE przejścia śladu przez rdzeń −220m każdej gminy (NIE tylko pierwsze jak
+     * {@link #firstBufferEntryPoints}). Przejście = maksymalny ciągły fragment śladu w buforze −220;
+     * {@link AreaPassage#entry()}/{@link AreaPassage#exit()} = punkty przecięcia granicy −220,
+     * {@link AreaPassage#chordKm()} = ich dystans. Cięcie zaułków odróżnia transit (długa cięciwa)
+     * od zaułka (krótka). 0 BRouter — jeden przebieg śladu + STRtree (jak {@link #firstBufferEntryPoints}).
+     */
+    Map<Integer, List<AreaPassage>> passages(List<double[]> routeGeometry);
+
     /** RUNDA 31: najgłębszy punkt gminy (środek największego wpisanego okręgu, najdalej od KAŻDEJ granicy) — „głęboki
      *  centroid" dla muśnięć (zamiast {@code area.lng/lat}, które bywa przy granicy). {@code null} gdy brak gminy. */
     double[] deepestInteriorPoint(int areaId);

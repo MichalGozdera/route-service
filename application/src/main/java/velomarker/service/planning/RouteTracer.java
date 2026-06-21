@@ -29,13 +29,12 @@ final class RouteTracer {
     private final List<Waypoint> waypoints;
     private final PlanningOrchestrationService.CoverageBuildInfo coverageInfo;
     private final String profile;
-    private final RoadFactorCalibrator calibrator;
     private final double maxGapKm;
 
     RouteTracer(ChunkedBrouterRouter router, WaypointSelector waypointSelector, Consumer<UUID> checkCancel,
                 UUID taskId, RoutePreferences prefs, List<Waypoint> waypoints,
                 PlanningOrchestrationService.CoverageBuildInfo coverageInfo, String profile,
-                RoadFactorCalibrator calibrator, double maxGapKm) {
+                double maxGapKm) {
         this.router = router;
         this.waypointSelector = waypointSelector;
         this.checkCancel = checkCancel;
@@ -44,7 +43,6 @@ final class RouteTracer {
         this.waypoints = waypoints;
         this.coverageInfo = coverageInfo;
         this.profile = profile;
-        this.calibrator = calibrator;
         this.maxGapKm = maxGapKm;
     }
     TraceResult trace() {
@@ -57,8 +55,6 @@ final class RouteTracer {
         List<Waypoint> currentWps = new ArrayList<>(waypoints);
         List<AreaCandidate> currentPicked = coverageInfo != null
                 ? new ArrayList<>(coverageInfo.pickedCandidates()) : new ArrayList<>();
-        List<AreaCandidate> reservePool = coverageInfo != null
-                ? CoverageAreaSelection.buildReservePoolFromUnpicked(coverageInfo) : new ArrayList<>();
         List<AreaCandidate> droppedPool = new ArrayList<>();
 
         RouteCalculation calc = null;
@@ -66,7 +62,6 @@ final class RouteTracer {
         // Tylko taki stan jest BEZPIECZNY do zaakceptowania jako wynik.
         TraceResult lastGood = null;
         boolean dedupTried = false;
-        boolean justGrew = false; // flaga rollback'u — jeśli grow spowoduje overflow, wracamy do lastGood
 
         for (int attempt = 0; attempt < 8; attempt++) {
             checkCancel.accept(taskId);
@@ -75,11 +70,11 @@ final class RouteTracer {
 
             double endGap = computeEndGap(calc.coordinates(), prefs);
             double actualKm = calc.distanceKm();
-            log.info("Routing iter={} wp={} actualKm={} budget=[{}..{}] endGap={} km picked={} dropped={} reserve={}",
+            log.info("Routing iter={} wp={} actualKm={} budget=[{}..{}] endGap={} km picked={} dropped={}",
                     new Object[]{attempt, currentWps.size(), Math.round(actualKm),
                             Math.round(lowerBudget), Math.round(upperBudget),
                             String.format("%.2f", endGap),
-                            currentPicked.size(), droppedPool.size(), reservePool.size()});
+                            currentPicked.size(), droppedPool.size()});
 
             // 1) META NIE OSIĄGNIĘTA → trim drogie z picked.
             if (endGap > maxGapKm) {
@@ -87,34 +82,17 @@ final class RouteTracer {
                     log.warn("Meta not reached and no gminy to trim — falling through to assert");
                     break;
                 }
-                if (justGrew && lastGood != null) {
-                    // Grow zepsuł meta — rollback do ostatniego dobrego stanu.
-                    log.warn("Grow spowodował meta-fail (endGap={} km) — rollback do lastGood ({} km, {} wp)",
-                            new Object[]{String.format("%.2f", endGap),
-                                    Math.round(lastGood.calc().distanceKm()),
-                                    lastGood.finalWaypoints().size()});
-                    return lastGood;
-                }
                 int beforeTrim = currentPicked.size();
                 CoverageAreaSelection.trimByDetourFromCurrent(currentPicked, droppedPool, 0.25);
                 currentWps = CoverageAreaSelection.buildWaypointsFromPicked(prefs, CoverageAreaSelection.sortByInsertionIdx(currentPicked),
                         coverageInfo.baselineGeometry());
                 log.warn("TRIM: meta not reached → wyrzucam {} drogich gmin ({} → {})",
                         new Object[]{beforeTrim - currentPicked.size(), beforeTrim, currentPicked.size()});
-                justGrew = false;
                 continue;
             }
 
             // 2) META OK ale BUDGET OVERFLOW → trim 15% najdroższych.
             if (actualKm > upperBudget) {
-                if (justGrew && lastGood != null) {
-                    // Grow przepalił budżet — rollback do ostatniego dobrego stanu.
-                    log.info("Grow spowodował overflow ({} > {}) — rollback do lastGood ({} km, {} wp)",
-                            new Object[]{Math.round(actualKm), Math.round(upperBudget),
-                                    Math.round(lastGood.calc().distanceKm()),
-                                    lastGood.finalWaypoints().size()});
-                    return lastGood;
-                }
                 int beforeTrim = currentPicked.size();
                 CoverageAreaSelection.trimByDetourFromCurrent(currentPicked, droppedPool, 0.15);
                 if (currentPicked.size() == beforeTrim) {
@@ -128,7 +106,6 @@ final class RouteTracer {
                 log.info("TRIM-OVERFLOW: actualKm {} > {} → wyrzucam {} drogich ({} → {})",
                         new Object[]{Math.round(actualKm), Math.round(upperBudget),
                                 beforeTrim - currentPicked.size(), beforeTrim, currentPicked.size()});
-                justGrew = false;
                 continue;
             }
 
@@ -144,46 +121,8 @@ final class RouteTracer {
             if (curDistToTarget < bestDistToTarget) {
                 lastGood = new TraceResult(calc, currentWps);
             }
-            justGrew = false;
 
-            // 4) Jesli zostalo budzetu -> GROW konserwatywny (do remainingStraight x roadAreas).
-            // Warunek bylo: actualKm < lowerBudget (0.85 x budget) -- zatrzymywal sie 15% pod
-            // budzetem (user widzial 1606/1800 = 11% pustki). Teraz: actualKm < growTargetKm
-            // (0.95 x budget), zeby zblizyc sie do budzetu (max ~5% pustki).
-            if (actualKm < growTargetKm && !reservePool.isEmpty()) {
-                // GROW PRE-FILTER: usun z reserve obszary juz NATURALNIE przeciete przez aktualny
-                // slad BRouter. Bez tego GROW dodaje je jako waypoint -> BRouter robi petle przez
-                // gmine ktora i tak by zaliczyl jadac normalnie (user widzial "dwa razy ta sama
-                // gmine roznymi drogami"). Logika intersection ta sama co w removeNaturallyCoveredFromPicked.
-                int reserveBefore = reservePool.size();
-                final List<double[]> curGeometry = calc.coordinates();
-                reservePool.removeIf(c -> CoverageAreaSelection.isAreaCoveredByGeometry(c.area, curGeometry));
-                int naturallyCovered = reserveBefore - reservePool.size();
-                if (naturallyCovered > 0) {
-                    log.info("GROW pre-filter: {} obszarow z reserve naturalnie zaliczonych -> pomijam ({} -> {})",
-                            new Object[]{naturallyCovered, reserveBefore, reservePool.size()});
-                }
-                if (reservePool.isEmpty()) {
-                    // Po pre-filter nie zostalo nic do GROW -- albo wszystko zaliczone naturalnie,
-                    // albo reszta to obszary zbyt drogie. Koniec.
-                    break;
-                }
-                double remainingKm = growTargetKm - actualKm;
-                double remainingStraight = remainingKm / Math.max(1.0, calibrator.roadAreas());
-                int before = currentPicked.size();
-                int added = CoverageAreaSelection.growUntilBudget(currentPicked, reservePool, remainingStraight);
-                if (added > 0) {
-                    currentWps = CoverageAreaSelection.buildWaypointsFromPicked(prefs, CoverageAreaSelection.sortByInsertionIdx(currentPicked),
-                            coverageInfo.baselineGeometry());
-                    log.info("GROW: actualKm {} < {} -> dorzucam {} tanszych (cap ~{} km straight, {} -> {})",
-                            new Object[]{Math.round(actualKm), Math.round(growTargetKm), added,
-                                    Math.round(remainingStraight), before, currentPicked.size()});
-                    justGrew = true;
-                    continue;
-                }
-            }
-
-            // 5) DEDUP -- gminy pokryte naturalnie -> usun z `currentPicked`.
+            // 3) DEDUP -- gminy pokryte naturalnie -> usun z `currentPicked`.
             // GUARD: jesli DEDUP usuwa > 30% entry-pointow -- rollback do snapshot i break.
             // Window +-300 punktow w removeNaturallyCoveredFromPicked jest zbyt liberalny dla
             // duzej geometrii (40k punktow BRouter -> ~3 km okno, lapie obszary ktore tak

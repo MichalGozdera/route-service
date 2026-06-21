@@ -30,4 +30,12 @@ public interface BrouterRoutingClient {
      * Default no-op (klienci bez liczników, np. HTTP, ignorują).
      */
     default void resetPlanCounters() { }
+
+    /**
+     * Diagnostyka snapu waypointów (Instrument A): gdy włączone, klient loguje dla każdego routowanego
+     * waypointa „nasza propozycja → punkt po dopasowaniu (crosspoint) + offset". Włączane WYŁĄCZNIE na czas
+     * fazy anchor (przez {@code Anchorer}), żeby log nie leciał na ~10k calli seeda ani na finalnym recompute.
+     * Default no-op.
+     */
+    default void setSnapLogging(boolean enabled) { }
 }

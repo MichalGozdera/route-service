@@ -48,7 +48,7 @@ class TrimAndDedupTest {
             List<AreaCandidate> picked, List<double[]> baselineGeom) {
         return new PlanningOrchestrationService.CoverageBuildInfo(
                 List.of(), 0, picked.size(),
-                100.0, 1.1, picked, List.of(), baselineGeom);
+                100.0, 1.1, picked, baselineGeom);
     }
 
     @Test

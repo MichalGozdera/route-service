@@ -47,23 +47,15 @@ public class PlanningOrchestrationService {
 
     private static final Logger log = LoggerFactory.getLogger(PlanningOrchestrationService.class);
 
-    static final int MAX_AREAS_TO_FETCH = 40000;
-    /** Cap puli PO sumowaniu (kraj × poziom × grupy specjalne). 2-opt to O(n²×passes), powyżej tego TSP się wykrwawia. */
-    static final int MAX_TSP_AREAS = 500;
-    static final int MAX_WAYPOINTS_PER_DAY = 48;
+
     static final int DEFAULT_KM_PER_DAY = 100;
     /** Max chunków BRoutera liczonych RÓWNOLEGLE (finalny chunked call). ≤ route.calculate.max-concurrent
      * (=10) by nie przepełnić semafora klienta (5s wait → 429). Cała Polska = 42 chunki → fale po 6. */
-    static final int MAX_PARALLEL_CHUNKS = 6;
 
     /** Budget reconcile constants. */
-    static final int MAX_BUDGET_TRIM = 6;
-    static final int MAX_BUDGET_GROW = 4;
-    static final double BUDGET_TOLERANCE = 0.05;   // ±5% wokół budżetu = OK
+
     /** Max gap (km) między dowolnym anchor'em a najbliższym punktem geometrii BRouter. Powyżej → FAIL. */
     static final double ANCHOR_REACHABILITY_KM = 2.0;
-    /** Max obszarów wziętych do density probe (jeden BRouter call → roadAreas). */
-    static final int DENSITY_PROBE_AREAS = 30;
     /**
      * MIN liczba sample elevation profile UZYWANA do DaySplitter (wyzsza niz default 500 dla UI).
      * 2000 = ~0.85 km/sample dla 1700 km trasy. Bez tego: 500 sample = 3.4 km/sample, gubi gorki,
@@ -185,12 +177,12 @@ public class PlanningOrchestrationService {
                                 coverageResult.brouterCalls(), coverageResult.accepted()});
             } else {
                 // AB / FREESTYLE / coverage-fallback: BRouter chunked + trim loop (max 8 prób)
-                TraceResult traced = new RouteTracer(chunkedRouter(), waypointSelector, this::checkCancel, taskId, prefs, allWaypoints, coverageInfo, profile, calibrator, ANCHOR_REACHABILITY_KM).trace();
+                TraceResult traced = new RouteTracer(chunkedRouter(), waypointSelector, this::checkCancel, taskId, prefs, allWaypoints, coverageInfo, profile, ANCHOR_REACHABILITY_KM).trace();
                 full = traced.calc();
                 allWaypoints = traced.finalWaypoints();
             }
-            // Stats per-day slicing działa czysto: planner sam robi final recompute z brouterFinal
-            // przed return (zob. brouterFinal w lambdach powyżej), więc `full.stats()` ma spans z pełnej trasy.
+            // Stats per-day slicing działa czysto: planner sam robi final recompute z computeStats=true
+            // przed return (zob. BrouterFn powyżej), więc `full.stats()` ma spans z pełnej trasy.
 
             setPhase(taskId, "sampling-elevation");
             checkCancel(taskId);
@@ -256,30 +248,24 @@ public class PlanningOrchestrationService {
                 case AB -> allWaypoints = buildAbWaypoints(prefs);
                 case FREESTYLE -> allWaypoints = buildFreestyleWaypoints(prefs);
                 case COVERAGE -> {
-                    coverageInfo = new CoverageWaypointBuilder(visitClient, elevation, routeUseCase, waypointSelector, this::checkCancel, this::setPhase, coverageIndexFactory, spatialIndexFactory).build(taskId, prefs, bearerToken, profile, calibrator);
+                    coverageInfo = new CoverageWaypointBuilder(visitClient, waypointSelector, this::checkCancel, this::setPhase, coverageIndexFactory, routeUseCase).build(taskId, prefs, bearerToken, profile, calibrator);
                     allWaypoints = coverageInfo.waypoints;
                     if (coveragePlanner != null) {
                         setPhase(taskId, "coverage-planning");
                         checkCancel(taskId);
-                        java.util.function.BiFunction<List<Waypoint>, String, RouteCalculation> brouterFn =
-                                (wps, prof) -> chunkedRouter().route(taskId,
-                                        wps.stream().map(Waypoint::toLngLat).toList(), prof, false);
-                        // brouterFinal — finalny recompute z computeStats=true (surface/road/smoothness +
-                        // spans potrzebne dla per-day slicing w orchestratorze).
-                        java.util.function.BiFunction<List<Waypoint>, String, RouteCalculation> brouterFinal =
-                                (wps, prof) -> chunkedRouter().route(taskId,
-                                        wps.stream().map(Waypoint::toLngLat).toList(), prof, true);
-                        // Pool = wszystkie areas z bbox-filtered coverageInfo (picked + reserve)
+                        // Jeden router z flagą computeStats: wewnętrzne ~10k calle plannera idą z false
+                        // (dystans+geometria), finalny recompute z true (surface/road/spans dla per-day slicing).
+                        velomarker.service.planning.coverage.BrouterFn brouter =
+                                (wps, prof, stats) -> chunkedRouter().route(taskId,
+                                        wps.stream().map(Waypoint::toLngLat).toList(), prof, stats);
+                        // Pool = wszystkie areas z bbox-filtered coverageInfo (planner sam selekcjonuje)
                         List<UnvisitedArea> coveragePool = new ArrayList<>();
                         if (coverageInfo.pickedCandidates() != null) {
                             for (AreaCandidate c : coverageInfo.pickedCandidates()) coveragePool.add(c.area);
                         }
-                        if (coverageInfo.reserveCandidates() != null) {
-                            for (AreaCandidate c : coverageInfo.reserveCandidates()) coveragePool.add(c.area);
-                        }
                         log.info("Coverage planner: pool={} areas (z greedy bbox-filtered)", coveragePool.size());
                         coverageResult = coveragePlanner.plan(taskId, coveragePool, coverageInfo.baselineGeometry(), prefs, profile,
-                                brouterFn, brouterFinal, this::checkCancel);
+                                brouter, brouterClient::setSnapLogging, this::checkCancel);
                         if (coverageResult != null) {
                             log.info("Coverage planner: visited={} iters={} brouterCalls={}",
                                     new Object[]{coverageResult.visited().size(),
@@ -343,7 +329,6 @@ public class PlanningOrchestrationService {
             Double baselineKm,
             Double roadAreas,
             List<AreaCandidate> pickedCandidates,
-            List<AreaCandidate> reserveCandidates,
             List<double[]> baselineGeometry
     ) {}
 

@@ -2,6 +2,7 @@ package velomarker.service.planning.coverage;
 
 import velomarker.entity.planning.UnvisitedArea;
 import velomarker.port.out.planning.AreaCoverageIndex;
+import velomarker.port.out.planning.AreaPassage;
 import velomarker.port.out.planning.SpatialIndex;
 import velomarker.port.out.planning.SpatialIndexFactory;
 import velomarker.service.planning.WaypointSelector;
@@ -89,6 +90,11 @@ public class GminaIndex {
     /** RUNDA 27: JEDEN przebieg śladu → gmina → punkt pierwszego wejścia w bufor (+20m w głąb). Brak gminy = muśnięcie. */
     public Map<Integer, double[]> firstBufferEntryPoints(List<double[]> routeGeometry) {
         return coverage.firstBufferEntryPoints(routeGeometry);
+    }
+
+    /** Wszystkie przejścia śladu przez rdzeń −220m każdej gminy (transit vs zaułek po długości cięciwy entry↔exit). */
+    public Map<Integer, List<AreaPassage>> passages(List<double[]> routeGeometry) {
+        return coverage.passages(routeGeometry);
     }
 
     /** RUNDA 31: najgłębszy punkt gminy (środek największego wpisanego okręgu) — „głęboki centroid" dla muśnięć. */

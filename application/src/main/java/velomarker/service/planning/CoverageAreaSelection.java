@@ -15,7 +15,7 @@ import java.util.HashSet;
 
 /**
  * Wybór gmin do pokrycia względem trasy bazowej (greedy): scoring gminy, dedup po wzajemnym pokryciu,
- * trim/grow budżetowy, budowa waypointów z wybranych + helpery geometryczne (przecięcia ring/segment).
+ * trim budżetowy, budowa waypointów z wybranych + helpery geometryczne (przecięcia ring/segment).
  * Bezstanowe, czyste funkcje wydzielone z PlanningOrchestrationService.
  */
 final class CoverageAreaSelection {
@@ -82,36 +82,6 @@ final class CoverageAreaSelection {
 
 
 
-    /**
-     * Konserwatywny grow: dodaje gminy z {@code reserve} (sorted by detour ASC) aż łączny
-     * straight detour przekroczy {@code remainingStraightKm}. Bez tego limit grow potrafi
-     * dorzucić 389 gmin (15% z 2592 reserve) co skutkuje przelaniem budżetu 3-4×.
-     *
-     * @return liczba dodanych gmin
-     */
-    static int growUntilBudget(List<AreaCandidate> current, List<AreaCandidate> reserve,
-                                       double remainingStraightKm) {
-        if (reserve.isEmpty() || remainingStraightKm <= 0) return 0;
-        var sorted = new ArrayList<>(reserve);
-        sorted.sort((a, b) -> Double.compare(a.getDetourStraightKm(), b.getDetourStraightKm()));
-        double used = 0;
-        List<AreaCandidate> toAdd = new ArrayList<>();
-        for (AreaCandidate c : sorted) {
-            double cost = c.isIntersected() ? 0 : c.getDetourStraightKm();
-            if (used + cost > remainingStraightKm) break;
-            toAdd.add(c);
-            used += cost;
-        }
-        current.addAll(toAdd);
-        reserve.removeAll(toAdd);
-        return toAdd.size();
-    }
-
-    /** Reserve = gminy które NIE weszły w greedy pick (były droższe niż dostępny budżet). */
-    static List<AreaCandidate> buildReservePoolFromUnpicked(PlanningOrchestrationService.CoverageBuildInfo info) {
-        return new ArrayList<>(info.reserveCandidates());
-    }
-
     /** Trim: wyrzuć `fraction` najdroższych (po detour DESC) z {@code from} do {@code dropped}. */
     static void trimByDetourFromCurrent(List<AreaCandidate> from, List<AreaCandidate> dropped, double fraction) {
         if (from.isEmpty()) return;
@@ -123,20 +93,6 @@ final class CoverageAreaSelection {
             AreaCandidate c = sorted.get(i);
             from.remove(c);
             dropped.add(c);
-        }
-    }
-
-    /** Grow: weź `fraction` najtańszych (po detour ASC) z {@code reserve} → dodaj do {@code current}. */
-    static void growFromReserve(List<AreaCandidate> current, List<AreaCandidate> reserve, double fraction) {
-        if (reserve.isEmpty()) return;
-        var sorted = new ArrayList<>(reserve);
-        sorted.sort((a, b) -> Double.compare(a.getDetourStraightKm(), b.getDetourStraightKm()));
-        int toAdd = Math.max(1, (int) Math.round(reserve.size() * fraction));
-        toAdd = Math.min(toAdd, sorted.size());
-        for (int i = 0; i < toAdd; i++) {
-            AreaCandidate c = sorted.get(i);
-            current.add(c);
-            reserve.remove(c);
         }
     }
 
@@ -182,8 +138,7 @@ final class CoverageAreaSelection {
 
     /**
      * Czy ring obszaru jest przeciety przez ktorykolwiek punkt {@code geometry} (point-in-ring
-     * w oknie +-300 punktow wokol najblizszego do centroidu)? Reuzywane w {@code removeNaturallyCoveredFromPicked}
-     * oraz w GROW pre-filter (zeby nie dodawac jako waypoint obszarow przez ktore slad juz idzie).
+     * w oknie +-300 punktow wokol najblizszego do centroidu)? Reuzywane w {@code removeNaturallyCoveredFromPicked}.
      */
     static boolean isAreaCoveredByGeometry(UnvisitedArea area, List<double[]> geometry) {
         if (area == null || geometry == null || geometry.isEmpty()) return false;

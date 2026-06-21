@@ -44,6 +44,8 @@ final class SeedOps {
     void rebuildOrdered(SeedRoute seed) {
         List<double[]> anchorOnly = seed.anchorOnly();
         List<SeedSel> selected = seed.selected();
+        List<double[]> route = seed.route();
+        route.clear();
         record RoutePt(double[] p, double key) {}
         List<RoutePt> ordered = new ArrayList<>(anchorOnly.size() + selected.size());
         for (int i = 0; i < anchorOnly.size(); i++) {
@@ -54,12 +56,10 @@ final class SeedOps {
         }
         for (SeedSel s : selected) ordered.add(new RoutePt(s.point(), s.proj()));
         ordered.sort(Comparator.comparingDouble(RoutePt::key));
-        List<double[]> route = seed.route();
-        route.clear();
         for (RoutePt rp : ordered) route.add(rp.p());
     }
 
-    /** Podmień entry-point gminy w {@code selected} (identity po starym punkcie) + przelicz klucz porządkowania. */
+    /** Podmień entry-point gminy w {@code selected} (identity po starym punkcie) + zaktualizuj distBase. */
     void swapEntry(List<SeedSel> selected, double[] oldPoint, double[] newPoint, List<double[]> baseline) {
         for (int i = 0; i < selected.size(); i++) {
             if (selected.get(i).point() == oldPoint) {

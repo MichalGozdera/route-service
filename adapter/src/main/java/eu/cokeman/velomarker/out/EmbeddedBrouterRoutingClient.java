@@ -90,6 +90,9 @@ public class EmbeddedBrouterRoutingClient implements BrouterRoutingClient {
     private final long probeTimeoutMs;
     private final RoutingEngineFactory engineFactory;
 
+    /** Instrument A: gdy true, doCalculate loguje snap waypointów. Włączany tylko na czas fazy anchor. */
+    private volatile boolean snapLogging = false;
+
     // ─── Profilowanie BRouter calls — rolling histogram (last 200 sample), log co 200 calls ───
     // OSOBNO calc (doRun + parsing) i wait (czekanie na slot semafora) — wait > 0 = semafor pełny.
     private static final int TIMING_LOG_EVERY = 200;
@@ -182,6 +185,11 @@ public class EmbeddedBrouterRoutingClient implements BrouterRoutingClient {
 
     /** v3.16: reset liczników per plan coverage — „BRouter cumulative: calls=" pokazuje liczbę
      *  z TEGO planu, nie od startu serwisu (uwaga usera). Wołany na PLAN START. */
+    @Override
+    public void setSnapLogging(boolean enabled) {
+        this.snapLogging = enabled;
+    }
+
     @Override
     public synchronized void resetPlanCounters() {
         totalCalls.set(0);
@@ -292,6 +300,13 @@ public class EmbeddedBrouterRoutingClient implements BrouterRoutingClient {
             throw new BrouterUpstreamException("BRouter returned empty track");
         }
 
+        // INSTRUMENT A: tylko gdy włączone z fazy anchor (Anchorer setSnapLogging(true) na czas run()).
+        // NIE na seedzie/grow ani na finalnym recompute. Pokazuje „nasza propozycja → punkt po dopasowaniu
+        // (crosspoint) + offset" — diagnoza czemu kotwica nie kredytuje (BRouter snapuje wp do drogi).
+        if (snapLogging) {
+            logWaypointSnaps(track, waypoints);
+        }
+
         // BRouter doRun() ZAWSZE ustawia track.messageList = [track.message] (1-elementowa summary).
         // Per-segment dane (z WayTags) są w OsmPathElement.message.wayKeyValues — pobieramy je przez
         // aggregateMessages() TYLKO gdy computeStats=true (gdy false: skip parsing dla planning probing
@@ -331,6 +346,47 @@ public class EmbeddedBrouterRoutingClient implements BrouterRoutingClient {
         }
 
         return new RouteCalculation(coordList, distMeters / 1000.0, flatSpans, stats);
+    }
+
+    /**
+     * INSTRUMENT A — log dopasowania (snap) waypointów: dla każdego wp porównuje NASZĄ propozycję z
+     * {@code crosspoint} (rzut prostopadły na najbliższą drogę, btools {@code MatchedWaypoint}). Loguje
+     * tylko te z offsetem &gt; {@value #SNAP_LOG_THRESHOLD_M} m (płytkie kotwice = duży offset w głąb-utracony).
+     * Defensywnie per-indeks (API matched-waypoints nie gwarantuje rozmiaru/null).
+     */
+    private void logWaypointSnaps(OsmTrack track, List<double[]> waypoints) {
+        for (int i = 0; i < waypoints.size(); i++) {
+            try {
+                var mw = track.getMatchedWaypoint(i);
+                if (mw == null || mw.crosspoint == null) continue;
+                double[] proposed = waypoints.get(i);
+                double snapLng = microdegreesToLon(mw.crosspoint.getILon());
+                double snapLat = microdegreesToLat(mw.crosspoint.getILat());
+                double offsetM = haversineMeters(proposed[1], proposed[0], snapLat, snapLng);
+                if (offsetM > SNAP_LOG_THRESHOLD_M) {
+                    log.info("BRouter snap wp[{}] ({},{}) → ({},{}) offset={}m radius={}",
+                            new Object[]{i,
+                                    String.format(java.util.Locale.ROOT, "%.6f", proposed[0]),
+                                    String.format(java.util.Locale.ROOT, "%.6f", proposed[1]),
+                                    String.format(java.util.Locale.ROOT, "%.6f", snapLng),
+                                    String.format(java.util.Locale.ROOT, "%.6f", snapLat),
+                                    Math.round(offsetM), String.format(java.util.Locale.ROOT, "%.1f", mw.radius)});
+                }
+            } catch (RuntimeException ignored) { /* brak matched-wp dla indeksu → pomiń */ }
+        }
+    }
+
+    private static final double SNAP_LOG_THRESHOLD_M = 25.0;
+
+    /** Haversine w metrach (proposed vs snapped) — diagnostyka offsetu dopasowania. */
+    private static double haversineMeters(double lat1, double lon1, double lat2, double lon2) {
+        double r = 6_371_000.0;
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        return 2 * r * Math.asin(Math.min(1.0, Math.sqrt(a)));
     }
 
     private RuntimeException mapBrouterError(String msg, Throwable cause) {

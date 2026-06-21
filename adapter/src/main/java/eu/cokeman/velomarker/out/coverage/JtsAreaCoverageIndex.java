@@ -15,6 +15,7 @@ import org.locationtech.jts.index.strtree.STRtree;
 import velomarker.entity.planning.AreaPart;
 import velomarker.entity.planning.UnvisitedArea;
 import velomarker.port.out.planning.AreaCoverageIndex;
+import velomarker.port.out.planning.AreaPassage;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -415,6 +416,61 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
             }
         }
         return result;
+    }
+
+    @Override
+    public Map<Integer, List<AreaPassage>> passages(List<double[]> routeGeometry) {
+        // Jak firstBufferEntryPoints, ale BEZ urywania po pierwszym wjeździe — śledzimy stan in/out per gmina
+        // wzdłuż śladu i emitujemy KAŻDE przejście przez bufor −220 (entry, exit, cięciwa). 0 BRouter.
+        Map<Integer, List<AreaPassage>> result = new HashMap<>();
+        if (empty || routeGeometry == null || routeGeometry.size() < 2) {
+            return result;
+        }
+        Coordinate[] tc = new Coordinate[routeGeometry.size()];
+        for (int i = 0; i < tc.length; i++) {
+            tc[i] = project(routeGeometry.get(i)[0], routeGeometry.get(i)[1]);
+        }
+        Map<Integer, Coordinate> openEntry = new HashMap<>(); // gmina „w środku" −220 → punkt wejścia (projekcja)
+        Set<Integer> prevInside = new HashSet<>();
+        for (int i = 0; i < tc.length; i++) {
+            Coordinate c = tc[i];
+            @SuppressWarnings("unchecked")
+            List<AreaGeom> cands = tree.query(new Envelope(c));
+            Point pt = cands.isEmpty() ? null : GF.createPoint(c);
+            Set<Integer> nowInside = new HashSet<>();
+            for (AreaGeom ag : cands) {
+                if (ag.prepCreditDeep.contains(pt)) {
+                    nowInside.add(ag.area.areaId());
+                }
+            }
+            for (int id : nowInside) {           // WEJŚCIE w −220: bisekcja granicy między poprz.(poza) a c(w środku)
+                if (!prevInside.contains(id)) {
+                    AreaGeom ag = byId.get(id);
+                    openEntry.put(id, i > 0 ? bisectBoundary(tc[i - 1], c, ag.prepCreditDeep) : c);
+                }
+            }
+            for (int id : prevInside) {           // WYJŚCIE z −220: bisekcja między c(poza) a poprz.(w środku) → zamknij
+                if (!nowInside.contains(id)) {
+                    AreaGeom ag = byId.get(id);
+                    Coordinate exit = ag != null && i > 0 ? bisectBoundary(c, tc[i - 1], ag.prepCreditDeep) : tc[Math.max(0, i - 1)];
+                    closePassage(result, id, openEntry.remove(id), exit);
+                }
+            }
+            prevInside = nowInside;
+        }
+        for (int id : prevInside) {               // domknij przejścia otwarte na końcu śladu (exit = ostatni punkt)
+            closePassage(result, id, openEntry.remove(id), tc[tc.length - 1]);
+        }
+        return result;
+    }
+
+    /** Domknij przejście: cięciwa entry↔exit w metrach (projekcja izotropowa × METERS_PER_DEG), dopisz do listy gminy. */
+    private void closePassage(Map<Integer, List<AreaPassage>> result, int id, Coordinate entry, Coordinate exit) {
+        if (entry == null) {
+            return;
+        }
+        double chordKm = Math.hypot(entry.x - exit.x, entry.y - exit.y) * METERS_PER_DEG / 1000.0;
+        result.computeIfAbsent(id, k -> new ArrayList<>()).add(new AreaPassage(unproject(entry), unproject(exit), chordKm));
     }
 
     /** Bisekcja na odcinku {@code out}(poza buforem)→{@code in}(w buforze): punkt tuż za granicą (w buforze). 24 iter. */

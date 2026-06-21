@@ -10,7 +10,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.BiFunction;
 
 /**
  * Routing krawędzi przez BRouter z cache i wykrywaniem wysp. Jedna odpowiedzialność: „policz/odczytaj
@@ -24,7 +23,7 @@ final class EdgeRouter {
     private static final double SLICE_SNAP_KM = 0.05;
 
     private final EdgeCache cache = new EdgeCache();
-    private final BiFunction<List<Waypoint>, String, RouteCalculation> brouter;
+    private final BrouterFn brouter;
     private final String profile;
     private final double alpha;
     private final ElevationDataSource elevation;
@@ -34,7 +33,7 @@ final class EdgeRouter {
     /** Powody failów BRoutera (target-island / not-mapped / timeout / other) → ile. */
     private final Map<String, Integer> failReasons = new java.util.concurrent.ConcurrentHashMap<>();
 
-    EdgeRouter(BiFunction<List<Waypoint>, String, RouteCalculation> brouter, String profile,
+    EdgeRouter(BrouterFn brouter, String profile,
                double alpha, ElevationDataSource elevation, int parallelism) {
         this.brouter = brouter;
         this.profile = profile;
@@ -50,7 +49,7 @@ final class EdgeRouter {
                     new Waypoint(pts[0][0], pts[0][1], null),
                     new Waypoint(pts[1][0], pts[1][1], null));
             try {
-                RouteCalculation calc = brouter.apply(wps, profile);
+                RouteCalculation calc = brouter.route(wps, profile, false);
                 cache.onRealCall();
                 double km = calc.distanceKm();
                 double climbM = 0;

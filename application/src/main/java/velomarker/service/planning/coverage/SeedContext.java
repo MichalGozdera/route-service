@@ -4,6 +4,7 @@ import velomarker.entity.planning.UnvisitedArea;
 
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * Współdzielone kolaboratory seeda (jeden komplet per plan), wstrzykiwane do klas odpowiedzialności
@@ -18,5 +19,6 @@ record SeedContext(EdgeRouter edgeRouter,
                    Map<String, Double> rewards,
                    CoverageDebug debug,
                    SeedOps ops,
-                   boolean debugGeoJson) {
+                   boolean debugGeoJson,
+                   Consumer<Boolean> snapToggle) {
 }
