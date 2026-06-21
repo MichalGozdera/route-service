@@ -461,7 +461,70 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
         for (int id : prevInside) {               // domknij przejścia otwarte na końcu śladu (exit = ostatni punkt)
             closePassage(result, id, openEntry.remove(id), tc[tc.length - 1]);
         }
+        mergeTouchingPassages(result); // wp DOKŁADNIE na granicy −220 pęka 1 przelot na 2 (exit≈entry) → scal z powrotem
         return result;
+    }
+
+    /** Scal kolejne przejścia gminy, których exit≈entry (ślad tylko musnął granicę −220 na wp, nie wyszedł naprawdę). */
+    private void mergeTouchingPassages(Map<Integer, List<AreaPassage>> result) {
+        for (Map.Entry<Integer, List<AreaPassage>> e : result.entrySet()) {
+            List<AreaPassage> ps = e.getValue();
+            if (ps.size() < 2) {
+                continue;
+            }
+            List<AreaPassage> merged = new ArrayList<>();
+            AreaPassage acc = ps.get(0);
+            for (int i = 1; i < ps.size(); i++) {
+                AreaPassage nxt = ps.get(i);
+                if (sepKm(acc.exit(), nxt.entry()) < PASSAGE_MERGE_TOL_KM) {  // styk = ten sam przelot
+                    acc = new AreaPassage(acc.entry(), nxt.exit(), sepKm(acc.entry(), nxt.exit()));
+                } else {
+                    merged.add(acc);
+                    acc = nxt;
+                }
+            }
+            merged.add(acc);
+            e.setValue(merged);
+        }
+    }
+
+    /** Separacja dwóch punktów lng/lat w km (izotropowa projekcja × METERS_PER_DEG, jak {@link #closePassage}). */
+    private double sepKm(double[] a, double[] b) {
+        Coordinate pa = project(a[0], a[1]);
+        Coordinate pb = project(b[0], b[1]);
+        return Math.hypot(pa.x - pb.x, pa.y - pb.y) * METERS_PER_DEG / 1000.0;
+    }
+
+    @Override
+    public String debugAreaGeoJson(int areaId, double bufferMeters) {
+        AreaGeom ag = byId.get(areaId);
+        if (ag == null || ag.full() == null) {
+            return null;
+        }
+        Geometry g = ag.full();
+        if (bufferMeters != 0) {                                  // dodatni = POMNIEJSZ o X m (rdzeń); 0 = pełna granica
+            try {
+                Geometry shrunk = g.buffer(-bufferMeters / METERS_PER_DEG);
+                if (shrunk != null && !shrunk.isEmpty()) {
+                    g = shrunk;
+                }
+            } catch (RuntimeException ignored) {
+                // zdegenerowana geometria → pełna
+            }
+        }
+        Geometry lonLat = g.copy();                               // unproject in-place (NIE psuj ag.full)
+        lonLat.apply((org.locationtech.jts.geom.CoordinateFilter) c -> c.x = c.x / cosRef);
+        lonLat.geometryChanged();
+        org.locationtech.jts.io.geojson.GeoJsonWriter writer = new org.locationtech.jts.io.geojson.GeoJsonWriter();
+        writer.setEncodeCRS(false);
+        String geom = writer.write(lonLat);
+        return "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\",\"properties\":{\"areaId\":"
+                + areaId + ",\"name\":\"" + jsonEscape(ag.area().name()) + "\",\"bufferMeters\":" + bufferMeters
+                + "},\"geometry\":" + geom + "}]}";
+    }
+
+    private static String jsonEscape(String s) {
+        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     /** Domknij przejście: cięciwa entry↔exit w metrach (projekcja izotropowa × METERS_PER_DEG), dopisz do listy gminy. */
@@ -516,6 +579,8 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
     private static final double FIRST_ENTRY_DEPTH_M = 20.0;
     /** RUNDA 30: minimalna głębokość (m od granicy gminy) NAJGŁĘBSZEGO punktu śladu, by postawić tam wp; płycej → centroid. */
     private static final double DEEP_DEPTH_M = 220.0;
+    /** Max odległość exit↔entry sąsiednich przejść, by uznać je za JEDEN przelot (wp musnął granicę −220, nie wyszedł). */
+    private static final double PASSAGE_MERGE_TOL_KM = 0.03;
 
     @Override
     public Set<Integer> enclosedUnvisited(Set<Integer> visited) {

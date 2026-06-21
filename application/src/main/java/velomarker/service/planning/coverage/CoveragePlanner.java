@@ -140,25 +140,12 @@ public class CoveragePlanner {
         List<double[]> route = start.route(), anchors = start.anchors(), baseline = start.baseline();
         int brouterCalls = start.brouterCalls();
 
-        // GREEDY SEED: saturate trasy do 70% TOTAL_LIMIT przed SA. User: shortest_path daje
-        // zbyt krótki seed (80 km) dla budgetu 3000 km. Bez seed SA nigdy nie urośnie do
-        // budgetu bo destroy/repair tylko oscyluje w pasie R_NEAR od shortest_path.
-        // Seed rośnie po REALNYM efforcie (edge cache) aż do 0.93×budżet — wypełnia budżet niezależnie
-        // od terenu (płaski region → więcej km, mało wzniosu, ten sam effort). Proxy zostawiał ~900 km.
-        // User: seed ma lądować NIŻEJ (90-95%), zostawiając zapas, a densify dopina donut-holes
-        // do ~100% (rezerwa 10% dla reconcile). Inaczej greedy zjadał budżet dalekimi mackami i densify nie miał
-        // z czego łatać dziur przy trasie. targetEffort=budżet (referencja dla pasm/sufitu w seedzie).
+
         double seedTarget = totalLimit;
         log.info("Coverage greedy seed: budget effort={} (v3.8: init-grow + compact-loop ≤8 cykli: grow→2opt→anchor→enclosed→tailPrune[in-memory]→topup)",
                 new Object[]{Math.round(seedTarget)});
         seedBuilder.greedySeedRoute(route, anchors, seedTarget, params.alphaKmPerMeter(), baseline);
 
-        // BEZ post-seed twoOpt/relocate (v3.3): seed kończy się po pełnym 2opt ostatniego cyklu
-        // COMPACT-LOOP; późniejsze przetasowanie tworzyło NIEPOSPRZĄTANE ogonki (wp133 — relocate
-        // po ostatnim tailPrune, nikt już nie czyścił). Trasa z seeda = finalna kolejność.
-
-        // EVAL przez EdgeCache (per-edge, NIE pełny chunked BRouter). Pierwsza ewaluacja populuje
-        // cache wszystkich ~N krawędzi; kolejne iteracje SA liczą tylko ZMIENIONE krawędzie.
         RouteMetrics.EvalResult seedEval = metrics.eval(route);
         brouterCalls += (int) edgeRouter.realCalls(); // v3.18: realne brouter.apply (nie misses — te liczą sliced-seedy)
 
@@ -170,8 +157,6 @@ public class CoveragePlanner {
         Set<Integer> bestVisitedIds = currentVisited;
         List<Waypoint> bestWps = buildWaypoints(route, prefs);
 
-        // RUNDA 40: pokaż effort DOKŁADNY (spójny z ROUTE-STATS seed-real) jako główny; w nawiasie wewn. przybliżony
-        // (Σ per-leg climb, evalRoute) używany dalej w reconcile. To rozwiewa „111 czy 101%": realny ślad = dokładny.
         double accAfterSeed = metrics.effortAccurate(route);
         log.info("Coverage after seed (+2opt): route_size={} effort={}/{} ({}%, dokładny; wewn.przybliżony={}) visited={}",
                 new Object[]{route.size(), Math.round(accAfterSeed), Math.round(totalLimit),
@@ -185,7 +170,6 @@ public class CoveragePlanner {
         int rejected = 0;
         int iter = 0;
 
-        // FINAL: jeden REALNY chunked BRouter na best (target-island handling, dokładna geometria, dystans).
         RouteCalculation bestCalc = finalChunkedRoute(bestWps, bestRoute, brouter, profile, metrics);
         brouterCalls++;
         // STRICT count: gmina zaliczona dopiero gdy trasa wjeżdża ≥ requiredDepth W GŁĄB (nie otarcie

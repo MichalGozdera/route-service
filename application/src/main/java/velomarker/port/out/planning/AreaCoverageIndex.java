@@ -82,4 +82,11 @@ public interface AreaCoverageIndex {
      * (0 sąsiadów) nie jest otoczona.
      */
     boolean allNeighborsVisited(int areaId, Set<Integer> visited);
+
+    /**
+     * DEBUG: GeoJSON (FeatureCollection) granicy gminy {@code areaId} pomniejszonej o {@code bufferMeters}
+     * (dodatni = rdzeń −X m, np. 220; 0 = pełna granica). Do wklejenia w mapę debug obok śladu. {@code null}
+     * gdy brak gminy. Wołane ręcznie z debuggera: {@code gminaIndex.debugAreaGeoJson(id, 220)}.
+     */
+    String debugAreaGeoJson(int areaId, double bufferMeters);
 }

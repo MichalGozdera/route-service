@@ -19,8 +19,6 @@ import java.util.Set;
 final class EdgeRouter {
 
     private static final Logger log = LoggerFactory.getLogger(EdgeRouter.class);
-    /** Tolerancja snapu punktu do wierzchołka geometrii przy slice (km, ~50m). */
-    private static final double SLICE_SNAP_KM = 0.05;
 
     private final EdgeCache cache = new EdgeCache();
     private final BrouterFn brouter;
@@ -106,50 +104,7 @@ final class EdgeRouter {
         }
     }
 
-    /** Tnie pełną krawędź na podścieżkę do/od {@code newWp} (slice na geometrii, 0 BRouter) i cache'uje ją. */
-    EdgeCache.EdgeInfo sliceDepart(EdgeCache.EdgeInfo full, double[] a, double[] b, double[] newWp, boolean forward) {
-        List<double[]> geom = full.geometry();
-        int m = GeometryUtil.nearestVertexIdx(geom, newWp);
-        if (m <= 0 || m >= geom.size() - 1) return null;
-        if (velomarker.service.planning.WaypointSelector.haversineKm(geom.get(m), newWp) > SLICE_SNAP_KM) return null;
-        List<double[]> g2;
-        if (forward) {
-            g2 = new ArrayList<>(geom.size() - m + 1);
-            g2.add(newWp.clone());
-            g2.addAll(geom.subList(m, geom.size()));
-        } else {
-            g2 = new ArrayList<>(m + 2);
-            g2.addAll(geom.subList(0, m + 1));
-            g2.add(newWp.clone());
-        }
-        double hFull = Math.max(0.001, GeometryUtil.polyHavKm(geom));
-        double h2 = GeometryUtil.polyHavKm(g2);
-        double d2 = full.distanceKm() * (h2 / hFull);
-        double c2 = full.climbM() * (h2 / hFull);
-        EdgeCache.EdgeInfo e2 = new EdgeCache.EdgeInfo(d2, c2, d2 + alpha * c2, g2);
-        if (forward) cache.getOrCompute(newWp[0], newWp[1], b[0], b[1], pts -> e2);
-        else cache.getOrCompute(a[0], a[1], newWp[0], newWp[1], pts -> e2);
-        return e2;
-    }
-
-    /** Tnie EdgeInfo na wierzchołku i SEEDUJE oba sub-edge w cache (0 BRouter, slice po geometrii). */
-    void seedSlicedEdges(EdgeCache.EdgeInfo full, double[] a, double[] b, int splitIdx) {
-        List<double[]> geom = full.geometry();
-        List<double[]> g1 = new ArrayList<>(geom.subList(0, splitIdx + 1));
-        List<double[]> g2 = new ArrayList<>(geom.subList(splitIdx, geom.size()));
-        double h1 = GeometryUtil.polyHavKm(g1);
-        double h2 = GeometryUtil.polyHavKm(g2);
-        double total = Math.max(0.001, h1 + h2);
-        double d1 = full.distanceKm() * (h1 / total);
-        double d2 = full.distanceKm() * (h2 / total);
-        double c1 = full.climbM() * (h1 / total);
-        double c2 = full.climbM() * (h2 / total);
-        double[] p = geom.get(splitIdx);
-        cache.putApproximate(a[0], a[1], p[0], p[1], new EdgeCache.EdgeInfo(d1, c1, d1 + alpha * c1, g1));
-        cache.putApproximate(p[0], p[1], b[0], b[1], new EdgeCache.EdgeInfo(d2, c2, d2 + alpha * c2, g2));
-    }
-
-    /** Jak {@link #seedSlicedEdges}, ale split w dowolnym {@code point} na segmencie {@code segIdx} (REAL, nie approx). */
+    /** Tnie krawędź na dwa sub-edge w dowolnym {@code point} na segmencie {@code segIdx} i SEEDUJE oba w cache (0 BRouter). */
     void seedSlicedEdgesAtPoint(EdgeCache.EdgeInfo full, double[] a, double[] b, int segIdx, double[] point) {
         List<double[]> geom = full.geometry();
         List<double[]> g1 = new ArrayList<>(geom.subList(0, segIdx + 1));
@@ -183,11 +138,6 @@ final class EdgeRouter {
         return rerouted;
     }
 
-    /** Cache'uj gotowe EdgeInfo dla A→B (gdy wartość policzono poza routerem, np. re-kotwica). */
-    void cacheEdge(double[] a, double[] b, EdgeCache.EdgeInfo info) {
-        cache.getOrCompute(a[0], a[1], b[0], b[1], pts -> info);
-    }
-
     // ── pass-through do statystyk cache (księgowanie strzałów) ──
     void setReason(String reason) { cache.setReason(reason); }
     long realCalls() { return cache.realCalls(); }
@@ -197,7 +147,6 @@ final class EdgeRouter {
     Map<String, Long> realCallsByReason() { return cache.realCallsByReason(); }
     Set<String> failedEdges() { return failedEdges; }
     Map<String, Integer> failReasons() { return failReasons; }
-    void resetFailTracking() { failedEdges.clear(); failReasons.clear(); }
 
     /** Klasyfikacja komunikatu błędu BRoutera na powód (do logu/agregatu). */
     private static String failReason(String msg) {

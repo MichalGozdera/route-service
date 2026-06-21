@@ -112,6 +112,11 @@ public class GminaIndex {
         return coverage.allNeighborsVisited(areaId, visited);
     }
 
+    /** DEBUG: GeoJSON granicy gminy pomniejszonej o {@code bufferMeters} (0 = pełna). Do wklejenia w mapę debug. */
+    public String debugAreaGeoJson(int areaId, double bufferMeters) {
+        return coverage.debugAreaGeoJson(areaId, bufferMeters);
+    }
+
     /**
      * N **ENTRY-POINTS** dla area: ring vertices przesunięte ~500m w kierunku centroidu.
      * Cel: trasa BRouter dotyka KRAWĘDZI gminy i wjeżdża w głąb (wystarczy żeby zaliczyć), NIE jedzie
