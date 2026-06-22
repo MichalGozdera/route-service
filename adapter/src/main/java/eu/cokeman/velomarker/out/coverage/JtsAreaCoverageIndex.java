@@ -496,6 +496,34 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
     }
 
     @Override
+    public double[] deepestTrackPointInArea(List<double[]> track, int areaId, double minDepthMeters) {
+        AreaGeom ag = byId.get(areaId);
+        if (ag == null || ag.full() == null || track == null || track.isEmpty()) {
+            return null;
+        }
+        Geometry boundary = ag.full().getBoundary();
+        Envelope env = ag.full().getEnvelopeInternal();
+        double bestDeg = -1;
+        double[] best = null;
+        for (double[] p : track) {
+            Coordinate c = project(p[0], p[1]);
+            if (!env.contains(c)) {
+                continue;                                   // tani bbox prefiltr (większość punktów śladu poza gminą)
+            }
+            Point pt = GF.createPoint(c);
+            if (!ag.prepFull().contains(pt)) {
+                continue;                                   // punkt poza gminą
+            }
+            double dDeg = boundary.distance(pt);            // odległość do granicy (w projekcji)
+            if (dDeg > bestDeg) {
+                bestDeg = dDeg;
+                best = p;
+            }
+        }
+        return (best != null && bestDeg * METERS_PER_DEG >= minDepthMeters) ? best.clone() : null;
+    }
+
+    @Override
     public String debugAreaGeoJson(int areaId, double bufferMeters) {
         AreaGeom ag = byId.get(areaId);
         if (ag == null || ag.full() == null) {

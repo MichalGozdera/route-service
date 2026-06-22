@@ -132,7 +132,8 @@ final class CoverageDebug {
                 ? Math.round(effort) + "/" + Math.round(budget) + " (" + Math.round(effort * 100.0 / budget) + "%)"
                 : "n/a";
         String areasStr = "n/a";
-        int total = 0, deep = 0;
+        int total = 0, deep = 0, deeplyCovered = 0;
+        Set<Integer> wpDeep220 = new HashSet<>();
         String noDeepStr = "";
         if (gminaIndex != null) {
             Map<Integer, Integer> visits = SeedBuilder.countVisitsPerArea(geometry, gminaIndex);
@@ -144,11 +145,14 @@ final class CoverageDebug {
             areasStr = byCat.toString();
             Set<Integer> deepCov = gminaIndex.visitedAreaIds(geometry);
             deep = deepCov.size();
+            deeplyCovered = gminaIndex.deeplyVisitedAreaIds(geometry).size(); // gminy gdzie ślad wchodzi ≥220m
             if (waypoints != null) {
                 Set<Integer> wpDeep = new HashSet<>();
                 for (double[] wp : waypoints) {
                     UnvisitedArea a = gminaIndex.findCreditedGminaForPoint(wp[0], wp[1]);
                     if (a != null) wpDeep.add(a.areaId());
+                    UnvisitedArea a220 = gminaIndex.findDeeplyCreditedGminaForPoint(wp[0], wp[1]);
+                    if (a220 != null) wpDeep220.add(a220.areaId());
                 }
                 Map<Integer, String> idName = new java.util.HashMap<>();
                 for (double[] p : geometry) {
@@ -178,8 +182,8 @@ final class CoverageDebug {
             dups.sort(null);
             dupStr = dups.size() + " " + dups;
         }
-        log.info("ROUTE-STATS [{}]: dist={} km, climb={} m, effort={} budżetu, wps={}, gminy={} (≥200m: {}) {} | dup-wp={}{}",
-                new Object[]{phase, Math.round(km), Math.round(climb), budgetStr, wps, total, deep, areasStr, dupStr, noDeepStr});
+        log.info("ROUTE-STATS [{}]: dist={} km, climb={} m, effort={} budżetu, wps={}, gminy={} (≥200m: {}, ≥220m: {}) {} | dup-wp={} | wp≥220m={}{}",
+                new Object[]{phase, Math.round(km), Math.round(climb), budgetStr, wps, total, deep, deeplyCovered, areasStr, dupStr, wpDeep220.size(), noDeepStr});
     }
 
     private static void appendCoords(StringBuilder sb, List<double[]> pts) {

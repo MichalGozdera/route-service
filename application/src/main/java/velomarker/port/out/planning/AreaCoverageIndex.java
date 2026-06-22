@@ -84,6 +84,13 @@ public interface AreaCoverageIndex {
     boolean allNeighborsVisited(int areaId, Set<Integer> visited);
 
     /**
+     * Najgłębszy punkt śladu {@code track} leżący w gminie {@code areaId} (max odległość punktu od granicy gminy),
+     * o ile jego głębokość ≥ {@code minDepthMeters}; inaczej {@code null}. Do pogłębiania anchora: bierzemy realny
+     * głęboki punkt z PIERWOTNEGO śladu (grow tam wchodził), zamiast brzegu −220. 0 BRouter (czysta geometria JTS).
+     */
+    double[] deepestTrackPointInArea(List<double[]> track, int areaId, double minDepthMeters);
+
+    /**
      * DEBUG: GeoJSON (FeatureCollection) granicy gminy {@code areaId} pomniejszonej o {@code bufferMeters}
      * (dodatni = rdzeń −X m, np. 220; 0 = pełna granica). Do wklejenia w mapę debug obok śladu. {@code null}
      * gdy brak gminy. Wołane ręcznie z debuggera: {@code gminaIndex.debugAreaGeoJson(id, 220)}.

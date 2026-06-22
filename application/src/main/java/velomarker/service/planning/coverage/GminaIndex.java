@@ -102,6 +102,11 @@ public class GminaIndex {
         return coverage.deepestInteriorPoint(areaId);
     }
 
+    /** Najgłębszy punkt śladu w gminie (≥ minDepthMeters od granicy) — głęboki punkt z PIERWOTNEGO śladu do pogłębiania anchora. */
+    public double[] deepestTrackPointInArea(List<double[]> track, int areaId, double minDepthMeters) {
+        return coverage.deepestTrackPointInArea(track, areaId, minDepthMeters);
+    }
+
     /** Gminy nieprzecięte OTOCZONE śladem z każdej strony (≥1 sąsiad, wszyscy zaliczeni, cross-border, bez progu). */
     public Set<Integer> enclosedUnvisited(Set<Integer> visited) {
         return coverage.enclosedUnvisited(visited);

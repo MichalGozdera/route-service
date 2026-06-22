@@ -58,16 +58,14 @@ final class SpurCutter {
     private final String debugPhase;
     // ── stan całego przebiegu ──
     private final Map<Integer, UnvisitedArea> idToArea = new HashMap<>();
-    private final Set<double[]> stay = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     private final long callsStart;
     private final double effortBefore;
     private final Set<Integer> visitedBefore;
-    private int relocated, relocSkipped, passes;
-    // ── stan jednego cut-passa (reset w runCutPass) ──
+    private int relocated, relocSkipped;
+    // ── stan jednego cut-przebiegu (reset w runCutPass) ──
     private Map<Integer, double[]> przelotAnchor; // gmina → wejście najdłuższego PRZELOTU (chord ≥ próg); brak = brak przelotu
     private Map<Integer, double[]> anchorTarget;  // gmina → kotwica (wejście przelotu, wpp. najdłuższego przejścia)
-    private Map<Integer, Integer> wpCountInG;     // gmina → ile NIE-anchor wp ma w tym passie
-    private boolean[] locked;
+    private Map<Integer, Integer> wpCountInG;     // gmina → ile NIE-anchor wp ma w tym przebiegu
     private List<double[]> toDelete;
     private Set<Integer> delGids;
     private boolean changed;
@@ -96,35 +94,31 @@ final class SpurCutter {
         this.visitedBefore = gminaIndex.visitedAreaIds(metrics.realGeometry(route));
     }
 
-    /** Rundy {pętla cut-passów → reroute} aż brak wtórniaków. Zwraca realny effort po cięciu. */
+    /**
+     * Pętla rund: JEDEN przebieg cięcia → realny BRouter reroute sliced legów → powtórz, dopóki coś cięto LUB
+     * reroute zmienił geometrię (ujawnia wtórniaki). Bez wewnętrznych passów i locków. Zwraca realny effort.
+     */
     double run() {
-        int round = 0, reroutedLegs;
-        do {
-            reroutedLegs = runRound(round);
-            round++;
-        } while (reroutedLegs > 0 && round < 3);
-        return finishAndLog();
-    }
-
-    /** Jedna runda: pętla cut-passów do-skutku → realny reroute sliced legów (ujawnia wtórniaki). Zwraca #reroutedLegs. */
-    private int runRound(int round) {
-        int relRoundStart = relocated;
-        Set<Integer> visBeforeRound = debugGeoJson ? gminaIndex.visitedAreaIds(metrics.realGeometry(route)) : null;
-        if (debugGeoJson) {
-            debug.geometry(debugPhase + "-precut" + round, metrics.realGeometry(route), route, metrics.realKm(route));
-        }
-        changed = true;
-        int pass = 0;
-        while (changed && pass < maxPasses + 6) {
+        int round = 0;
+        boolean again = true;
+        while (again && round < maxPasses + 6) {
+            int relRoundStart = relocated;
+            Set<Integer> visBeforeRound = debugGeoJson ? gminaIndex.visitedAreaIds(metrics.realGeometry(route)) : null;
+            if (debugGeoJson) {
+                debug.geometry(debugPhase + "-precut" + round, metrics.realGeometry(route), route, metrics.realKm(route));
+            }
             changed = false;
-            pass++;
-            passes++;
-            if (route.size() < 3) break;
-            runCutPass();
+            if (route.size() >= 3) runCutPass();                          // jeden przebieg cięcia
+            int reroutedLegs = edgeRouter.rerouteApproximateLegs(route);  // realny BRouter slice'owanych nóg
+            log.info("Coverage TAIL-PRUNE [{}] runda {}: cięto={}, reroute={}, calls={}, effort {} ({}%)",
+                    new Object[]{debugPhase, round, relocated - relRoundStart, reroutedLegs,
+                            edgeRouter.realCalls() - callsStart, Math.round(metrics.effortViaCache(route)),
+                            Math.round(metrics.effortViaCache(route) * 100.0 / targetEffort)});
+            if (debugGeoJson) logRound(round, relRoundStart, reroutedLegs, visBeforeRound);
+            again = changed || reroutedLegs > 0;                          // są jeszcze zaułki/wtórniaki → powtórz
+            round++;
         }
-        int reroutedLegs = edgeRouter.rerouteApproximateLegs(route);
-        if (debugGeoJson) logRound(round, relRoundStart, reroutedLegs, visBeforeRound);
-        return reroutedLegs;
+        return finishAndLog();
     }
 
     /** Jeden cut-pass: przejścia gminy (przelot/zaułek) → rozstrzygnij każdy nie-anchor wp → scal usunięcia. */
@@ -132,9 +126,8 @@ final class SpurCutter {
         buildPassageMaps(metrics.realGeometry(route));   // przelotAnchor / anchorTarget / wpCountInG (0 BRouter)
         toDelete = new ArrayList<>();
         delGids = new HashSet<>();
-        locked = new boolean[route.size()];
-        // Lecimy przez WSZYSTKICH kandydatów (nie-anchor wp) w kolejności trasy. Struktura trasy stabilna w obrębie
-        // passa: przesunięcie do D robi route.set in-place, usunięcia są odroczone (toDelete → po pętli).
+        // Lecimy przez WSZYSTKICH kandydatów (nie-anchor wp) w kolejności trasy. Przesunięcie robi route.set in-place,
+        // usunięcia odroczone (toDelete → po pętli). Niespójności sąsiednich cięć koryguje kolejna runda (po reroute).
         for (int i = 1; i < route.size() - 1; i++) {
             if (GeometryUtil.isAnchor(route.get(i), anchors)) continue;
             processCandidate(i);
@@ -152,15 +145,14 @@ final class SpurCutter {
         przelotAnchor = new HashMap<>();
         anchorTarget = new HashMap<>();
         for (Map.Entry<Integer, List<AreaPassage>> e : passages.entrySet()) {
-            AreaPassage best = null, bestPrzelot = null;
-            for (AreaPassage p : e.getValue()) {
-                if (best == null || p.chordKm() > best.chordKm()) best = p;
-                if (p.chordKm() >= EXIT_SEPARATION_KM && (bestPrzelot == null || p.chordKm() > bestPrzelot.chordKm())) {
-                    bestPrzelot = p;
-                }
+            List<AreaPassage> ps = e.getValue();
+            if (ps.isEmpty()) continue;
+            AreaPassage firstPrzelot = null;                                  // PIERWSZY przelot wzdłuż śladu (deterministyczny)
+            for (AreaPassage p : ps) {
+                if (p.chordKm() >= EXIT_SEPARATION_KM) { firstPrzelot = p; break; }
             }
-            if (bestPrzelot != null) przelotAnchor.put(e.getKey(), bestPrzelot.entry());
-            if (best != null) anchorTarget.put(e.getKey(), (bestPrzelot != null ? bestPrzelot : best).entry());
+            if (firstPrzelot != null) przelotAnchor.put(e.getKey(), firstPrzelot.entry());
+            anchorTarget.put(e.getKey(), (firstPrzelot != null ? firstPrzelot : ps.get(0)).entry());
         }
         wpCountInG = new HashMap<>();
         for (int i = 1; i < route.size() - 1; i++) {
@@ -177,15 +169,12 @@ final class SpurCutter {
      */
     private void processCandidate(int idx) {
         if (idx <= 0 || idx >= route.size() - 1) return;
-        if (locked[idx - 1] || locked[idx] || locked[idx + 1]) return; // sąsiad usuwanego spuru — nie ruszaj w tym passie
         double[] cur = route.get(idx);
-        if (stay.contains(cur)) return;
         UnvisitedArea spurArea = findGminaCached.apply(cur);
         if (spurArea == null) return;
         int gid = spurArea.areaId();
         double[] target = anchorTarget.get(gid);
         if (target != null && velomarker.service.planning.WaypointSelector.haversineKm(cur, target) < KEEPER_EPS_KM) {
-            stay.add(cur);
             return;                                     // cur JEST kotwicą gminy → zostaw
         }
         // Gmina ma czysty PRZELOT (ślad na wylot) albo ≥2 wp → ten wp zbędny: usuń, re-anchor postawi 1 na przelocie.
@@ -212,7 +201,6 @@ final class SpurCutter {
                         przelotAnchor.containsKey(spurArea.areaId()) ? "gmina ma przelot" : "≥2 wp w gminie"});
         toDelete.add(cur);
         delGids.add(spurArea.areaId());
-        locked[idx - 1] = locked[idx] = locked[idx + 1] = true;
         relocated++;
         changed = true;
     }
@@ -378,7 +366,7 @@ final class SpurCutter {
         return (bestLeg < 0 || bestSD > 0.05) ? null : new LegSeg(bestLeg, bestSeg);
     }
 
-    /** Wstawia 1 wp gminy {@code vid} na śladzie w punkcie {@code heart} (slice nogi, 0 BRouter); chroni go ({@code stay}). */
+    /** Wstawia 1 wp gminy {@code vid} na śladzie w punkcie {@code heart} (slice nogi, 0 BRouter). */
     private void reanchorGminaOnTrack(int vid, double[] heart) {
         UnvisitedArea entryArea = gminaIndex.findGminaForPoint(heart[0], heart[1]);
         if (entryArea == null || entryArea.areaId() != vid) return;
@@ -390,7 +378,6 @@ final class SpurCutter {
         route.add(ls.leg() + 1, heartPoint);
         seed.selected().add(new SeedSel(entryArea, heartPoint, ordering.orderKey(heartPoint), 0.0,
                 GeometryUtil.minDistToBaselineKm(heartPoint, seed.baseline())));
-        stay.add(heartPoint);
         log.info("Coverage TAIL-PRUNE [{}]: re-anchor gminy {} na przelocie ≥220m (slice na nodze {}, 0 BRouter)",
                 new Object[]{debugPhase, entryArea.name(), ls.leg()});
     }
@@ -427,13 +414,11 @@ final class SpurCutter {
                 droppedRoundNames.add(ga != null ? ga.name() : ("id" + g));
             }
         }
-        boolean willContinue = reroutedLegs > 0 && (round + 1) < 3;
-        log.info("Coverage TAIL-PRUNE [{}-cut{}]: relocated={}, reloc-skipped={}, passes={}, calls={}, effort {}->{} ({}%->{}%) | runda: reloc+{}, reroute={}, dropped-runda={} {} -> {}",
-                new Object[]{debugPhase, round, relocated, relocSkipped, passes, edgeRouter.realCalls() - callsStart,
+        log.info("Coverage TAIL-PRUNE [{}-cut{}]: relocated={}, reloc-skipped={}, calls={}, effort {}->{} ({}%->{}%) | runda: reloc+{}, reroute={}, dropped-runda={} {}",
+                new Object[]{debugPhase, round, relocated, relocSkipped, edgeRouter.realCalls() - callsStart,
                         Math.round(effortBefore), Math.round(roundEffort),
                         Math.round(effortBefore * 100.0 / targetEffort), Math.round(roundEffort * 100.0 / targetEffort),
-                        relocated - relRoundStart, reroutedLegs, droppedRoundNames.size(), droppedRoundNames,
-                        willContinue ? "kolejna runda" : "KONIEC petli"});
+                        relocated - relRoundStart, reroutedLegs, droppedRoundNames.size(), droppedRoundNames});
         debug.logShots(debugPhase + "-cut" + round);
     }
 
@@ -443,8 +428,8 @@ final class SpurCutter {
         Set<Integer> visitedAfter = gminaIndex.visitedAreaIds(metrics.realGeometry(route));
         Set<Integer> dropped = new HashSet<>(visitedBefore);
         dropped.removeAll(visitedAfter);
-        log.info("Coverage TAIL-PRUNE (podsumowanie): relocated={}, reloc-skipped={}, passes={}, dropped={}, calls={}, effort {}->{} ({}%->{}%)",
-                new Object[]{relocated, relocSkipped, passes, dropped.size(), edgeRouter.realCalls() - callsStart,
+        log.info("Coverage TAIL-PRUNE (podsumowanie): relocated={}, reloc-skipped={}, dropped={}, calls={}, effort {}->{} ({}%->{}%)",
+                new Object[]{relocated, relocSkipped, dropped.size(), edgeRouter.realCalls() - callsStart,
                         Math.round(effortBefore), Math.round(realEffort),
                         Math.round(effortBefore * 100.0 / targetEffort), Math.round(realEffort * 100.0 / targetEffort)});
         if (debugGeoJson) {
