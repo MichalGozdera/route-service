@@ -102,9 +102,20 @@ public class GminaIndex {
         return coverage.deepestInteriorPoint(areaId);
     }
 
-    /** Najgłębszy punkt śladu w gminie (≥ minDepthMeters od granicy) — głęboki punkt z PIERWOTNEGO śladu do pogłębiania anchora. */
-    public double[] deepestTrackPointInArea(List<double[]> track, int areaId, double minDepthMeters) {
-        return coverage.deepestTrackPointInArea(track, areaId, minDepthMeters);
+    /** Pierwsze wejście śladu w bufor −minDepthMeters w gminie — punkt spłycenia (220→250→300), nie najgłębszy czubek. */
+    public double[] firstTrackPointAtDepth(List<double[]> track, int areaId, double minDepthMeters) {
+        return coverage.firstTrackPointAtDepth(track, areaId, minDepthMeters);
+    }
+
+    /** Głębokość punktu w gminie (m do granicy); -1 gdy poza gminą. Diagnostyka „jak głęboko siedzi wp/crosspoint". */
+    public double depthMeters(double[] point, int areaId) {
+        return coverage.depthMeters(point, areaId);
+    }
+
+    /** Pierwsze wejście ≥minDepth NA fragmencie przelotu (między entry↔exit) — pogłębianie kotwicy przelotu. */
+    public double[] firstTrackPointAtDepthBetween(List<double[]> track, int areaId, double minDepthMeters,
+                                                  double[] entry, double[] exit) {
+        return coverage.firstTrackPointAtDepthBetween(track, areaId, minDepthMeters, entry, exit);
     }
 
     /** Gminy nieprzecięte OTOCZONE śladem z każdej strony (≥1 sąsiad, wszyscy zaliczeni, cross-border, bez progu). */
@@ -164,19 +175,19 @@ public class GminaIndex {
     }
 
     /**
-     * Minimum dist (km) od area (najbliższy z sample points) do najbliższego segmentu route.
+     * Minimum dist (km) od area (deepestInteriorPoint = MIC) do najbliższego segmentu route. Heurystyka
+     * grow-filtra (≤25km) — deepest zamiast 8 sample (sample przeniesione wyłącznie do Anchorer).
      */
     public double distToRoute(UnvisitedArea area, List<double[]> route) {
-        double[][] samples = samplePointsFor(area);
+        double[] p = deepestInteriorPoint(area.areaId());
+        if (p == null) p = new double[]{area.lng(), area.lat()};
         double minDist = Double.MAX_VALUE;
-        for (double[] p : samples) {
-            for (int i = 0; i < route.size() - 1; i++) {
-                double[] a = route.get(i);
-                double[] b = route.get(i + 1);
-                double d = pointToSegmentKm(p[0], p[1], a[0], a[1], b[0], b[1]);
-                if (d < minDist) minDist = d;
-                if (minDist < 0.5) return minDist; // wystarczy "blisko"
-            }
+        for (int i = 0; i < route.size() - 1; i++) {
+            double[] a = route.get(i);
+            double[] b = route.get(i + 1);
+            double d = pointToSegmentKm(p[0], p[1], a[0], a[1], b[0], b[1]);
+            if (d < minDist) minDist = d;
+            if (minDist < 0.5) return minDist; // wystarczy "blisko"
         }
         return minDist;
     }

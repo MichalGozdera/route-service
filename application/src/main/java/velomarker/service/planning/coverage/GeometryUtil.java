@@ -135,25 +135,4 @@ final class GeometryUtil {
         }
         return false;
     }
-
-    /**
-     * Wybierz entry-point (sample) gminy NAJBLIŻSZY realnej geometrii trasy — od strony, którą szlak
-     * faktycznie przejeżdża. Pomija aktualny (nieosiągalny) punkt {@code cur}.
-     */
-    static double[] sampleNearestToGeometry(double[][] samples, double[] cur, List<double[]> geometry) {
-        if (samples == null || samples.length == 0 || geometry == null || geometry.isEmpty()) return null;
-        int step = Math.max(1, geometry.size() / 500); // subsample dla szybkości
-        double[] best = null;
-        double bestD = Double.MAX_VALUE;
-        for (double[] s : samples) {
-            if (s == cur) continue;
-            double d = Double.MAX_VALUE;
-            for (int k = 0; k < geometry.size(); k += step) {
-                double dd = WaypointSelector.haversineKm(s, geometry.get(k));
-                if (dd < d) d = dd;
-            }
-            if (d < bestD) { bestD = d; best = s; }
-        }
-        return best;
-    }
 }

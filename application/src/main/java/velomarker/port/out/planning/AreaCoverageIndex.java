@@ -84,11 +84,27 @@ public interface AreaCoverageIndex {
     boolean allNeighborsVisited(int areaId, Set<Integer> visited);
 
     /**
-     * Najgłębszy punkt śladu {@code track} leżący w gminie {@code areaId} (max odległość punktu od granicy gminy),
-     * o ile jego głębokość ≥ {@code minDepthMeters}; inaczej {@code null}. Do pogłębiania anchora: bierzemy realny
-     * głęboki punkt z PIERWOTNEGO śladu (grow tam wchodził), zamiast brzegu −220. 0 BRouter (czysta geometria JTS).
+     * PIERWSZY (wzdłuż śladu) punkt {@code track} w gminie {@code areaId} o odległości od granicy ≥ {@code minDepthMeters}
+     * = pierwsze wejście w bufor −minDepth; {@code null} gdy ślad nigdzie nie wchodzi tak głęboko. Do pogłębiania:
+     * spłycamy wp do PIERWSZEGO wejścia na zadaną głębokość (220→250→300), NIE do najgłębszego czubka zaułka.
+     * 0 BRouter (czysta geometria JTS).
      */
-    double[] deepestTrackPointInArea(List<double[]> track, int areaId, double minDepthMeters);
+    double[] firstTrackPointAtDepth(List<double[]> track, int areaId, double minDepthMeters);
+
+    /**
+     * Głębokość punktu w gminie = odległość (m) do granicy. {@code -1} gdy punkt poza gminą {@code areaId}.
+     * Do diagnostyki „jak głęboko siedzi wp/crosspoint". 0 BRouter (czysta geometria JTS).
+     */
+    double depthMeters(double[] point, int areaId);
+
+    /**
+     * Jak {@link #firstTrackPointAtDepth}, ale skan ograniczony do FRAGMENTU śladu między {@code entry} a {@code exit}
+     * (wejściem i wyjściem PRZELOTU). Pogłębianie kotwicy przelotu szuka punktu ≥ minDepth NA przelocie, NIE pierwszego
+     * wejścia gdziekolwiek (które mogłoby trafić w płytki zaułek przed przelotem). {@code null} gdy fragment nie wchodzi
+     * tak głęboko. 0 BRouter.
+     */
+    double[] firstTrackPointAtDepthBetween(List<double[]> track, int areaId, double minDepthMeters,
+                                           double[] entry, double[] exit);
 
     /**
      * DEBUG: GeoJSON (FeatureCollection) granicy gminy {@code areaId} pomniejszonej o {@code bufferMeters}

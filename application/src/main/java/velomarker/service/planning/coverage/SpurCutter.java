@@ -28,18 +28,29 @@ import java.util.function.Function;
 final class SpurCutter {
     private static final Logger log = LoggerFactory.getLogger(SpurCutter.class);
     private static final double RETRACE_TOL_KM = 0.06;
-    /** Separacja wejścia↔wyjścia przejścia (km): ≥ to = ślad wyszedł INNĄ drogą = PRZELOT; bliżej = wrócił
-     *  TĄ SAMĄ drogą = zaułek. Próg > 0 bo ślad tam-i-z-powrotem nie pokrywa się co do piksela (~0.02–0.05). */
+    /**
+     * Separacja wejścia↔wyjścia przejścia (km): ≥ to = ślad wyszedł INNĄ drogą = PRZELOT; bliżej = wrócił
+     * TĄ SAMĄ drogą = zaułek. Próg > 0 bo ślad tam-i-z-powrotem nie pokrywa się co do piksela (~0.02–0.05).
+     */
     private static final double EXIT_SEPARATION_KM = 0.08;
-    /** wp w tej odległości od kotwicy gminy = JEST już kotwicą (nie ruszaj, nie usuwaj) — anty-churn. */
-    private static final double KEEPER_EPS_KM = 0.15;
+    /**
+     * wp w tej odległości od kotwicy gminy = JEST kotwicą (na przelocie/pierwszym wejściu), nie odnoga — keeper
+     * sprawdza wtedy realny snap zamiast ślepo zostawiać; dalej od kotwicy = odnoga/zaułek → cięcie.
+     */
+    private static final double KEEPER_EPS_KM = 0.05;
 
-    /** Punkt ROZEJŚCIA odnogi out-and-back (palca) + jego indeksy w geometriach nóg eIn/eOut
-     *  (D jest wierzchołkiem OBU nóg → slice obu = 0 BRouter). */
-    private record Divergence(double[] point, int idxIn, int idxOut) {}
+    /**
+     * Punkt ROZEJŚCIA odnogi out-and-back (palca) + jego indeksy w geometriach nóg eIn/eOut
+     * (D jest wierzchołkiem OBU nóg → slice obu = 0 BRouter).
+     */
+    private record Divergence(double[] point, int idxIn, int idxOut) {
+    }
 
-    /** Noga trasy (leg) + indeks segmentu w jej geometrii. */
-    private record LegSeg(int leg, int seg) {}
+    /**
+     * Noga trasy (leg) + indeks segmentu w jej geometrii.
+     */
+    private record LegSeg(int leg, int seg) {
+    }
 
     private final EdgeRouter edgeRouter;
     private final RouteMetrics metrics;
@@ -62,9 +73,24 @@ final class SpurCutter {
     private final double effortBefore;
     private final Set<Integer> visitedBefore;
     private int relocated, relocSkipped;
+    // ── eskalacja bufora przy ustawianiu wp (220→250→300, snap-check lokalny) ──
+    /**
+     * Ślad wejściowy rundy (= koniec poprzedniej rundy) — źródło głębokich punktów kandydatów. Odświeżany co rundę.
+     */
+    private List<double[]> roundEntryTrack;
+    /** Bufory eskalacji (m): 220 → 250 → 300; po wyczerpaniu caller stosuje „zostaw". */
+    private static final double[] BUFORY = {220.0, 250.0, 300.0};
+    /** gid → ostatni kandydat, który przeszedł snap-check ≥220m. Fallback gdy bieżąca eskalacja nie złapie
+     *  (stary dobry crosspoint bywa lepszy niż „zostaw"). Przeżywa rundy — NIE resetowany w pętli run(). */
+    private final Map<Integer, double[]> lastGoodAnchor = new HashMap<>();
+
+    /** Mechanizm ustawienia wp — różni tylko ŹRÓDŁO kandydata przy eskalacji (PRZELOT: fragment przelotu). */
+    private enum Mechanism {PRZELOT, FINGER}
+
     // ── stan jednego cut-przebiegu (reset w runCutPass) ──
     private Map<Integer, double[]> przelotAnchor; // gmina → wejście najdłuższego PRZELOTU (chord ≥ próg); brak = brak przelotu
     private Map<Integer, double[]> anchorTarget;  // gmina → kotwica (wejście przelotu, wpp. najdłuższego przejścia)
+    private Map<Integer, double[][]> przelotEntryExit; // gmina → [wejście, wyjście] PRZELOTU (fragment do pogłębiania kotwicy)
     private Map<Integer, Integer> wpCountInG;     // gmina → ile NIE-anchor wp ma w tym przebiegu
     private List<double[]> toDelete;
     private Set<Integer> delGids;
@@ -101,27 +127,29 @@ final class SpurCutter {
     double run() {
         int round = 0;
         boolean again = true;
-        while (again && round < maxPasses + 6) {
+        while (again && round < maxPasses + 9) {
             int relRoundStart = relocated;
-            Set<Integer> visBeforeRound = debugGeoJson ? gminaIndex.visitedAreaIds(metrics.realGeometry(route)) : null;
+            roundEntryTrack = metrics.realGeometry(route);                // stan WEJŚCIA rundy = źródło głębokich kandydatów
+            Set<Integer> visBeforeRound = debugGeoJson ? gminaIndex.visitedAreaIds(roundEntryTrack) : null;
             if (debugGeoJson) {
-                debug.geometry(debugPhase + "-precut" + round, metrics.realGeometry(route), route, metrics.realKm(route));
+                debug.geometry(debugPhase + "-precut" + round, roundEntryTrack, route, metrics.realKm(route));
             }
             changed = false;
-            if (route.size() >= 3) runCutPass();                          // jeden przebieg cięcia
-            int reroutedLegs = edgeRouter.rerouteApproximateLegs(route);  // realny BRouter slice'owanych nóg
-            log.info("Coverage TAIL-PRUNE [{}] runda {}: cięto={}, reroute={}, calls={}, effort {} ({}%)",
-                    new Object[]{debugPhase, round, relocated - relRoundStart, reroutedLegs,
+            if (route.size() >= 3) runCutPass();                          // cięcie + eskalacja bufora w metodach akcji
+            log.info("Coverage TAIL-PRUNE [{}] runda {}: cięto={}, reloc-skip={}, calls={}, effort {} ({}%)",
+                    new Object[]{debugPhase, round, relocated - relRoundStart, relocSkipped,
                             edgeRouter.realCalls() - callsStart, Math.round(metrics.effortViaCache(route)),
                             Math.round(metrics.effortViaCache(route) * 100.0 / targetEffort)});
-            if (debugGeoJson) logRound(round, relRoundStart, reroutedLegs, visBeforeRound);
-            again = changed || reroutedLegs > 0;                          // są jeszcze zaułki/wtórniaki → powtórz
+            if (debugGeoJson) logRound(round, relRoundStart, 0, visBeforeRound);
+            again = changed;                                              // wtórne zaułki na nowym śladzie → kolejna runda
             round++;
         }
         return finishAndLog();
     }
 
-    /** Jeden cut-pass: przejścia gminy (przelot/zaułek) → rozstrzygnij każdy nie-anchor wp → scal usunięcia. */
+    /**
+     * Jeden cut-pass: przejścia gminy (przelot/zaułek) → rozstrzygnij każdy nie-anchor wp → scal usunięcia.
+     */
     private void runCutPass() {
         buildPassageMaps(metrics.realGeometry(route));   // przelotAnchor / anchorTarget / wpCountInG (0 BRouter)
         toDelete = new ArrayList<>();
@@ -144,14 +172,21 @@ final class SpurCutter {
         Map<Integer, List<AreaPassage>> passages = gminaIndex.passages(realTrack);
         przelotAnchor = new HashMap<>();
         anchorTarget = new HashMap<>();
+        przelotEntryExit = new HashMap<>();
         for (Map.Entry<Integer, List<AreaPassage>> e : passages.entrySet()) {
             List<AreaPassage> ps = e.getValue();
             if (ps.isEmpty()) continue;
             AreaPassage firstPrzelot = null;                                  // PIERWSZY przelot wzdłuż śladu (deterministyczny)
             for (AreaPassage p : ps) {
-                if (p.chordKm() >= EXIT_SEPARATION_KM) { firstPrzelot = p; break; }
+                if (p.chordKm() >= EXIT_SEPARATION_KM) {
+                    firstPrzelot = p;
+                    break;
+                }
             }
-            if (firstPrzelot != null) przelotAnchor.put(e.getKey(), firstPrzelot.entry());
+            if (firstPrzelot != null) {
+                przelotAnchor.put(e.getKey(), firstPrzelot.entry());
+                przelotEntryExit.put(e.getKey(), new double[][]{firstPrzelot.entry(), firstPrzelot.exit()});
+            }
             anchorTarget.put(e.getKey(), (firstPrzelot != null ? firstPrzelot : ps.get(0)).entry());
         }
         wpCountInG = new HashMap<>();
@@ -173,28 +208,68 @@ final class SpurCutter {
         UnvisitedArea spurArea = findGminaCached.apply(cur);
         if (spurArea == null) return;
         int gid = spurArea.areaId();
+        double[] prev = route.get(idx - 1), next = route.get(idx + 1);
         double[] target = anchorTarget.get(gid);
         if (target != null && velomarker.service.planning.WaypointSelector.haversineKm(cur, target) < KEEPER_EPS_KM) {
-            return;                                     // cur JEST kotwicą gminy → zostaw
+            // cur JEST kotwicą gminy (na przelocie/wejściu) — ale sprawdź realny snap (Nieporęt: kotwica spłycona do zaułka)
+            if (deepEnoughLocally(prev, cur, next, gid)) {
+                return;                                 // kotwica realnie ≥220m → zostaw
+            }
+            // kotwica PŁYTKA po snapie → eskaluj W MIEJSCU (nie usuwamy kotwicy, przesuwamy głębiej)
+            Mechanism mech = przelotAnchor.containsKey(gid) ? Mechanism.PRZELOT : Mechanism.FINGER;
+            double[] t = escalateBuffer(gid, prev, next, mech);
+            if (t != null) {
+                applyMoveAtPoint(idx, cur, t);
+                log.info("Coverage TAIL-PRUNE [{}]: #{} {} kotwica płytka → pogłębiona (snap-check ≥220m)",
+                        new Object[]{debugPhase, idx, spurArea.name()});
+                return;
+            }
+            log.info("Coverage TAIL-PRUNE [{}]: #{} {} kotwica płytka → żaden bufor ≥220m → zostaw",
+                    new Object[]{debugPhase, idx, spurArea.name()});
+            relocSkipped++;
+            return;
         }
-        // Gmina ma czysty PRZELOT (ślad na wylot) albo ≥2 wp → ten wp zbędny: usuń, re-anchor postawi 1 na przelocie.
+        // cur NIE jest kotwicą (odnoga/zaułek): gmina z PRZELOTEM albo ≥2 wp → usuń, re-anchor postawi 1 na przelocie.
         if (przelotAnchor.containsKey(gid) || wpCountInG.getOrDefault(gid, 0) >= 2) {
             deleteRedundantSpur(idx, cur, spurArea);
             return;
         }
-        // Gmina bez przelotu, jedyny wp: zaułek/palec WEWNĄTRZ gminy → przytnij odnogę, wp na ślad ciągły (D).
-        double[] prev = route.get(idx - 1), next = route.get(idx + 1);
+        // Jedyny wp, bez przelotu: zaułek/palec out-and-back → escalateBuffer(FINGER) dobiera punkt.
         EdgeCache.EdgeInfo eIn = edgeRouter.edge(prev, cur);
         EdgeCache.EdgeInfo eOut = edgeRouter.edge(cur, next);
         Divergence d = outAndBackDivergence(eIn, eOut);
         if (d == null) {                                // ślad PRZECHODZI przez cur (nie zawraca) → realne pokrycie, zostaw
-            log.info("Coverage TAIL-PRUNE [{}]: #{} {} bez przelotu, nie-palec → zostaw", new Object[]{debugPhase, idx, spurArea.name()});
+            log.info("Coverage TAIL-PRUNE [{}]: #{} {} odnoga bez przelotu, nie-palec → zostaw", new Object[]{debugPhase, idx, spurArea.name()});
             return;
         }
-        handleInnerSpur(idx, cur, prev, next, eIn, eOut, spurArea, d);
+        handleInnerSpur(idx, cur, prev, next, spurArea);   // d wykrył palec; eskalacja sama dobiera punkt
     }
 
-    /** Zaułek gminy z przelotem (lub jeden z ≥2 wp) → oznacz do usunięcia; re-anchor po pętli postawi 1 wp na przelocie. */
+    /** Sklej lokalny ślad prev→cand→next (zsnapowany BRouter) + WSTRZYKNIJ crosspoint(cand) na styku — spójnie z
+     *  RouteMetrics.realGeometry, by deeplyVisitedAreaIds liczyło pokrycie na REALNYM snapie wp (nie surowych węzłach). */
+    private List<double[]> localWithCrosspoint(double[] prev, double[] cand, double[] next) {
+        EdgeCache.EdgeInfo eIn = edgeRouter.edge(prev, cand);
+        EdgeCache.EdgeInfo eOut = edgeRouter.edge(cand, next);
+        List<double[]> local = new ArrayList<>(eIn.geometry());
+        double[] cp = eOut.crosspointA();                                // snap(cand) = crosspointA edge cand→next (start = jedyne pewne źródło w btools)
+        if (cp != null && (local.isEmpty()
+                || velomarker.service.planning.WaypointSelector.haversineKm(local.get(local.size() - 1), cp) > 0.002)) {
+            local.add(cp);
+        }
+        List<double[]> gOut = eOut.geometry();
+        for (int i = 1; i < gOut.size(); i++) local.add(gOut.get(i));
+        return local;
+    }
+
+    /** Czy realny ślad lokalnie (prev→cur→next, zsnapowany przez BRouter, z crosspointem) wchodzi w gminę {@code gid} ≥220m.
+     *  Cache-hit (nogi policzone w realGeometry) + JTS → tani. TO SAMO kryterium co stats/escalateBuffer (spójność). */
+    private boolean deepEnoughLocally(double[] prev, double[] cur, double[] next, int gid) {
+        return gminaIndex.deeplyVisitedAreaIds(localWithCrosspoint(prev, cur, next)).contains(gid);
+    }
+
+    /**
+     * Zaułek gminy z przelotem (lub jeden z ≥2 wp) → oznacz do usunięcia; re-anchor po pętli postawi 1 wp na przelocie.
+     */
     private void deleteRedundantSpur(int idx, double[] cur, UnvisitedArea spurArea) {
         log.info("Coverage TAIL-PRUNE [{}]: #{} {} zbędny zaułek ({}) → usuń + re-anchor na przelocie",
                 new Object[]{debugPhase, idx, spurArea.name(),
@@ -206,71 +281,66 @@ final class SpurCutter {
     }
 
     /**
-     * Palec WEWNĄTRZ gminy (odnoga out-and-back z rozejściem {@code d}). Jeśli ślad ciągły prev→D→next nadal
-     * KREDYTUJE gminę → przesuń wp na D (slice obu nóg w D, 0 BRouter; odnoga znika). Inaczej (gmina sięgnięta
-     * tylko głębią palca) → zostaw nietknięty (nie cofamy, nie tracimy gminy). Log zawsze.
+     * Palec WEWNĄTRZ gminy (odnoga out-and-back). Eskaluj bufor 220→250→300: pierwsze wejście w bufor na nodze
+     * dojazdowej, zsnapuj realnie i sprawdź czy gmina wchodzi ≥220m; pierwszy taki kandydat → przesuń wp tam (slice
+     * obu nóg, odnoga znika). Żaden bufor nie złapał → ZOSTAW wp (palec = jedyny głęboki dostęp, nie tracimy gminy).
      */
-    private void handleInnerSpur(int idx, double[] cur, double[] prev, double[] next,
-                                 EdgeCache.EdgeInfo eIn, EdgeCache.EdgeInfo eOut, UnvisitedArea g, Divergence d) {
-        List<double[]> giIn = eIn.geometry(), giOut = eOut.geometry();
-        List<double[]> straight = new ArrayList<>(giIn.subList(0, d.idxIn() + 1));        // prev → D
-        straight.addAll(giOut.subList(Math.min(d.idxOut() + 1, giOut.size()), giOut.size())); // D → next (bez odnogi)
-        if (!gminaIndex.visitedAreaIds(straight).contains(g.areaId())) {
-            // Odnoga = JEDYNY dostęp do gminy (ślad ciągły bez niej nie kredytuje). Nie zostawiaj wp na dalekim
-            // czubku — spłyć do PIERWSZEGO wjazdu −220 na nodze dojazdowej (slice obu nóg, 0 BRouter).
-            if (shortenSoleSpurToFirstEntry(idx, cur, prev, next, eIn, eOut, g)) {
-                return;
-            }
-            log.info("Coverage TAIL-PRUNE [{}]: #{} {} jedyny głęboki dostęp (nie da się spłycić) → zostaw",
+    private void handleInnerSpur(int idx, double[] cur, double[] prev, double[] next, UnvisitedArea g) {
+        double[] t = escalateBuffer(g.areaId(), prev, next, Mechanism.FINGER);
+        if (t != null) {
+            applyMoveAtPoint(idx, cur, t);
+            log.info("Coverage TAIL-PRUNE [{}]: #{} {} palec → spłycony do wejścia (snap-check ≥220m)",
                     new Object[]{debugPhase, idx, g.name()});
-            relocSkipped++;
             return;
         }
-        double[] dPoint = d.point().clone();
-        edgeRouter.seedSlicedEdgesAtPoint(eIn, prev, cur, d.idxIn(), dPoint);   // prev→D (0 BRouter)
-        edgeRouter.seedSlicedEdgesAtPoint(eOut, cur, next, d.idxOut(), dPoint); // D→next (0 BRouter)
-        ops.swapEntry(seed.selected(), cur, dPoint, seed.baseline());
-        route.set(idx, dPoint);
-        relocated++;
-        changed = true;
-        log.info("Coverage TAIL-PRUNE [{}]: #{} {} palec wewnątrz gminy → przycięty, wp na śladzie ciągłym",
+        log.info("Coverage TAIL-PRUNE [{}]: #{} {} palec: żaden bufor nie złapał ≥220m → zostaw",
                 new Object[]{debugPhase, idx, g.name()});
+        relocSkipped++;
     }
 
     /**
-     * Spłyca zaułek-jedynaka (odnoga = jedyny dostęp do gminy) do PIERWSZEGO wjazdu −220 na nodze dojazdowej.
-     * Tnie OBIE nogi w punkcie {@code entry} (slice-w-punkcie, 0 BRouter): {@code prev→entry} z eIn i
-     * {@code entry→next} z eOut. {@code entry} (bisektowany na −220) leży NA powrocie dla out-and-back —
-     * guard {@code pointToSegment(eOut,entry)} chroni przed użyciem dla przelotu (next za gminą → zostaw).
-     * {@code true} = spłycono; {@code false} = nie da się (brak wjazdu / cur już na wjeździe / nie out-and-back).
+     * Eskalacja bufora 220→250→300 dla gminy {@code gid}: dla każdego bufora wybierz GEOMETRYCZNY kandydat (przelot →
+     * fragment entry↔exit; inaczej pierwsze wejście), ZSNAPUJ realnie ({@code edge(prev,cand)} + {@code edge(cand,next)})
+     * i sprawdź LOKALNIE, czy gmina wchodzi ≥220m. Zwraca pierwszy kandydat kredytujący po snapie; {@code null} gdy
+     * żaden (caller stosuje „zostaw"). Snap-check lokalny — snap wp zależy od jego pozycji, nie od dalekich wp.
      */
-    private boolean shortenSoleSpurToFirstEntry(int idx, double[] cur, double[] prev, double[] next,
-                                                EdgeCache.EdgeInfo eIn, EdgeCache.EdgeInfo eOut, UnvisitedArea g) {
-        double[] entry = gminaIndex.firstBufferEntryPoints(eIn.geometry()).get(g.areaId());
-        if (entry == null || velomarker.service.planning.WaypointSelector.haversineKm(entry, cur) < KEEPER_EPS_KM) {
-            return false; // brak wjazdu na dojeździe / cur już ~220m od granicy → no-op
+    private double[] escalateBuffer(int gid, double[] prev, double[] next, Mechanism mech) {
+        double[][] ee = przelotEntryExit.get(gid);
+        for (double bufor : BUFORY) {
+            double[] cand = mech == Mechanism.PRZELOT
+                    ? (ee != null ? gminaIndex.firstTrackPointAtDepthBetween(roundEntryTrack, gid, bufor, ee[0], ee[1]) : null)
+                    : gminaIndex.firstTrackPointAtDepth(roundEntryTrack, gid, bufor);
+            if (cand == null) continue;
+            double[] cp = edgeRouter.edge(cand, next).crosspointA();        // snap(cand) = crosspointA edge cand→next (jedyne pewne źródło snapu w btools)
+            edgeRouter.edge(prev, cand);                                    // druga noga (cache, spójność realGeometry)
+            if (cp != null && gminaIndex.depthMeters(cp, gid) >= 220.0) {   // crosspoint dostatecznie głęboko → PODMIANA na crosspoint
+                lastGoodAnchor.put(gid, cp.clone());
+                return cp;
+            }
         }
-        int segIn = nearestSegment(eIn.geometry(), entry);
-        int segOut = nearestSegment(eOut.geometry(), entry);
-        if (segIn < 0 || segOut < 0) {
-            return false;
+        // żaden bufor nie dał crosspointu ≥220 → fallback: ostatni dobry crosspoint z poprzedniej rundy (recheck na BIEŻĄCYCH prev/next)
+        double[] prev2 = lastGoodAnchor.get(gid);
+        if (prev2 != null) {
+            double[] cp2 = edgeRouter.edge(prev2, next).crosspointA();
+            edgeRouter.edge(prev, prev2);
+            if (cp2 != null && gminaIndex.depthMeters(cp2, gid) >= 220.0) return cp2;
         }
-        List<double[]> goOut = eOut.geometry();
-        if (GeometryUtil.pointToSegmentExactKm(entry, goOut.get(segOut), goOut.get(segOut + 1)) > 0.06) {
-            return false; // entry NIE leży na nodze powrotnej → to nie out-and-back (przelot) → zostaw
-        }
-        edgeRouter.seedSlicedEdgesAtPoint(eIn, prev, cur, segIn, entry);   // prev→entry (0 BRouter)
-        edgeRouter.seedSlicedEdgesAtPoint(eOut, cur, next, segOut, entry); // entry→next (0 BRouter)
-        ops.swapEntry(seed.selected(), cur, entry, seed.baseline());
-        route.set(idx, entry);
-        relocated++;
-        changed = true;
-        log.info("Coverage TAIL-PRUNE [{}]: #{} {} jedyny wjazd → spłycony do pierwszego wjazdu (−220)",
-                new Object[]{debugPhase, idx, g.name()});
-        return true;
+        return null;
     }
 
-    /** Indeks segmentu geometrii najbliższego punktowi {@code pt} (−1 gdy geometria pusta). */
+    /** Ustaw wp gminy w punkcie {@code target}: swap w selected + route.set. Nogi prev→target, target→next już policzone
+     *  REALNIE w {@link #escalateBuffer} → cache-hit przy realGeometry, bez redundantnego slice. */
+    private void applyMoveAtPoint(int idx, double[] cur, double[] target) {
+        double[] tp = target.clone();
+        ops.swapEntry(seed.selected(), cur, tp, seed.baseline());
+        route.set(idx, tp);
+        relocated++;
+        changed = true;
+    }
+
+    /**
+     * Indeks segmentu geometrii najbliższego punktowi {@code pt} (−1 gdy geometria pusta).
+     */
     private int nearestSegment(List<double[]> geom, double[] pt) {
         int seg = -1;
         double best = Double.MAX_VALUE;
@@ -314,7 +384,8 @@ final class SpurCutter {
         List<double[]> oldRealTrack = metrics.realGeometry(route);
         Map<Integer, double[]> fallbackHearts = null;               // lazy: firstBufferEntryPoints tylko gdy brak kotwicy
         for (int vid : delGids) {
-            if (gminaAlreadyHasKeeperWp(vid, toDeleteSet)) continue; // gmina ma już wp który zostaje → bramka 1 wp/gmina
+            if (gminaAlreadyHasKeeperWp(vid, toDeleteSet))
+                continue; // gmina ma już wp który zostaje → bramka 1 wp/gmina
             double[] heart = anchorTarget.get(vid);                  // kotwica = wejście przelotu (policzona w runCutPass)
             if (heart == null) {                                     // brak przejścia −220 (płytka gmina) → fallback
                 if (fallbackHearts == null) fallbackHearts = gminaIndex.firstBufferEntryPoints(oldRealTrack);
@@ -329,14 +400,18 @@ final class SpurCutter {
         collapseDeletedSpurs(toDelete);
     }
 
-    /** Identity-set (porównanie po referencji {@code double[]}, nie equals). */
+    /**
+     * Identity-set (porównanie po referencji {@code double[]}, nie equals).
+     */
     private static Set<double[]> identitySet(List<double[]> pts) {
         Set<double[]> s = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
         s.addAll(pts);
         return s;
     }
 
-    /** Czy gmina {@code vid} ma już wp KTÓRY ZOSTAJE (nie-anchor, nie do usunięcia) → bramka 1 wp/gmina. */
+    /**
+     * Czy gmina {@code vid} ma już wp KTÓRY ZOSTAJE (nie-anchor, nie do usunięcia) → bramka 1 wp/gmina.
+     */
     private boolean gminaAlreadyHasKeeperWp(int vid, Set<double[]> toDeleteSet) {
         for (double[] p : route) {
             if (GeometryUtil.isAnchor(p, anchors)) continue;
@@ -347,7 +422,9 @@ final class SpurCutter {
         return false;
     }
 
-    /** Noga+segment trasy najbliższe punktowi {@code heart} (po pełnej geometrii nóg); {@code null} gdy >50m od śladu. */
+    /**
+     * Noga+segment trasy najbliższe punktowi {@code heart} (po pełnej geometrii nóg); {@code null} gdy >50m od śladu.
+     */
     private LegSeg nearestLegSegment(double[] heart) {
         int bestLeg = -1, bestSeg = -1;
         double bestSD = Double.MAX_VALUE;
@@ -366,19 +443,29 @@ final class SpurCutter {
         return (bestLeg < 0 || bestSD > 0.05) ? null : new LegSeg(bestLeg, bestSeg);
     }
 
-    /** Wstawia 1 wp gminy {@code vid} na śladzie w punkcie {@code heart} (slice nogi, 0 BRouter). */
-    private void reanchorGminaOnTrack(int vid, double[] heart) {
-        UnvisitedArea entryArea = gminaIndex.findGminaForPoint(heart[0], heart[1]);
+    /**
+     * Wstawia 1 wp gminy {@code vid} na przelocie. Kandydat startowy {@code heart220} (wejście przelotu −220) ESKALUJE
+     * bufor 220→250→300 ze snap-checkiem: jeśli BRouter zsnapuje −220 za płytko (<220m w gminie), przesuwa kotwicę
+     * głębiej w przelot. Gdy żaden bufor nie złapie → zostaje −220 (przelot i tak kredytuje). Slice na nodze (0 BRouter,
+     * realny przebieg policzony w {@link #escalateBuffer}).
+     */
+    private void reanchorGminaOnTrack(int vid, double[] heart220) {
+        UnvisitedArea entryArea = gminaIndex.findGminaForPoint(heart220[0], heart220[1]);
         if (entryArea == null || entryArea.areaId() != vid) return;
-        LegSeg ls = nearestLegSegment(heart);
+        LegSeg ls = nearestLegSegment(heart220);
         if (ls == null) return;
-        EdgeCache.EdgeInfo edge = edgeRouter.edge(route.get(ls.leg()), route.get(ls.leg() + 1));
+        double[] prev = route.get(ls.leg()), next = route.get(ls.leg() + 1);
+        double[] heart = escalateBuffer(vid, prev, next, Mechanism.PRZELOT);   // 220→250→300, snap-check
+        if (heart == null) heart = heart220;                                   // żaden bufor → zostaw kotwicę −220
+        EdgeCache.EdgeInfo edge = edgeRouter.edge(prev, next);
         double[] heartPoint = heart.clone();
-        edgeRouter.seedSlicedEdgesAtPoint(edge, route.get(ls.leg()), route.get(ls.leg() + 1), ls.seg(), heartPoint);
+        int seg = nearestSegment(edge.geometry(), heartPoint);
+        if (seg < 0) seg = ls.seg();
+        edgeRouter.seedSlicedEdgesAtPoint(edge, prev, next, seg, heartPoint);
         route.add(ls.leg() + 1, heartPoint);
         seed.selected().add(new SeedSel(entryArea, heartPoint, ordering.orderKey(heartPoint), 0.0,
                 GeometryUtil.minDistToBaselineKm(heartPoint, seed.baseline())));
-        log.info("Coverage TAIL-PRUNE [{}]: re-anchor gminy {} na przelocie ≥220m (slice na nodze {}, 0 BRouter)",
+        log.info("Coverage TAIL-PRUNE [{}]: re-anchor gminy {} na przelocie (snap-check ≥220m, slice noga {})",
                 new Object[]{debugPhase, entryArea.name(), ls.leg()});
     }
 
@@ -402,7 +489,9 @@ final class SpurCutter {
         edgeRouter.setReason("pomiar");
     }
 
-    /** Log + debug-GeoJSON jednej rundy cięcia (tylko debugGeoJson). */
+    /**
+     * Log + debug-GeoJSON jednej rundy cięcia (tylko debugGeoJson).
+     */
     private void logRound(int round, int relRoundStart, int reroutedLegs, Set<Integer> visBeforeRound) {
         debug.geometry(debugPhase + "-cut" + round, metrics.realGeometry(route), route, metrics.realKm(route));
         double roundEffort = metrics.effortViaCache(route);
@@ -422,7 +511,9 @@ final class SpurCutter {
         debug.logShots(debugPhase + "-cut" + round);
     }
 
-    /** Finalny pomiar + log podsumowania + debug. Zwraca realny effort. */
+    /**
+     * Finalny pomiar + log podsumowania + debug. Zwraca realny effort.
+     */
     private double finishAndLog() {
         double realEffort = metrics.effortViaCache(route);
         Set<Integer> visitedAfter = gminaIndex.visitedAreaIds(metrics.realGeometry(route));

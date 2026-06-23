@@ -98,8 +98,7 @@ final class GrowNear {
         while (batchSels.size() < batch && (maxInserts <= 0 || inserted + batchSels.size() < maxInserts) && ci < cands.size()) {
             NearCand nc = cands.get(ci++);
             if (visited.contains(nc.area().areaId()) || myInsertAreas.contains(nc.area().areaId())) continue;
-            double[] ep = gminaIndex.deepestInteriorPoint(nc.area().areaId()); // najgłębszy punkt gminy
-            if (ep == null) ep = GeometryUtil.sampleNearestToGeometry(gminaIndex.samplePointsFor(nc.area()), null, geomRef);
+            double[] ep = gminaIndex.deepestInteriorPoint(nc.area().areaId()); // najgłębszy punkt gminy (MIC, fallback centroid)
             if (ep == null) continue;
             SeedSel sel = new SeedSel(nc.area(), ep, ordering.orderKey(ep), 0.0, GeometryUtil.minDistToBaselineKm(ep, baseline));
             selected.add(sel);

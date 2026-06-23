@@ -496,16 +496,15 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
     }
 
     @Override
-    public double[] deepestTrackPointInArea(List<double[]> track, int areaId, double minDepthMeters) {
+    public double[] firstTrackPointAtDepth(List<double[]> track, int areaId, double minDepthMeters) {
         AreaGeom ag = byId.get(areaId);
         if (ag == null || ag.full() == null || track == null || track.isEmpty()) {
             return null;
         }
         Geometry boundary = ag.full().getBoundary();
         Envelope env = ag.full().getEnvelopeInternal();
-        double bestDeg = -1;
-        double[] best = null;
-        for (double[] p : track) {
+        double minDeg = minDepthMeters / METERS_PER_DEG;
+        for (double[] p : track) {                          // wzdłuż śladu — PIERWSZE wejście w bufor −minDepth
             Coordinate c = project(p[0], p[1]);
             if (!env.contains(c)) {
                 continue;                                   // tani bbox prefiltr (większość punktów śladu poza gminą)
@@ -514,13 +513,70 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
             if (!ag.prepFull().contains(pt)) {
                 continue;                                   // punkt poza gminą
             }
-            double dDeg = boundary.distance(pt);            // odległość do granicy (w projekcji)
-            if (dDeg > bestDeg) {
-                bestDeg = dDeg;
-                best = p;
+            if (boundary.distance(pt) >= minDeg) {          // odległość do granicy ≥ próg → pierwszy dość głęboki
+                return p.clone();
             }
         }
-        return (best != null && bestDeg * METERS_PER_DEG >= minDepthMeters) ? best.clone() : null;
+        return null;
+    }
+
+    @Override
+    public double depthMeters(double[] point, int areaId) {
+        AreaGeom ag = byId.get(areaId);
+        if (ag == null || ag.full() == null) return -1;
+        Point pt = GF.createPoint(project(point[0], point[1]));
+        if (!ag.prepFull().contains(pt)) return -1;         // punkt poza gminą
+        return ag.full().getBoundary().distance(pt) * METERS_PER_DEG;
+    }
+
+    @Override
+    public double[] firstTrackPointAtDepthBetween(List<double[]> track, int areaId, double minDepthMeters,
+                                                  double[] entry, double[] exit) {
+        AreaGeom ag = byId.get(areaId);
+        if (ag == null || ag.full() == null || track == null || track.isEmpty() || entry == null || exit == null) {
+            return null;
+        }
+        int lo = nearestTrackIndex(track, entry), hi = nearestTrackIndex(track, exit);
+        if (lo < 0 || hi < 0) {
+            return null;
+        }
+        if (lo > hi) {                                      // entry/exit w dowolnej kolejności wzdłuż śladu
+            int t = lo; lo = hi; hi = t;
+        }
+        Geometry boundary = ag.full().getBoundary();
+        Envelope env = ag.full().getEnvelopeInternal();
+        double minDeg = minDepthMeters / METERS_PER_DEG;
+        for (int i = lo; i <= hi && i < track.size(); i++) {  // PIERWSZE dość głębokie wejście NA fragmencie przelotu
+            double[] p = track.get(i);
+            Coordinate c = project(p[0], p[1]);
+            if (!env.contains(c)) {
+                continue;
+            }
+            Point pt = GF.createPoint(c);
+            if (!ag.prepFull().contains(pt)) {
+                continue;
+            }
+            if (boundary.distance(pt) >= minDeg) {
+                return p.clone();
+            }
+        }
+        return null;
+    }
+
+    /** Indeks punktu {@code track} najbliższego {@code target} (w projekcji) — do wyznaczenia fragmentu przelotu. */
+    private int nearestTrackIndex(List<double[]> track, double[] target) {
+        Coordinate tc = project(target[0], target[1]);
+        int best = -1;
+        double bestD = Double.MAX_VALUE;
+        for (int i = 0; i < track.size(); i++) {
+            Coordinate c = project(track.get(i)[0], track.get(i)[1]);
+            double d = (c.x - tc.x) * (c.x - tc.x) + (c.y - tc.y) * (c.y - tc.y);
+            if (d < bestD) {
+                bestD = d;
+                best = i;
+            }
+        }
+        return best;
     }
 
     @Override

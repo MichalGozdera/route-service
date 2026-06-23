@@ -10,7 +10,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CoverageLocalSearchTest {
 
     @Test
-    void twoOpt_anchorsPreserved() {
+    void optimize_anchorsPreserved() {
         // Route z krzyżującymi krawędziami: start → A → B → C → D → end gdzie A i C są blisko
         List<double[]> route = new ArrayList<>(List.of(
                 new double[]{0, 0},      // start
@@ -23,17 +23,15 @@ class CoverageLocalSearchTest {
         double[] originalStart = route.get(0);
         double[] originalEnd = route.get(route.size() - 1);
 
-        int swaps = CoverageLocalSearch.twoOpt(route);
-        // 2-opt powinien znaleźć improvement (B i C były skrzyżowane)
-        assertThat(swaps).isGreaterThan(0);
-        // Anchors niezmienne
-        assertThat(route.get(0)).isSameAs(originalStart);
+        int moves = CoverageLocalSearch.optimize(route);
+        assertThat(moves).isGreaterThan(0);                 // skrzyżowanie B/C → ruch
+        assertThat(route.get(0)).isSameAs(originalStart);   // anchory niezmienne
         assertThat(route.get(route.size() - 1)).isSameAs(originalEnd);
     }
 
     @Test
-    void relocate_movesSinglePoint() {
-        // A źle umiejscowiony. Tour pre-relocate jest długi, po relocate krótszy.
+    void optimize_shortensTour() {
+        // A źle umiejscowiony (daleko). Po rozplątaniu tour krótszy.
         List<double[]> route = new ArrayList<>(List.of(
                 new double[]{0, 0},      // start
                 new double[]{5, 0},      // A (zła pozycja — daleko)
@@ -42,61 +40,36 @@ class CoverageLocalSearchTest {
                 new double[]{3, 0},      // D
                 new double[]{6, 0}       // end
         ));
-        double totalBefore = totalKm(route);
-        CoverageLocalSearch.relocate(route);
-        double totalAfter = totalKm(route);
-        // Tour po relocate powinien być KRÓTSZY (improvement)
-        assertThat(totalAfter).isLessThan(totalBefore);
+        double before = totalKm(route);
+        CoverageLocalSearch.optimize(route);
+        assertThat(totalKm(route)).isLessThan(before);
+    }
+
+    @Test
+    void optimize_catchesLongDetour_geoCloseFarInOrder() {
+        // Pas punktów wzdłuż x, a tuż przed metą punkt geograficznie BLISKO startu (długi nawrót w kolejności).
+        // k-nearest (geograficzny) ma go znaleźć i przenieść na początek — okno-kolejność by nie dało rady.
+        List<double[]> route = new ArrayList<>();
+        route.add(new double[]{0, 0});                      // start
+        for (int i = 1; i <= 30; i++) route.add(new double[]{i * 0.1, 0}); // pas x=0.1..3.0
+        route.add(new double[]{0.05, 0.02});                // blisko startu, ale na pozycji ~31 (nawrót)
+        route.add(new double[]{3.1, 0});                    // end
+        double before = totalKm(route);
+        CoverageLocalSearch.optimize(route);
+        assertThat(totalKm(route)).isLessThan(before);      // nawrót rozplątany (or-opt przeniósł punkt)
+    }
+
+    @Test
+    void shortRoute_noOp() {
+        List<double[]> tiny = new ArrayList<>(List.of(new double[]{0, 0}, new double[]{1, 1}));
+        assertThat(CoverageLocalSearch.optimize(tiny)).isZero();
     }
 
     private static double totalKm(List<double[]> route) {
         double total = 0;
         for (int i = 0; i < route.size() - 1; i++) {
-            total += velomarker.service.planning.WaypointSelector.haversineKm(
-                    route.get(i), route.get(i + 1));
+            total += velomarker.service.planning.WaypointSelector.haversineKm(route.get(i), route.get(i + 1));
         }
         return total;
-    }
-
-    @Test
-    void emptyRoute_noOp() {
-        List<double[]> empty = new ArrayList<>(List.of(
-                new double[]{0, 0}, new double[]{1, 1}
-        ));
-        int swaps = CoverageLocalSearch.twoOpt(empty);
-        int moves = CoverageLocalSearch.relocate(empty);
-        assertThat(swaps).isZero();
-        assertThat(moves).isZero();
-    }
-
-    @Test
-    void windowedTwoOpt_fullWindow_matchesDefaultForSmallRoute() {
-        List<double[]> a = new ArrayList<>(List.of(
-                new double[]{0, 0}, new double[]{1, 1}, new double[]{3, 0},
-                new double[]{2, 1}, new double[]{4, 0}, new double[]{5, 0}));
-        List<double[]> b = new ArrayList<>(List.of(
-                new double[]{0, 0}, new double[]{1, 1}, new double[]{3, 0},
-                new double[]{2, 1}, new double[]{4, 0}, new double[]{5, 0}));
-        CoverageLocalSearch.twoOpt(a);             // default: małe → pełny skan
-        CoverageLocalSearch.twoOpt(b, b.size());   // jawne pełne okno
-        assertThat(totalKm(a)).isEqualTo(totalKm(b));
-    }
-
-    @Test
-    void windowedTwoOpt_neverWorsens_andKeepsAnchors() {
-        List<double[]> route = new ArrayList<>();
-        route.add(new double[]{0, 0});
-        for (int i = 1; i <= 40; i++) {
-            double jitter = (i % 2 == 0) ? 0.3 : -0.3; // lokalne zygzaki
-            route.add(new double[]{i * 0.1, jitter});
-        }
-        route.add(new double[]{4.5, 0});
-        double[] start = route.get(0);
-        double[] end = route.get(route.size() - 1);
-        double before = totalKm(route);
-        CoverageLocalSearch.twoOpt(route, 8); // wąskie okno
-        assertThat(totalKm(route)).isLessThanOrEqualTo(before + 1e-9);
-        assertThat(route.get(0)).isSameAs(start);
-        assertThat(route.get(route.size() - 1)).isSameAs(end);
     }
 }

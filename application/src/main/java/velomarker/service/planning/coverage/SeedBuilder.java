@@ -116,8 +116,7 @@ final class SeedBuilder {
         int baselineSize = baseline.size();
         List<SeedSel> scored = new ArrayList<>(pool.size());
         for (UnvisitedArea area : pool) {
-            double[] point = gminaIndex.deepestInteriorPoint(area.areaId());
-            if (point == null) point = gminaIndex.samplePointsFor(area)[0]; // fallback gdy MIC null
+            double[] point = gminaIndex.deepestInteriorPoint(area.areaId()); // MIC (fallback centroid) — nigdy null dla gmin z puli
             double distToBaseline = Double.MAX_VALUE;
             for (int j = 0; j < baselineSize; j++) {
                 double d = velomarker.service.planning.WaypointSelector.haversineKm(point, baseline.get(j));
@@ -164,6 +163,7 @@ final class SeedBuilder {
                     metrics.realGeometry(route), route,
                     metrics.realKm(route));
             if (debugGeoJson) debug.logShots("cycle" + cycle + "-entry"); // RUNDA 24: STRZAŁY na start cyklu
+            refineOrder(seed, "cycle" + cycle + "-pre-anchor");  // PEŁNE rozplątanie PRZED anchor — kotwica na rozplątanym, nie zaplątanym śladzie
             // RUNDA 24: ANCHOR-INTERSECTS — GŁÓWNY silnik pokrycia (raz na cykl). Reset wszystkich DOTYKANYCH gmin:
             //    wp na PIERWSZYM wejściu w rdzeń (≥200m) albo CENTROID (muśnięcie). Kończy 2opt. enclosedFill NIE tu —
             //    tylko na końcu seeda (holefill). Realny BRouter wchodzi dopiero w tailPruneJts (reroute przez nowe wp).
@@ -172,6 +172,7 @@ final class SeedBuilder {
                     metrics.realGeometry(route), route,
                     metrics.realKm(route));
             if (debugGeoJson) debug.logShots("cycle" + cycle + "-anchor");
+            refineOrder(seed, "cycle" + cycle + "-pre-cut");  // PEŁNE rozplątanie PRZED anchor — kotwica na rozplątanym, nie zaplątanym śladzie
             // tailPrune — DOPIERO TERAZ BRouter (reroute przez nowe wp) + tnij ogonki DO SKUTKU (bez wewn. anchora)
             int prunePasses = cycle == 0 ? 8 : 3;
             realEffort = doubleCut(seed, // RUNDA 69: cut→2opt→reroute→cut (dla pewności)
@@ -321,7 +322,7 @@ final class SeedBuilder {
         // INSTRUMENTACJA wall-time seeda (pola): reset per plan.
         tRebuildNs = tTwoOptNs = tRouteEffortNs = tEvalNs = tVisitsNs = tPruneNs = 0;
         // L2 (cięcie churnu): w grow effort SZACUJEMY z haversine×kmFactor + alpha×Δelev×climbFactor (tanio,
-        // bez BRoutera), a realny routeEffort robimy tylko CO CHECKPOINT_EVERY batchy (rekalibracja factorów)
+        // bez BRoutera), a realny routeEffort robimy tylko na świeżo rozplątanej trasie (doRefine: co 10/5 batchy progowo, rekalibracja factorów)
         // lub gdy est zbliża się do pasma (confirm-before-stop). Tnie ~8500 calli do ~2-3k. Reszta faz = REAL.
         // Jeden effort-factor: realEffort / Σhaversine, rekalibrowany na checkpoincie. (DEM/climb-factor
         // usunięte — climbFactor wychodził ~8.6, czyli prosta-DEM nic nie wnosiła; jeden factor jest prostszy
@@ -391,6 +392,8 @@ final class SeedBuilder {
         HoleFillResult hf = seedHoleFill(seed, targetEffort, realEffort);
         realEffort = hf.realEffort();
         enclosedFilled += hf.enclosedAdded();
+        refineOrder(seed, "seed");                          // FINALNY refine kolejności — rozplątanie nawrotów (or-opt+2opt, debug before/after + log)
+        realEffort = metrics.effortViaCache(route);         // pomiar po rozplątaniu (reroute uwzględnia nową kolejność)
         if (debugGeoJson) debug.logShots("seed-final");
         int densified = growNearInserted + enclosedFilled; // grow-near + ENCLOSED-FILL
         debug.skeleton("seed", route); // ADMIN DEBUG: szkielet końca seeda (przed deep loop)
@@ -468,6 +471,26 @@ final class SeedBuilder {
     }
 
 
+    /**
+     * FINALNY refine kolejności trasy (po seedzie, gdy nikt już nie sortuje po Hilbercie): pętla pełnego
+     * or-optu ({@code relocate}, przenosi wystające wp → kasuje nawroty) ↔ pełnego 2-optu (skrzyżowania)
+     * aż brak poprawy. Anchory niezmienne. Loguje Δkm + debug-skeleton PRZED i PO (wp, bez BRoutera).
+     */
+    private void refineOrder(SeedRoute seed, String phase) {
+        List<double[]> route = seed.route();
+        if (route.size() < 4) return;
+        if (debugGeoJson) debug.skeleton(phase + "-refine-before", route);   // skeleton (wp), NIE realGeometry — optimize zaraz przetasuje kolejność, routing Hilbert-krawędzi = marnotrawstwo
+        double kmBefore = metrics.haversineKm(route);
+        int wp = route.size();
+        log.info("Coverage REFINE [{}]: start havKm={}, wps={}", new Object[]{phase, Math.round(kmBefore), wp});
+        int moves = CoverageLocalSearch.optimize(route);   // grid k-nearest 2-opt + or-opt + don't-look (do zbieżności)
+        double kmAfter = metrics.haversineKm(route);
+        log.info("Coverage REFINE [{}]: havKm {}→{} (Δ{}), ruchów={}, wps={}",
+                new Object[]{phase, Math.round(kmBefore), Math.round(kmAfter), Math.round(kmAfter - kmBefore),
+                        moves, wp});
+        if (debugGeoJson) debug.skeleton(phase + "-refine-after", route);    // skeleton — realGeometry rozplątanej trasy renderuje wołający (checkpoint round-batch-real / cycle-*-real), bez duplikatu
+    }
+
     private double tailPruneJts2(SeedRoute seed, double targetEffort, int maxPasses, String debugPhase) {
         return new SpurCutter(ctx, findGminaCached, seed, targetEffort, maxPasses, debugPhase).run();
     }
@@ -541,8 +564,7 @@ final class SeedBuilder {
             holes.sort((x, y) -> Double.compare(gminaIndex.distToRoute(x, route), gminaIndex.distToRoute(y, route)));
             List<SeedSel> added = new ArrayList<>();
             for (UnvisitedArea a : holes) {
-                double[] ep = gminaIndex.deepestInteriorPoint(a.areaId()); // RUNDA 51: najgłębszy
-                if (ep == null) ep = GeometryUtil.sampleNearestToGeometry(gminaIndex.samplePointsFor(a), null, geom);
+                double[] ep = gminaIndex.deepestInteriorPoint(a.areaId()); // RUNDA 51: najgłębszy (MIC, fallback centroid)
                 if (ep == null) continue;
                 SeedSel sel = new SeedSel(a, ep, ordering.orderKey(ep),
                         ENCLOSED_PROTECTED_SCORE, GeometryUtil.minDistToBaselineKm(ep, baseline));
@@ -693,8 +715,7 @@ final class SeedBuilder {
                 boolean island = edgeRouter.failedEdges().contains(GeometryUtil.edgeKey(route.get(i - 1), cur))
                         || edgeRouter.failedEdges().contains(GeometryUtil.edgeKey(cur, route.get(i + 1)));
                 if (gv != 0 && !island) continue;
-                // NIEOSIĄGALNA: próba 0: route-nearest sample (płytko, od strony trasy).
-                // Próba 1: centroid (najgłębiej). Wyczerpane → wyspa, usuń.
+                // NIEOSIĄGALNA: próba 0: deepestInteriorPoint (MIC). Próba 1: centroid. Wyczerpane → wyspa, usuń.
                 unreachable++;
                 if (g == null) {
                     toRemove.add(cur);
@@ -704,11 +725,10 @@ final class SeedBuilder {
                 int att = entryAttempt.getOrDefault(id, 0);
                 double[] alt = null;
                 if (att == 0) {
-                    double[][] samples = gminaIndex.samplePointsFor(g);
-                    alt = GeometryUtil.sampleNearestToGeometry(samples, cur, ev.geometry()); // od strony trasy
-                } else if (att == 1) {
-                    alt = gminaIndex.deepestInteriorPoint(g.areaId());           // RUNDA 51: najgłębszy (nie centroid)
+                    alt = gminaIndex.deepestInteriorPoint(g.areaId());           // próba 0: MIC (najgłębszy; fallback centroid)
                     if (alt == null) alt = new double[]{g.lng(), g.lat()};
+                } else if (att == 1) {
+                    alt = new double[]{g.lng(), g.lat()};                        // próba 1: centroid
                 }
                 if (alt != null && (alt[0] != cur[0] || alt[1] != cur[1])) {
                     ops.swapEntry(selected, cur, alt, baseline);
@@ -745,7 +765,7 @@ final class SeedBuilder {
         List<double[]> anchorOnly = seed.anchorOnly();
         List<double[]> baseline = seed.baseline();
         double[] baseCum = seed.baseCum();
-        final int round = 0, BATCH = 20, CHECKPOINT_EVERY = 5, PROGRESS_EVERY = 500;
+        final int round = 0, BATCH = 20, PROGRESS_EVERY = 500;
         int idx = 0, lastProgressMilestone = 0, pruned = 0, retried = 0;
         double realEffort = 0;
         long roundStartTs = System.currentTimeMillis();
@@ -767,17 +787,19 @@ final class SeedBuilder {
             long _tReb = System.nanoTime();
             ops.rebuildOrdered(seed);
             tRebuildNs += System.nanoTime() - _tReb;
-            // 2-opt incremental po każdym batchu (window ±80 od końca trasy = lokalne ulepszenia),
-            // PEŁNY twoOpt co 5 batchy = 100 obszarów = global cleanup. Dla FR 34746 obszarów / 5
-            // batchy 20 = 347 pełnych twoOpt zamiast 1737 → ~5× szybsze (z 4h 16min do ~1-1.5h
-            // łącznie z routeEffortViaCache). Dla małych scope (≤500 wp) twoOpt(route) i tak
-            // wewnętrznie robi pełen skan (FULL_SCAN_MAX), więc bez regresji.
+            // Rozplątanie (k-nearest 2-opt+or-opt) progowo: <80% budżetu co 10 batchy, ≥80% co 5.
+            // Do 80% (większość gmin) rzadszy pomiar realEffort tnie strzały BRoutera; init-grow to
+            // tylko estymata effortFactor — finalne rozplątanie robi compact-loop. Między paczkami tani
+            // optimize (haversine, nie strzela) trzyma estymatę rozplątaną dla precise/hiBand.
             batchCounter++;
+            // rozplątanie+pomiar progowo: <80% budżetu co 10 batchy, ≥80% (precise) co 5 — aż growCeiling (110%)
+            int refineFreq = precise ? 5 : 10;
+            boolean doRefine = batchCounter % refineFreq == 0;
             long _tTwo = System.nanoTime();
-            if (precise || batchCounter % 5 == 0) {
-                ops.twoOpt(route, "init-grow-batch" + batchCounter);
+            if (doRefine) {
+                refineOrder(seed, "init-grow-batch" + batchCounter);  // PEŁNE rozplątanie (k-nearest 2-opt+or-opt) → BRouter checkpoint mierzy ROZPLĄTANY ślad → realniejszy effortFactor → więcej gmin
             } else {
-                CoverageLocalSearch.twoOptIncremental(route, route.size() - 1, 80);
+                CoverageLocalSearch.optimize(route);                 // tani k-nearest między checkpointami (haversine, nie strzela)
             }
             tTwoOptNs += System.nanoTime() - _tTwo;
             // L2: tani estymator effortu = Σhaversine × effortFactor. Realny BRouter tylko na checkpoincie
@@ -785,9 +807,8 @@ final class SeedBuilder {
             double hav = metrics.haversineKm(route);
             double estEffort = hav * effortFactor;
             // batchCounter==1: wczesna kalibracja effortFactor (init 1.69 zaniża → bez tego małe plany
-            // przestrzeliwały do 129% zanim 1. checkpoint trafił w %5). Potem co CHECKPOINT_EVERY.
-            boolean doReal = (batchCounter == 1) || (batchCounter % CHECKPOINT_EVERY == 0) || estEffort >= hiBand
-                    || precise; // od 80% budżetu real co batch (est bywa nieświeży po prune)
+            // przestrzeliwały do 129% zanim 1. checkpoint trafił). Potem co doRefine (10/5 batchy progowo).
+            boolean doReal = (batchCounter == 1) || doRefine || estEffort >= hiBand; // pomiar tylko na świeżo rozplątanej trasie (doRefine) + confirm-before-stop gdy est dobija do hiBand
             if (doReal) {
                 long _tRE = System.nanoTime();
                 realEffort = metrics.effortViaCache(route);

@@ -1,5 +1,6 @@
 package eu.cokeman.velomarker.out;
 
+import btools.mapaccess.MatchedWaypoint;
 import btools.router.OsmNodeNamed;
 import btools.router.OsmPathElement;
 import btools.router.OsmTrack;
@@ -316,12 +317,19 @@ public class EmbeddedBrouterRoutingClient implements BrouterRoutingClient {
             coordList.add(new double[]{microdegreesToLon(n.getILon()), microdegreesToLat(n.getILat())});
         }
         double distMeters = track.distance;
+        // Crosspoint = gdzie BRouter REALNIE posadził pierwszy/ostatni wp na drodze (snap). Czytane ZAWSZE
+        // (nie tylko przy snapLogging) — coverage używa go do crosspoint-aware pokrycia.
+        // UWAGA btools: getMatchedWaypoint(i) szuka matched gdzie indexInTrack==i (pozycja w GEOMETRII track.nodes,
+        // NIE i-ty wp!) — koniec edge ma indexInTrack≈N_nodów-1, więc getMatchedWaypoint(size-1) zwraca null.
+        // Koniec trzymany jest w OSOBNYM polu track.endPoint. Start ma indexInTrack==0 → getMatchedWaypoint(0) OK.
+        double[] cpStart = crosspointOf(track.getMatchedWaypoint(0));
+        double[] cpEnd = crosspointOf(track.endPoint);
 
         if (!computeStats) {
             // Skip cały stats + flatSpans build. FlatSpans potrzebne tylko do korekcji wysokości tuneli,
             // a planning Coverage probing calls geometrii nie używają do elevation — używają jej do oceny
             // cost'u w cache. Zostawiamy empty by oszczędzić ~kilka ms × 10k calls = sekundy CPU.
-            return new RouteCalculation(coordList, distMeters / 1000.0, List.of(), RouteStats.empty());
+            return new RouteCalculation(coordList, distMeters / 1000.0, List.of(), RouteStats.empty(), cpStart, cpEnd);
         }
 
         List<String> aggregated = track.aggregateMessages();
@@ -345,7 +353,17 @@ public class EmbeddedBrouterRoutingClient implements BrouterRoutingClient {
             RouteStatsLogger.log(log, track, profile);
         }
 
-        return new RouteCalculation(coordList, distMeters / 1000.0, flatSpans, stats);
+        return new RouteCalculation(coordList, distMeters / 1000.0, flatSpans, stats, cpStart, cpEnd);
+    }
+
+    /** Crosspoint (snap punkt) matched-waypointu — gdzie BRouter posadził go na drodze; null gdy brak. Defensywnie. */
+    private double[] crosspointOf(MatchedWaypoint mw) {
+        try {
+            if (mw == null || mw.crosspoint == null) return null;
+            return new double[]{microdegreesToLon(mw.crosspoint.getILon()), microdegreesToLat(mw.crosspoint.getILat())};
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     /**

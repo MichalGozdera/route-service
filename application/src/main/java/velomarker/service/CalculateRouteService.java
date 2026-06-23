@@ -61,7 +61,8 @@ public class CalculateRouteService implements CalculateRouteUseCase {
         long tEnrichStart = System.currentTimeMillis();
         List<double[]> withZ = enrichWithElevation(result.coordinates(), result.flatSpans());
         recordEnrichTiming(System.currentTimeMillis() - tEnrichStart);
-        return new RouteCalculation(withZ, result.distanceKm(), result.flatSpans(), result.stats());
+        return new RouteCalculation(withZ, result.distanceKm(), result.flatSpans(), result.stats(),
+                result.crosspointStart(), result.crosspointEnd());
     }
 
     private void recordEnrichTiming(long elapsedMs) {

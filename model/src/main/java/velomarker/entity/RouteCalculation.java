@@ -15,13 +15,19 @@ public record RouteCalculation(
         List<double[]> coordinates,
         double distanceKm,
         List<int[]> flatSpans,
-        RouteStats stats
+        RouteStats stats,
+        double[] crosspointStart,
+        double[] crosspointEnd
 ) {
     public RouteCalculation(List<double[]> coordinates, double distanceKm) {
-        this(coordinates, distanceKm, List.of(), RouteStats.empty());
+        this(coordinates, distanceKm, List.of(), RouteStats.empty(), null, null);
     }
 
     public RouteCalculation(List<double[]> coordinates, double distanceKm, List<int[]> flatSpans) {
-        this(coordinates, distanceKm, flatSpans, RouteStats.empty());
+        this(coordinates, distanceKm, flatSpans, RouteStats.empty(), null, null);
+    }
+
+    public RouteCalculation(List<double[]> coordinates, double distanceKm, List<int[]> flatSpans, RouteStats stats) {
+        this(coordinates, distanceKm, flatSpans, stats, null, null);
     }
 }

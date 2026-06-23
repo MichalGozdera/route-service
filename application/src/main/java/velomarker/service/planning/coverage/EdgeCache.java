@@ -18,10 +18,15 @@ import java.util.function.Function;
  */
 public class EdgeCache {
 
-    public record EdgeInfo(double distanceKm, double climbM, double effort, java.util.List<double[]> geometry) {
+    public record EdgeInfo(double distanceKm, double climbM, double effort, java.util.List<double[]> geometry,
+                           double[] crosspointA, double[] crosspointB) {
         /** 3-arg bez geometrii (testy / fallbacky które nie potrzebują polyline). */
         public EdgeInfo(double distanceKm, double climbM, double effort) {
-            this(distanceKm, climbM, effort, java.util.List.of());
+            this(distanceKm, climbM, effort, java.util.List.of(), null, null);
+        }
+        /** 4-arg z geometrią, bez crosspointów (sliced-seed / fallback haversine). */
+        public EdgeInfo(double distanceKm, double climbM, double effort, java.util.List<double[]> geometry) {
+            this(distanceKm, climbM, effort, geometry, null, null);
         }
     }
 

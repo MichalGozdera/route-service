@@ -78,8 +78,17 @@ final class RouteMetrics {
     List<double[]> realGeometry(List<double[]> route) {
         List<double[]> geom = new ArrayList<>();
         for (int i = 0; i < route.size() - 1; i++) {
-            List<double[]> seg = edges.edge(route.get(i), route.get(i + 1)).geometry();
+            EdgeCache.EdgeInfo info = edges.edge(route.get(i), route.get(i + 1));
+            List<double[]> seg = info.geometry();
             if (seg == null || seg.isEmpty()) continue;
+            // crosspoint-injection: na styku wstaw snap(route[i]) = crosspointA(edge_i) PRZED segmentem — geometria
+            // BRoutera (track.nodes) sam crosspoint pomija, a deeplyVisitedAreaIds ma liczyć pokrycie na realnym snapie wp.
+            // crosspointA (START edge'a, =getMatchedWaypoint(0)) to JEDYNE pewne źródło snapu w btools (koniec=null).
+            double[] cp = info.crosspointA();
+            if (cp != null && !geom.isEmpty()
+                    && velomarker.service.planning.WaypointSelector.haversineKm(geom.get(geom.size() - 1), cp) > 0.002) {
+                geom.add(cp.clone());
+            }
             int from = geom.isEmpty() ? 0 : 1;
             for (int j = from; j < seg.size(); j++) geom.add(seg.get(j));
         }

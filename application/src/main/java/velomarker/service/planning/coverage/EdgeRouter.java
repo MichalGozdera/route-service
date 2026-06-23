@@ -55,7 +55,8 @@ final class EdgeRouter {
                     try { climbM = elevation.sample(calc.coordinates(), calc.coordinates().size()).gainM(); }
                     catch (RuntimeException ignored) { /* brak DEM dla edge → 0 climb */ }
                 }
-                return new EdgeCache.EdgeInfo(km, climbM, km + alpha * climbM, calc.coordinates());
+                return new EdgeCache.EdgeInfo(km, climbM, km + alpha * climbM, calc.coordinates(),
+                        calc.crosspointStart(), calc.crosspointEnd());
             } catch (RuntimeException e) {
                 cache.onRealCall();
                 // BRouter nie policzył (target-island / brak drogi) → zapamiętaj jako wyspę (seed prune usunie wp).
@@ -116,8 +117,8 @@ final class EdgeRouter {
         double total = Math.max(0.001, h1 + h2);
         double d1 = full.distanceKm() * (h1 / total), d2 = full.distanceKm() * (h2 / total);
         double c1 = full.climbM() * (h1 / total), c2 = full.climbM() * (h2 / total);
-        cache.getOrCompute(a[0], a[1], point[0], point[1], pts -> new EdgeCache.EdgeInfo(d1, c1, d1 + alpha * c1, g1));
-        cache.getOrCompute(point[0], point[1], b[0], b[1], pts -> new EdgeCache.EdgeInfo(d2, c2, d2 + alpha * c2, g2));
+        cache.getOrCompute(a[0], a[1], point[0], point[1], pts -> new EdgeCache.EdgeInfo(d1, c1, d1 + alpha * c1, g1, full.crosspointA(), null));
+        cache.getOrCompute(point[0], point[1], b[0], b[1], pts -> new EdgeCache.EdgeInfo(d2, c2, d2 + alpha * c2, g2, null, full.crosspointB()));
     }
 
     /** Po cięciu spurów przeroutuj REALNIE legi zasilone slicem (przybliżenie) → ujawnia wtórniaki. */

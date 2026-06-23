@@ -29,12 +29,12 @@ final class SeedOps {
     /** 2-opt (haversine, tylko skraca); gdy debugGeoJson — loguje Δ długości i fazę. */
     void twoOpt(List<double[]> route, String phase) {
         if (!debugGeoJson) {
-            CoverageLocalSearch.twoOpt(route);
+            CoverageLocalSearch.optimize(route);
             return;
         }
         double kmBefore = metrics.haversineKm(route);
         int wp = route.size();
-        CoverageLocalSearch.twoOpt(route);
+        CoverageLocalSearch.optimize(route);
         double kmAfter = metrics.haversineKm(route);
         log.info("Coverage 2-OPT [{}]: havKm {}→{} (Δ{}), wps={}", new Object[]{phase,
                 Math.round(kmBefore), Math.round(kmAfter), Math.round(kmAfter - kmBefore), wp});

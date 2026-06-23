@@ -161,7 +161,9 @@ final class ChunkedBrouterRouter {
             log.info(velomarker.service.RouteStatsFormatter.format(aggregatedStats,
                     "Statystyki całej trasy (chunked, profil: " + profile + ")"));
         }
-        return new RouteCalculation(mergedCoords, totalDistKm, java.util.List.of(), aggregatedStats);
+        return new RouteCalculation(mergedCoords, totalDistKm, java.util.List.of(), aggregatedStats,
+                results.isEmpty() ? null : results.get(0).crosspointStart(),
+                results.isEmpty() ? null : results.get(results.size() - 1).crosspointEnd());
     }
 
     /**
@@ -303,7 +305,9 @@ final class ChunkedBrouterRouter {
                 if (!right.coordinates().isEmpty()) {
                     coords.addAll(right.coordinates().subList(1, right.coordinates().size())); // pomiń overlap
                 }
-                return new RouteCalculation(coords, left.distanceKm() + right.distanceKm());
+                return new RouteCalculation(coords, left.distanceKm() + right.distanceKm(),
+                        java.util.List.of(), velomarker.entity.RouteStats.empty(),
+                        left.crosspointStart(), right.crosspointEnd());
             }
         }
     }

@@ -135,6 +135,7 @@ final class CoverageDebug {
         int total = 0, deep = 0, deeplyCovered = 0;
         Set<Integer> wpDeep220 = new HashSet<>();
         String noDeepStr = "";
+        String shallowStr = "";
         if (gminaIndex != null) {
             Map<Integer, Integer> visits = SeedBuilder.countVisitsPerArea(geometry, gminaIndex);
             total = visits.size(); // pełny wielokąt (findGminaForPoint) — DOTKNIĘTE, w tym muśnięte (<200m)
@@ -145,7 +146,18 @@ final class CoverageDebug {
             areasStr = byCat.toString();
             Set<Integer> deepCov = gminaIndex.visitedAreaIds(geometry);
             deep = deepCov.size();
-            deeplyCovered = gminaIndex.deeplyVisitedAreaIds(geometry).size(); // gminy gdzie ślad wchodzi ≥220m
+            Set<Integer> deeplyCov = gminaIndex.deeplyVisitedAreaIds(geometry); // gminy gdzie ślad wchodzi ≥220m
+            deeplyCovered = deeplyCov.size();
+            Map<Integer, String> idName = new java.util.HashMap<>();
+            for (double[] p : geometry) {
+                UnvisitedArea a = gminaIndex.findGminaForPoint(p[0], p[1]);
+                if (a != null) idName.putIfAbsent(a.areaId(), a.name());
+            }
+            // gminy DOTKNIĘTE, w które ślad NIE wchodzi ≥220m (snap spłycił mimo wp ≥220m w punkcie)
+            List<String> shallow = new ArrayList<>();
+            for (int gid : visits.keySet()) if (!deeplyCov.contains(gid)) shallow.add(idName.getOrDefault(gid, "id" + gid));
+            shallow.sort(null);
+            shallowStr = " | ślad<220m(" + shallow.size() + "): " + (shallow.size() < 50 ? shallow : "...");
             if (waypoints != null) {
                 Set<Integer> wpDeep = new HashSet<>();
                 for (double[] wp : waypoints) {
@@ -153,11 +165,6 @@ final class CoverageDebug {
                     if (a != null) wpDeep.add(a.areaId());
                     UnvisitedArea a220 = gminaIndex.findDeeplyCreditedGminaForPoint(wp[0], wp[1]);
                     if (a220 != null) wpDeep220.add(a220.areaId());
-                }
-                Map<Integer, String> idName = new java.util.HashMap<>();
-                for (double[] p : geometry) {
-                    UnvisitedArea a = gminaIndex.findGminaForPoint(p[0], p[1]);
-                    if (a != null) idName.putIfAbsent(a.areaId(), a.name());
                 }
                 List<String> noDeep = new ArrayList<>();
                 for (int gid : deepCov) if (!wpDeep.contains(gid)) noDeep.add(idName.getOrDefault(gid, "id" + gid));
@@ -182,8 +189,8 @@ final class CoverageDebug {
             dups.sort(null);
             dupStr = dups.size() + " " + dups;
         }
-        log.info("ROUTE-STATS [{}]: dist={} km, climb={} m, effort={} budżetu, wps={}, gminy={} (≥200m: {}, ≥220m: {}) {} | dup-wp={} | wp≥220m={}{}",
-                new Object[]{phase, Math.round(km), Math.round(climb), budgetStr, wps, total, deep, deeplyCovered, areasStr, dupStr, wpDeep220.size(), noDeepStr});
+        log.info("ROUTE-STATS [{}]: dist={} km, climb={} m, effort={} budżetu, wps={}, gminy={} (≥200m: {}, ≥220m: {}) {} | dup-wp={} | wp≥220m={}{}{}",
+                new Object[]{phase, Math.round(km), Math.round(climb), budgetStr, wps, total, deep, deeplyCovered, areasStr, dupStr, wpDeep220.size(), noDeepStr, shallowStr});
     }
 
     private static void appendCoords(StringBuilder sb, List<double[]> pts) {
