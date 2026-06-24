@@ -1,6 +1,7 @@
 package velomarker.service.planning;
 
 import org.junit.jupiter.api.Test;
+import velomarker.entity.planning.AreaPart;
 import velomarker.entity.planning.UnvisitedArea;
 
 import java.util.ArrayList;
@@ -14,7 +15,7 @@ class WaypointSelectorTest {
     private final WaypointSelector selector = new WaypointSelector();
 
     private static UnvisitedArea area(int id, double lng, double lat) {
-        return UnvisitedArea.level(id, "A" + id, lat, lng, null, 1, 1, "gmina");
+        return UnvisitedArea.levelMulti(id, "A" + id, lat, lng, List.of(new AreaPart(null, null)), 1, 1, "gmina");
     }
 
     /** Mała kwadratowa gmina wokół punktu (lng, lat) o boku ~5 km. */

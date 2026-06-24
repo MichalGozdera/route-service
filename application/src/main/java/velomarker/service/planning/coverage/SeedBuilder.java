@@ -2,7 +2,6 @@ package velomarker.service.planning.coverage;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import velomarker.entity.RouteCalculation;
 import velomarker.entity.planning.RoutePreferences;
 import velomarker.entity.planning.UnvisitedArea;
 import velomarker.entity.planning.Waypoint;
@@ -88,24 +87,7 @@ final class SeedBuilder {
         this.ops = new SeedOps(ordering, metrics, debugGeoJson);
         this.ctx = new SeedContext(edgeRouter, metrics, gminaIndex, ordering, pool, rewards, debug, ops, debugGeoJson, snapToggle);
     }
-    /**
-     * SEED przez BASELINE-PROJECTION — O(N log N), zamiast cheapest-insertion O(N × E² × S).
-     *
-     * <p>Iter 11 perf fix. Stary seed (cheapest insertion) skanował wszystkie N kandydatów ×
-     * wszystkie krawędzie trasy (rosnące do ~400) × S sample points per insert → miliardy
-     * operacji haversine dla gęstych klastrów (np. 3621 gmin CZ, NN 2,3 km). Zjadał cały
-     * budżet czasu (4 min), SA nie dostawał ani jednej iteracji.
-     *
-     * <p>Nowy algorytm:
-     * <ol>
-     *   <li>Per area: najbliższy sample point do baseline + jego projekcja (cumKm wzdłuż baseline)
-     *       + reward/corridor score.</li>
-     *   <li>Sort po score DESC, greedy take aż effort_proxy ≈ targetEffort.</li>
-     *   <li>Wybrane + anchory posortuj po projekcji ASC → trasa płynie wzdłuż korytarza
-     *       start→via→end, zbierając obszary po drodze.</li>
-     * </ol>
-     * Korzyść podwójna: szybkość (O(N log N)) + silne trzymanie korytarza (Fix 1).
-     */
+
     /**
      * FAZA 1 seeda: dla każdej gminy licz punkt (najgłębszy interior / fallback sample), jego odległość
      * od korytarza (baseline) i score = reward/detour; zwróć listę posortowaną wg distBase ważonego
@@ -149,11 +131,6 @@ final class SeedBuilder {
     private double seedCompactLoop(SeedRoute seed, double hiBand,
                                    double targetEffort, double realEffort, int[] growNearAcc) {
         List<double[]> route = seed.route();
-        List<SeedSel> selected = seed.selected();
-        List<double[]> anchorOnly = seed.anchorOnly();
-        List<double[]> anchors = seed.anchors();
-        List<double[]> baseline = seed.baseline();
-        double[] baseCum = seed.baseCum();
         for (int cycle = 0; cycle < 8; cycle++) {
             long cycleCallsStart = edgeRouter.realCalls(); // v3.18: realne strzały (nie misses)
             // v3.20: cycle-start 2opt USUNIĘTY — był NO-OP (INIT-GROW + grow/enclosed/prune 2opt-ują
@@ -173,9 +150,12 @@ final class SeedBuilder {
                     metrics.realKm(route));
             if (debugGeoJson) debug.logShots("cycle" + cycle + "-anchor");
             refineOrder(seed, "cycle" + cycle + "-pre-cut");  // PEŁNE rozplątanie PRZED anchor — kotwica na rozplątanym, nie zaplątanym śladzie
+            if (debugGeoJson) debug.geometry("cycle" + cycle + "-precut-real",
+                    metrics.realGeometry(route), route,
+                    metrics.realKm(route));
             // tailPrune — DOPIERO TERAZ BRouter (reroute przez nowe wp) + tnij ogonki DO SKUTKU (bez wewn. anchora)
             int prunePasses = cycle == 0 ? 8 : 3;
-            realEffort = doubleCut(seed, // RUNDA 69: cut→2opt→reroute→cut (dla pewności)
+            realEffort = tailPruneJts2(seed, // RUNDA 69: cut→2opt→reroute→cut (dla pewności)
                     targetEffort, prunePasses,
                     "cycle" + cycle + "-tailprune-real");
             if (debugGeoJson) debug.logShots("cycle" + cycle + "-cut");
@@ -230,10 +210,7 @@ final class SeedBuilder {
                                         double realEffort) {
         List<double[]> route = seed.route();
         List<SeedSel> selected = seed.selected();
-        List<double[]> anchorOnly = seed.anchorOnly();
-        List<double[]> anchors = seed.anchors();
         List<double[]> baseline = seed.baseline();
-        double[] baseCum = seed.baseCum();
         Set<Integer> visitedHF = gminaIndex.visitedAreaIds(
                 metrics.realGeometry(route));
         Set<Integer> enclosedHF = gminaIndex.enclosedUnvisited(visitedHF);
@@ -261,7 +238,7 @@ final class SeedBuilder {
                 metrics.realGeometry(route), route,
                 metrics.realKm(route));
         if (debugGeoJson) debug.logShots("holefill-anchor");
-        realEffort = doubleCut(seed, targetEffort, 3, "holefill-tailprune-real");
+        realEffort = tailPruneJts2(seed, targetEffort, 3, "holefill-tailprune-real");
         return new HoleFillResult(realEffort, enclosedAdded);
     }
 
@@ -273,7 +250,7 @@ final class SeedBuilder {
      */
     private double seedTrim(SeedRoute seed, double hiBand, double targetEffort, double realEffort,
                             int[] trimmedAcc, int[] growNearAcc) {
-        Trimmer run = new Trimmer(ctx, findGminaCached, seed, hiBand, targetEffort, realEffort);
+        Trimmer run = new Trimmer(ctx, seed, hiBand, targetEffort, realEffort);
         double result = run.run();
         trimmedAcc[0] += run.trimmed();
         growNearAcc[0] += run.growNearAdded();
@@ -307,8 +284,6 @@ final class SeedBuilder {
         List<SeedSel> selected = new ArrayList<>();
         // Stan trasy seeda zgrupowany — fazy (anchor/prune/grow) dostają jeden obiekt zamiast 6 kolekcji.
         SeedRoute seed = new SeedRoute(route, selected, anchorOnly, anchors, baseline, baseCum);
-        int idx = 0;
-        final int BATCH = 20;
         // Pasmo budżetu (v3): INIT-GROW celuje w [1.00, 1.05]×budget, potem COMPACT-LOOP
         // {2opt → tailPrune → grow-near} domyka do ~100% bez dziur i ogonków. Zastępuje
         // DEEP-BATCH oraz wielorundowy grow ze scored-tail (dalekie gminy, skoki 90%→128%).
@@ -342,12 +317,7 @@ final class SeedBuilder {
         this.findGminaCached = pt -> gminaPointCache.computeIfAbsent(
                 String.format(java.util.Locale.ROOT, "%.6f,%.6f", pt[0], pt[1]),
                 k -> gminaIndex.findGminaForPoint(pt[0], pt[1]));
-        // Progress reporting: dla mega-scope (Francja 35k komun) seed trwa 3-6h.
-        // User nie wie czy plan dalej pracuje czy wisi. Logujemy co PROGRESS_EVERY obszarów
-        // + na początku każdej rundy → user widzi ETA na podstawie tempa.
-        final int PROGRESS_EVERY = 500;
         this.seedStartTs = System.currentTimeMillis();
-        int lastProgressMilestone = 0;
         log.info("Coverage seed grow START: pool={} obszarów, target effort={} ({}/dzień × {}d)",
                 new Object[]{scored.size(), Math.round(targetEffort),
                         Math.round(targetEffort / Math.max(1, route.size())), route.size()});
@@ -400,11 +370,18 @@ final class SeedBuilder {
         if (debugGeoJson) debug.geometry("seed-real", metrics.realGeometry(route), route,
                 metrics.realKm(route));
 
+        logSeedSummary(selected.size(), route.size(), totalPruned, trimmed, densified, totalRetried, realEffort, targetEffort);
+        logTopLongLegs(route);
+    }
+
+    /** Loguje podsumowanie seeda: rozmiar/effort, rozbicie wall-time (PHASE BREAKDOWN), L2 i STRZAŁY per powód. */
+    private void logSeedSummary(int selectedSize, int routeSize, int totalPruned, int trimmed, int densified,
+                               int totalRetried, double realEffort, double targetEffort) {
         log.info("Coverage seed ({}): +{} obszarów, removed={} islands, trimmed={}, grow-near={}, retried={} entry-points, real effort={}/{} ({}%) [v3.8: init-grow + compact-loop(grow→2opt→anchor→enclosed→tailPrune→topup)], route size={}",
-                new Object[]{"distBase-sort", selected.size(), totalPruned,
+                new Object[]{"distBase-sort", selectedSize, totalPruned,
                         trimmed, densified, totalRetried,
                         Math.round(realEffort), Math.round(targetEffort),
-                        Math.round(realEffort * 100.0 / targetEffort), route.size()});
+                        Math.round(realEffort * 100.0 / targetEffort), routeSize});
         // INSTRUMENTACJA: rozbicie wall-time seeda. routeEffort = BRouter (równoległy) + sumowanie;
         // rebuild/2opt/eval/visits/prune = NASZ single-thread (multithread go NIE przyspiesza).
         long seedWallS = (System.currentTimeMillis() - seedStartTs) / 1000;
@@ -428,8 +405,13 @@ final class SeedBuilder {
                         byReason.getOrDefault("pomiar", 0L),
                         byReason.getOrDefault("inne", 0L),
                         edgeRouter.realCalls(), edgeRouter.misses()});
-        // DIAGNOSTYKA: top-K najdłuższych legów (hav km / real km / ile RÓŻNYCH gmin kredytują). Duże #gmin =
-        // konieczny transit (OK); #gmin≈0 = pusty TSP-nawrót (kandydat do naprawy). getEdge = cache (bez BRoutera).
+    }
+
+    /**
+     * DIAGNOSTYKA: top-K najdłuższych legów (hav km / real km / ile RÓŻNYCH gmin kredytują). Duże #gmin =
+     * konieczny transit (OK); #gmin≈0 = pusty TSP-nawrót (kandydat do naprawy). getEdge = cache (bez BRoutera).
+     */
+    private void logTopLongLegs(List<double[]> route) {
         final int LEG_TOPK = 15;
         List<Integer> legIdx = new ArrayList<>();
         for (int i = 0; i < route.size() - 1; i++) legIdx.add(i);
@@ -453,22 +435,6 @@ final class SeedBuilder {
     }
 
 
-    /**
-     * RUNDA 69 — PODWÓJNE CIĘCIE „dla pewności": cut → 2opt → reroute → cut. Po pierwszym cięciu 2-opt przestawia
-     * kolejność wp (haversine), a drugie cięcie {@code tailPruneJts2(phase+"-recut")} liczy legGminas przez getEdge
-     * NOWYCH par = nowy wariant trasy z BRoutera, i tnie wtórne ogonki. Oba cięcia mają RÓŻNE phase → każdy emituje
-     * własny komplet logów (TAIL-PRUNE v6 / USUNIĘTE-OGONKI / SPUR-ANATOMIA) + debugGeometry. Zwraca effort po cut2.
-     */
-    private double doubleCut(SeedRoute seed, double targetEffort, int maxPasses, String phase) {
-        List<double[]> route = seed.route();
-        List<SeedSel> selected = seed.selected();
-        List<double[]> anchors = seed.anchors();
-        List<double[]> baseline = seed.baseline();
-        double[] baseCum = seed.baseCum();
-        tailPruneJts2(seed, targetEffort, maxPasses, phase);
-        ops.twoOpt(route, phase + "-recut2opt");
-        return tailPruneJts2(seed, targetEffort, maxPasses, phase + "-recut");
-    }
 
 
     /**
@@ -492,14 +458,8 @@ final class SeedBuilder {
     }
 
     private double tailPruneJts2(SeedRoute seed, double targetEffort, int maxPasses, String debugPhase) {
-        return new SpurCutter(ctx, findGminaCached, seed, targetEffort, maxPasses, debugPhase).run();
+        return new SpurCutter(ctx, seed, targetEffort, maxPasses, debugPhase).run();
     }
-
-
-
-    /* RUNDA 11: deleteSweepCoveredElse USUNIĘTE — unifikacja USUŃ→PRZESUŃ (anchor inline po deletach w passie)
-       trzyma pokrycie na bieżąco, więc nie ma „chwilowych tranzytów" do dosprzątania osobnym sweepem. */
-
 
     /**
      * GROW-NEAR v3.8 — BATCH-GROW (wzorzec init-grow, decyzja usera): batche po {@code batchSize} +
@@ -524,10 +484,6 @@ final class SeedBuilder {
      * otoczona dziura w środku blobu jest gorsza niż przestrzał budżetu (decyzja usera 2026-06-12).
      */
     static final double ENCLOSED_PROTECTED_SCORE = Double.MAX_VALUE;
-    /**
-     * Próg otoczenia dla ENCLOSED-FILL: 1.0 = wszystkie 8/8 k-NN sąsiadów zaliczone (decyzja usera).
-     */
-    private static final double ENCLOSED_THRESHOLD = 1.0;
 
     /**
      * ENCLOSED-FILL (v3.4, decyzja usera): seed KOŃCZY się gwarancją braku DZIUR — gmin otoczonych
@@ -541,9 +497,7 @@ final class SeedBuilder {
     private int enclosedFill(SeedRoute seed, double targetEffort) {
         List<double[]> route = seed.route();
         List<SeedSel> selected = seed.selected();
-        List<double[]> anchorOnly = seed.anchorOnly();
         List<double[]> baseline = seed.baseline();
-        double[] baseCum = seed.baseCum();
         long callsStart = edgeRouter.realCalls(); // v3.18: realne strzały (nie misses)
         edgeRouter.setReason("dziura-otoczona"); // v3.16: ENCLOSED-FILL = łatanie dziur otoczonych
         int filled = 0;
@@ -624,22 +578,6 @@ final class SeedBuilder {
 
 
     /**
-     * RECONCILE PO FINALE: wpina nieodwiedzone gminy blisko REALNEJ finalnej trasy. Densify działał na
-     * geometrii seeda (z waypointów); po realnym chunked BRouterze trasa się przesuwa, odsłaniając gminy
-     * które realna droga mija ≤R, ale ich nie zalicza. Dla każdej (najbliższe pierwsze) cheapest-insertion
-     * entry-pointu do {@code route} (zachowuje kolejność 2-opt), z bramką budżetu (effort ≤ 110%), potem
-     * re-route. Mutuje {@code route}. Zwraca nową {@link RouteCalculation} (lub wejściową gdy nic nie dodano).
-     */
-    /**
-     * Sumaryczny wznios liczony OKNAMI (≤{@value #CLIMB_WINDOW_PTS} pkt/okno). {@code elevation.sample}
-     * capuje liczbę próbek (~500), więc JEDEN sample na 2000+ km alpejskich rażąco zaniża climb — przez
-     * to reconcile myślał, że ma budżet i balonował go (do ~179%). Próbkowanie oknami trzyma gęstość
-     * ~kilkadziesiąt m/próbkę niezależnie od długości trasy → realny wznios do bramki budżetu.
-     */
-    private static final int CLIMB_WINDOW_PTS = 400;
-
-
-    /**
      * Liczba ODRĘBNYCH wizyt per gmina (segmenty geometrii w ringu oddzielone gap > 10 km).
      * ≥2 = gmina pokryta w kilku miejscach trasy → jej explicit waypoint jest redundantny (stub
      * można wyrzucić, naturalny przejazd nadal ją zalicza). Jeden przebieg O(geom) grid-lookup.
@@ -687,10 +625,8 @@ final class SeedBuilder {
     private IslandFixResult fixIslands(SeedRoute seed, Map<Integer, Integer> entryAttempt) {
         List<double[]> route = seed.route();
         List<SeedSel> selected = seed.selected();
-        List<double[]> anchorOnly = seed.anchorOnly();
         List<double[]> anchors = seed.anchors();
         List<double[]> baseline = seed.baseline();
-        double[] baseCum = seed.baseCum();
         double realEffort = 0;
         int pruned = 0, retried = 0;
         for (int islPass = 0; islPass < 3; islPass++) {
@@ -762,9 +698,6 @@ final class SeedBuilder {
                                          double hiBand, double growCeiling, Map<Integer, Integer> entryAttempt) {
         List<double[]> route = seed.route();
         List<SeedSel> selected = seed.selected();
-        List<double[]> anchorOnly = seed.anchorOnly();
-        List<double[]> baseline = seed.baseline();
-        double[] baseCum = seed.baseCum();
         final int round = 0, BATCH = 20, PROGRESS_EVERY = 500;
         int idx = 0, lastProgressMilestone = 0, pruned = 0, retried = 0;
         double realEffort = 0;

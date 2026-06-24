@@ -157,7 +157,13 @@ final class CoverageDebug {
             List<String> shallow = new ArrayList<>();
             for (int gid : visits.keySet()) if (!deeplyCov.contains(gid)) shallow.add(idName.getOrDefault(gid, "id" + gid));
             shallow.sort(null);
-            shallowStr = " | ślad<220m(" + shallow.size() + "): " + (shallow.size() < 50 ? shallow : "...");
+            // ŚLAD<200m = gminy DOTKNIĘTE, w które ślad nie wchodzi ≥200m = REALNIE NIEZALICZONE (GŁÓWNA miara, ma być ~0).
+            // ślad<220m = tylko „w zapasie" (deeplyCredited to świadomy margines nad kredytem 200) — dopuszczalne.
+            List<String> shallow200 = new ArrayList<>();
+            for (int gid : visits.keySet()) if (!deepCov.contains(gid)) shallow200.add(idName.getOrDefault(gid, "id" + gid));
+            shallow200.sort(null);
+            shallowStr = " | ŚLAD<200m(" + shallow200.size() + "): " + (shallow200.size() < 50 ? shallow200 : "...")
+                       + " | ślad<220m-zapas=" + shallow.size();
             if (waypoints != null) {
                 Set<Integer> wpDeep = new HashSet<>();
                 for (double[] wp : waypoints) {

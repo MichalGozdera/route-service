@@ -2,13 +2,11 @@ package velomarker.service.planning.coverage;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import velomarker.entity.planning.UnvisitedArea;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
-import java.util.function.Function;
 
 /**
  * TRIM (gdy >105% budżetu) jako osobna klasa odpowiedzialności — jeden przebieg per wywołanie: peeling peryferii
@@ -36,7 +34,6 @@ final class Trimmer {
     private final SeedOps ops;
     private final CoverageDebug debug;
     private final boolean debugGeoJson;
-    private final Function<double[], UnvisitedArea> findGminaCached;
     private final SeedRoute seed;
     private final List<double[]> route;
     private final List<SeedSel> selected;
@@ -46,7 +43,7 @@ final class Trimmer {
     private int trimmed;
     private int growNearAdded;
 
-    Trimmer(SeedContext ctx, Function<double[], UnvisitedArea> findGminaCached, SeedRoute seed,
+    Trimmer(SeedContext ctx, SeedRoute seed,
             double hiBand, double targetEffort, double realEffort) {
         this.ctx = ctx;
         this.edgeRouter = ctx.edgeRouter();
@@ -56,7 +53,6 @@ final class Trimmer {
         this.ops = ctx.ops();
         this.debug = ctx.debug();
         this.debugGeoJson = ctx.debugGeoJson();
-        this.findGminaCached = findGminaCached;
         this.seed = seed;
         this.route = seed.route();
         this.selected = seed.selected();
@@ -87,9 +83,9 @@ final class Trimmer {
 
     /** PODWÓJNE CIĘCIE „dla pewności": cut → 2opt → cut (drugie cięcie tnie wtórniaki po przestawieniu 2-optu). */
     private double doubleCut(double target, int maxPasses, String phase) {
-        new SpurCutter(ctx, findGminaCached, seed, target, maxPasses, phase).run();
+        new SpurCutter(ctx, seed, target, maxPasses, phase).run();
         ops.twoOpt(route, phase + "-recut2opt");
-        return new SpurCutter(ctx, findGminaCached, seed, target, maxPasses, phase + "-recut").run();
+        return new SpurCutter(ctx, seed, target, maxPasses, phase + "-recut").run();
     }
 
     /** Wewnętrzny peeling: porcjami tnij najgorszy reward/detour z fringe, pełny 2-opt, realny pomiar; stop gdy

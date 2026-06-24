@@ -26,7 +26,7 @@ class JtsAreaCoverageIndexTest {
     }
 
     private static UnvisitedArea squareGmina(int id, double lng, double lat, double sideHalfDeg) {
-        return UnvisitedArea.level(id, "G" + id, lat, lng, square(lng, lat, sideHalfDeg), 1, 4, "gmina");
+        return UnvisitedArea.levelMulti(id, "G" + id, lat, lng, List.of(new AreaPart(square(lng, lat, sideHalfDeg), null)), 1, 4, "gmina");
     }
 
     @Test
@@ -66,7 +66,7 @@ class JtsAreaCoverageIndexTest {
                 {15.0 - 0.001817, 50.0 - 0.003}, {15.0 + 0.001817, 50.0 - 0.003},
                 {15.0 + 0.001817, 50.0 + 0.003}, {15.0 - 0.001817, 50.0 + 0.003}
         };
-        return UnvisitedArea.level(1, "Waska", 50.0, 15.0, rect, 1, 4, "gmina");
+        return UnvisitedArea.levelMulti(1, "Waska", 50.0, 15.0, List.of(new AreaPart(rect, null)), 1, 4, "gmina");
     }
 
     @Test
@@ -151,8 +151,8 @@ class JtsAreaCoverageIndexTest {
         AreaPart ruralPart = new AreaPart(outer, new double[][][]{hole});
         UnvisitedArea rural = UnvisitedArea.levelMulti(1, "RawaWiejska", 50.08, 15.08,
                 List.of(ruralPart), 1, 4, "gmina");
-        UnvisitedArea city = UnvisitedArea.level(2, "RawaMiejska", 50.0, 15.0,
-                square(15.0, 50.0, 0.025), 1, 4, "gmina"); // wypełnia dziurę
+        UnvisitedArea city = UnvisitedArea.levelMulti(2, "RawaMiejska", 50.0, 15.0,
+                List.of(new AreaPart(square(15.0, 50.0, 0.025), null)), 1, 4, "gmina"); // wypełnia dziurę
         AreaCoverageIndex idx = FACTORY.build(List.of(rural, city));
         // środek = w dziurze wiejskiej (więc NIE wiejska) i w miejskiej → MIEJSKA
         UnvisitedArea found = idx.findAreaForPoint(15.0, 50.0);
@@ -173,8 +173,8 @@ class JtsAreaCoverageIndexTest {
         for (int row = -1; row <= 1; row++) {
             for (int col = -1; col <= 1; col++) {
                 int country = (row == 0 && col == 0) ? 1 : 2; // środek kraj 1, reszta kraj 2
-                grid.add(UnvisitedArea.level(id++, "g", 50.0 + row * 0.1, 15.0 + col * 0.1,
-                        square(15.0 + col * 0.1, 50.0 + row * 0.1, 0.05), country, 4, "gmina"));
+                grid.add(UnvisitedArea.levelMulti(id++, "g", 50.0 + row * 0.1, 15.0 + col * 0.1,
+                        List.of(new AreaPart(square(15.0 + col * 0.1, 50.0 + row * 0.1, 0.05), null)), country, 4, "gmina"));
             }
         }
         AreaCoverageIndex idx = FACTORY.build(grid);

@@ -32,13 +32,6 @@ public record UnvisitedArea(
                 countryId, levelId, levelName, specialGroupId);
     }
 
-    /** Obszar zwykłego poziomu z JEDNYM prostym ringiem (bez dziur/multi) — wygoda dla testów/prostych. */
-    public static UnvisitedArea level(int areaId, String name,  double lat, double lng,
-                                      double[][] ring, int countryId, int levelId, String levelName) {
-        return new UnvisitedArea(areaId, name, lat, lng,
-                List.of(new AreaPart(ring, null)), countryId, levelId, levelName, null);
-    }
-
     /** Obszar zwykłego poziomu z pełną geometrią (multipolygon + dziury). */
     public static UnvisitedArea levelMulti(int areaId, String name,  double lat, double lng,
                                            List<AreaPart> parts, int countryId, int levelId, String levelName) {

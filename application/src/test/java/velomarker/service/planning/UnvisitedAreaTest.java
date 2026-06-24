@@ -1,7 +1,10 @@
 package velomarker.service.planning;
 
 import org.junit.jupiter.api.Test;
+import velomarker.entity.planning.AreaPart;
 import velomarker.entity.planning.UnvisitedArea;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -41,7 +44,7 @@ class UnvisitedAreaTest {
 
     @Test
     void areaKm2_nullRing_returnsZero() {
-        var a = UnvisitedArea.level(1, "n", 50.0, 14.5, null, 1, 1, "gmina");
+        var a = UnvisitedArea.levelMulti(1, "n", 50.0, 14.5, List.of(new AreaPart(null, null)), 1, 1, "gmina");
         assertThat(a.areaKm2()).isZero();
     }
 
@@ -55,7 +58,7 @@ class UnvisitedAreaTest {
     @Test
     void isSpecial_trueWhenSpecialGroupIdSet() {
         var special = new UnvisitedArea(1, "n", 50.0, 14.5, (double[][]) null, 1, 1, "gmina", 42);
-        var regular = UnvisitedArea.level(2, "n", 50.0, 14.5, null, 1, 1, "gmina");
+        var regular = UnvisitedArea.levelMulti(2, "n", 50.0, 14.5, List.of(new AreaPart(null, null)), 1, 1, "gmina");
         assertThat(special.isSpecial()).isTrue();
         assertThat(regular.isSpecial()).isFalse();
     }

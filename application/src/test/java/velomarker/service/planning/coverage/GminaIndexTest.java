@@ -1,6 +1,7 @@
 package velomarker.service.planning.coverage;
 
 import org.junit.jupiter.api.Test;
+import velomarker.entity.planning.AreaPart;
 import velomarker.entity.planning.UnvisitedArea;
 import velomarker.port.out.planning.AreaCoverageIndex;
 
@@ -25,7 +26,7 @@ class GminaIndexTest {
                 {lng + sideHalfDeg, lat + sideHalfDeg},
                 {lng - sideHalfDeg, lat + sideHalfDeg}
         };
-        return UnvisitedArea.level(id, "G" + id, lat, lng, ring, 1, 4, "gmina");
+        return UnvisitedArea.levelMulti(id, "G" + id, lat, lng, List.of(new AreaPart(ring, null)), 1, 4, "gmina");
     }
 
     @Test

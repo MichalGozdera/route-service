@@ -40,8 +40,6 @@ import java.util.UUID;
  *   <li>DaySplitter — podział geometrii na N dni.</li>
  *   <li>Per-dzień: metryki + zapis PlanningSessionDay.</li>
  * </ol>
- *
- * <p>MVP scope: AB i FREESTYLE w pełni; COVERAGE z prostym TSP (bez bisekcji budżetu).
  */
 public class PlanningOrchestrationService {
 
@@ -49,10 +47,6 @@ public class PlanningOrchestrationService {
 
 
     static final int DEFAULT_KM_PER_DAY = 100;
-    /** Max chunków BRoutera liczonych RÓWNOLEGLE (finalny chunked call). ≤ route.calculate.max-concurrent
-     * (=10) by nie przepełnić semafora klienta (5s wait → 429). Cała Polska = 42 chunki → fale po 6. */
-
-    /** Budget reconcile constants. */
 
     /** Max gap (km) między dowolnym anchor'em a najbliższym punktem geometrii BRouter. Powyżej → FAIL. */
     static final double ANCHOR_REACHABILITY_KM = 2.0;
@@ -135,105 +129,136 @@ public class PlanningOrchestrationService {
     public void executePlan(UUID taskId, UUID userId, String bearerToken) {
         missingTilesPerTask.put(taskId, java.util.concurrent.ConcurrentHashMap.newKeySet());
         try {
-            PlanningSession session = sessionRepository.findByUserId(userId)
-                    .orElseThrow(() -> new PlanningSessionMissingException(userId));
-            if (session.intent() == null) {
-                throw new PlanningSessionMissingException("Intent not set");
-            }
+            PlanningSession session = loadValidatedSession(userId);
             RoutePreferences prefs = session.preferences();
-            if (!prefs.isReadyToCalculate(session.intent())) {
-                throw new PlanningSessionNotReadyException("required fields missing for intent " + session.intent());
-            }
 
             setPhase(taskId, "validating");
             checkCancel(taskId);
 
             String profile = resolveProfile(prefs);
-            // Parametry wejściowe planu — jedna linia na starcie (diagnostyka: z czym wystartował dany run).
-            Waypoint startWp = prefs.start();
-            brouterClient.resetPlanCounters(); // v3.16: licznik „BRouter cumulative" liczy TEN plan, nie od startu serwisu
-            routeUseCase.resetPlanCounters();  // v3.17: licznik „Elevation enrichment timing" też per plan
-            log.info("PLAN START: task={} intent={} profile={} days={} kmPerDay={} elevPerDay={} start={} via={} loop={}",
-                    new Object[]{taskId, session.intent(), profile, prefs.days(), prefs.kmPerDay(),
-                            prefs.elevationPerDayM(),
-                            startWp == null ? "null" : String.format(java.util.Locale.ROOT, "%.5f,%.5f", startWp.lng(), startWp.lat()),
-                            prefs.via() == null ? 0 : prefs.via().size(), prefs.loop()});
+            resetPlanCounters();
+            logPlanStart(taskId, session, profile, prefs);
             RoadFactorCalibrator calibrator = new RoadFactorCalibrator();
 
             WaypointBuild wb = buildWaypointsForIntent(taskId, session, prefs, profile, bearerToken, calibrator);
-            List<Waypoint> allWaypoints = wb.allWaypoints();
-            CoverageBuildInfo coverageInfo = wb.coverageInfo();
-            velomarker.service.planning.coverage.CoveragePlanner.CoverageResult coverageResult = wb.coverageResult();
-
-            setPhase(taskId, "routing-brouter");
-            checkCancel(taskId);
-            RouteCalculation full;
-            if (coverageResult != null) {
-                // COVERAGE: planner dał GOTOWY route — pomijamy TRIM/GROW/DEDUP.
-                full = coverageResult.calc();
-                allWaypoints = coverageResult.finalWaypoints();
-                log.info("Coverage planner bypass: actualKm={} visited={} brouterCalls={} accepted={}",
-                        new Object[]{Math.round(full.distanceKm()), coverageResult.visited().size(),
-                                coverageResult.brouterCalls(), coverageResult.accepted()});
-            } else {
-                // AB / FREESTYLE / coverage-fallback: BRouter chunked + trim loop (max 8 prób)
-                TraceResult traced = new RouteTracer(chunkedRouter(), waypointSelector, this::checkCancel, taskId, prefs, allWaypoints, coverageInfo, profile, ANCHOR_REACHABILITY_KM).trace();
-                full = traced.calc();
-                allWaypoints = traced.finalWaypoints();
-            }
+            RoutedPlan routed = routePlan(taskId, prefs, wb, profile);
+            RouteCalculation full = routed.full();
+            List<Waypoint> allWaypoints = routed.finalWaypoints();
             // Stats per-day slicing działa czysto: planner sam robi final recompute z computeStats=true
             // przed return (zob. BrouterFn powyżej), więc `full.stats()` ma spans z pełnej trasy.
 
             setPhase(taskId, "sampling-elevation");
             checkCancel(taskId);
-            // DaySplitter potrzebuje WYZSZEJ rozdzielczosci (2000) niz domyslne 500 dla UI.
-            // 500 sample na 1700 km = 3.4 km/sample -- znika cala gorka miedzy dwoma sample.
-            // Per-day climb potem liczony jest osobno z dayElev (~0.4 km/sample), wiec dni
-            // nieproporcjonalnie roznily sie effort'em. 2000 sample = 0.85 km/sample = ~9x
-            // dokladniej -> effort split max/min ~1.15x zamiast 1.38x.
-            // PEŁNA GRANULACJA: zamiast 2000 evenly-spaced sampli (gubi małe wzgórki → splitter myśli
-            // że dni są równe, a wizualnie km/climb wychodzi 20% spread), bierzemy MIN(coords, CAP).
-            // User: „po ostatnim reconcile weź całą trasę i pociachaj" — splitter widzi każdy coord
-            // BRoutera z elevation. Cap 30000 dla mega-tras Francji (50000+ km).
-            int splitSamples = Math.min(DAY_SPLIT_ELEVATION_SAMPLES_CAP,
-                    Math.max(DAY_SPLIT_ELEVATION_SAMPLES,
-                            Math.max(prefs.days() != null ? prefs.days() * 3 : 0, full.coordinates().size())));
-            ElevationProfile fullProfile = elevation.sample(full.coordinates(), splitSamples);
+            ElevationProfile fullProfile = sampleElevationForSplit(prefs, full);
 
             setPhase(taskId, "splitting-days");
             checkCancel(taskId);
             List<DaySplitter.DayBoundary> boundaries = daySplitter.splitIntoDays(
                     fullProfile, prefs.days(), prefs.kmPerDay(), prefs.elevationPerDayM(), profile);
 
-            List<PlanningSessionDay> days = new DayBuilder(elevation, coverageIndexFactory, spatialIndexFactory, this::checkCancel, this::setPhase).build(taskId, session, prefs, profile, full, fullProfile, boundaries, allWaypoints, coverageInfo);
+            List<PlanningSessionDay> days = new DayBuilder(elevation, coverageIndexFactory, spatialIndexFactory, this::checkCancel, this::setPhase).build(taskId, session, prefs, profile, full, fullProfile, boundaries, allWaypoints, wb.coverageInfo());
 
             checkCancel(taskId);
             setPhase(taskId, "saving");
-            dayRepository.replaceAll(session.id(), days);
-            session.setSummary(buildSummary(days, prefs, coverageInfo, full.distanceKm()));
-            sessionRepository.save(session);
-            PlanningSummary s = session.summary();
-            log.info("Plan summary user={} task={} totalKm={} elev={} budget={} verdict={} pool={} (initial={})",
-                    new Object[]{userId, taskId,
-                            Math.round(s.totalDistanceKm()), s.totalElevationGain(),
-                            s.budgetKm(), s.verdict(),
-                            s.poolSize(), s.initialPoolSize()});
-            // Effort per dzień = km + 0.1 × climb_m (alpha jak Coverage). Pokazuje czy DaySplitter dobrze
-            // wyrównuje. Idealnie wszystkie dni ≈ totalEffort/N. Spread > 5% = sygnał problemu.
-            StringBuilder dayDump = new StringBuilder();
-            for (PlanningSessionDay d : days) {
-                double km = d.distanceKm() != null ? d.distanceKm() : 0.0;
-                int climb = d.elevationGain() != null ? d.elevationGain() : 0;
-                double effort = km + 0.1 * climb;
-                dayDump.append(String.format(java.util.Locale.ROOT, " d%d=%.1fkm/%dm/eff%.0f",
-                        d.dayNumber(), km, climb, effort));
-            }
-            log.info("Day distribution:{}", dayDump);
-        } catch (RuntimeException e) {
-            throw e;
+            saveAndSummarize(taskId, userId, session, days, prefs, wb.coverageInfo(), full);
         } finally {
             reportMissingTiles(taskId);
         }
+    }
+
+    /** Wczytuje sesję usera i waliduje: intent ustawiony + preferences kompletne dla intentu. */
+    private PlanningSession loadValidatedSession(UUID userId) {
+        PlanningSession session = sessionRepository.findByUserId(userId)
+                .orElseThrow(() -> new PlanningSessionMissingException(userId));
+        if (session.intent() == null) {
+            throw new PlanningSessionMissingException("Intent not set");
+        }
+        if (!session.preferences().isReadyToCalculate(session.intent())) {
+            throw new PlanningSessionNotReadyException("required fields missing for intent " + session.intent());
+        }
+        return session;
+    }
+
+    /** Reset liczników „cumulative" per plan (nie od startu serwisu): BRouter (v3.16) + elevation enrichment (v3.17). */
+    private void resetPlanCounters() {
+        brouterClient.resetPlanCounters();
+        routeUseCase.resetPlanCounters();
+    }
+
+    /** Parametry wejściowe planu — jedna linia na starcie (diagnostyka: z czym wystartował dany run). */
+    private void logPlanStart(UUID taskId, PlanningSession session, String profile, RoutePreferences prefs) {
+        Waypoint startWp = prefs.start();
+        log.info("PLAN START: task={} intent={} profile={} days={} kmPerDay={} elevPerDay={} start={} via={} loop={}",
+                new Object[]{taskId, session.intent(), profile, prefs.days(), prefs.kmPerDay(),
+                        prefs.elevationPerDayM(),
+                        startWp == null ? "null" : String.format(java.util.Locale.ROOT, "%.5f,%.5f", startWp.lng(), startWp.lat()),
+                        prefs.via() == null ? 0 : prefs.via().size(), prefs.loop()});
+    }
+
+    /** Routing BRouter: COVERAGE bierze gotowy wynik plannera (bypass TRIM/GROW/DEDUP), AB/FREESTYLE/fallback przez RouteTracer. */
+    private RoutedPlan routePlan(UUID taskId, RoutePreferences prefs, WaypointBuild wb, String profile) {
+        setPhase(taskId, "routing-brouter");
+        checkCancel(taskId);
+        var coverageResult = wb.coverageResult();
+        if (coverageResult != null) {
+            RouteCalculation full = coverageResult.calc();
+            log.info("Coverage planner bypass: actualKm={} visited={} brouterCalls={} accepted={}",
+                    new Object[]{Math.round(full.distanceKm()), coverageResult.visited().size(),
+                            coverageResult.brouterCalls(), coverageResult.accepted()});
+            return new RoutedPlan(full, coverageResult.finalWaypoints());
+        }
+        // AB / FREESTYLE / coverage-fallback: BRouter chunked + trim loop (max 8 prób)
+        TraceResult traced = new RouteTracer(chunkedRouter(), waypointSelector, this::checkCancel, taskId, prefs, wb.allWaypoints(), wb.coverageInfo(), profile, ANCHOR_REACHABILITY_KM).trace();
+        return new RoutedPlan(traced.calc(), traced.finalWaypoints());
+    }
+
+    /** Wynik routingu: policzona trasa + finalna lista waypointów (po bypass plannera lub trace). */
+    private record RoutedPlan(RouteCalculation full, List<Waypoint> finalWaypoints) {}
+
+    /**
+     * Próbkuje elevation dla DaySplitter w PODWYŻSZONEJ rozdzielczości (≥{@value #DAY_SPLIT_ELEVATION_SAMPLES},
+     * nie default 500 dla UI). 500 sample/1700 km = 3.4 km/sample gubi górki → dni nierówne effort'em.
+     * Bierzemy MIN(coords, CAP): splitter widzi każdy coord BRoutera z elevation; cap dla mega-tras Francji.
+     */
+    private ElevationProfile sampleElevationForSplit(RoutePreferences prefs, RouteCalculation full) {
+        int splitSamples = Math.min(DAY_SPLIT_ELEVATION_SAMPLES_CAP,
+                Math.max(DAY_SPLIT_ELEVATION_SAMPLES,
+                        Math.max(prefs.days() != null ? prefs.days() * 3 : 0, full.coordinates().size())));
+        return elevation.sample(full.coordinates(), splitSamples);
+    }
+
+    /** Zapisuje dni + summary sesji i loguje rozkład budżetu oraz effort per-dzień. */
+    private void saveAndSummarize(UUID taskId, UUID userId, PlanningSession session, List<PlanningSessionDay> days,
+                                  RoutePreferences prefs, CoverageBuildInfo coverageInfo, RouteCalculation full) {
+        dayRepository.replaceAll(session.id(), days);
+        session.setSummary(buildSummary(days, prefs, coverageInfo, full.distanceKm()));
+        sessionRepository.save(session);
+        logPlanSummary(userId, taskId, session.summary());
+        logDayDistribution(days);
+    }
+
+    private void logPlanSummary(UUID userId, UUID taskId, PlanningSummary s) {
+        log.info("Plan summary user={} task={} totalKm={} elev={} budget={} verdict={} pool={} (initial={})",
+                new Object[]{userId, taskId,
+                        Math.round(s.totalDistanceKm()), s.totalElevationGain(),
+                        s.budgetKm(), s.verdict(),
+                        s.poolSize(), s.initialPoolSize()});
+    }
+
+    /**
+     * Effort per dzień = km + 0.1 × climb_m (alpha jak Coverage). Pokazuje czy DaySplitter dobrze
+     * wyrównuje. Idealnie wszystkie dni ≈ totalEffort/N. Spread > 5% = sygnał problemu.
+     */
+    private void logDayDistribution(List<PlanningSessionDay> days) {
+        StringBuilder dayDump = new StringBuilder();
+        for (PlanningSessionDay d : days) {
+            double km = d.distanceKm() != null ? d.distanceKm() : 0.0;
+            int climb = d.elevationGain() != null ? d.elevationGain() : 0;
+            double effort = km + 0.1 * climb;
+            dayDump.append(String.format(java.util.Locale.ROOT, " d%d=%.1fkm/%dm/eff%.0f",
+                    d.dayNumber(), km, climb, effort));
+        }
+        log.info("Day distribution:{}", dayDump);
     }
 
     /** Buduje waypointy wg intentu (AB/FREESTYLE/COVERAGE); dla COVERAGE odpala planner pokrycia. */
@@ -332,57 +357,6 @@ public class PlanningOrchestrationService {
             List<double[]> baselineGeometry
     ) {}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    /** Wynik trace'owania (BRouter calc + finalna lista waypointów po dedup/trim). */
-
-    /**
-     * BRouter chunked + adaptive loop (max 5 iteracji): TRIM gdy meta nieosiągnięta, GROW gdy
-     * budżetu zostało, DEDUP gdy gminy pokryte naturalnie. Anty-oscylacja: gmina raz wyrzucona
-     * przez trim NIE wraca przez grow w tej samej sesji (tylko gminy NIGDY-NIE-PRÓBOWANE z reserve).
-     *
-     * <p>State maszyna:
-     * <pre>
-     *   currentPicked = greedy picked (full set z buildCoverage)
-     *   droppedPool = []  (gminy wyrzucone przez trim — NIE wracają)
-     *   reservePool = []  (gminy które nie weszły w greedy — można dodać przez grow)
-     *   loop max 5×:
-     *     BRouter
-     *     if endGap > maxGap → TRIM 25% najdroższych z currentPicked → droppedPool
-     *     elif totalKm > budget × 1.10 → TRIM 15% najdroższych (overflow)
-     *     elif totalKm &lt; budget × 0.85 AND reservePool nonempty → GROW 15% najtańszych z reservePool
-     *     else → OK + DEDUP gmin pokrytych naturalnie (1 raz max)
-     * </pre>
-     */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     /** Buduje PlanningSummary z policzonych dni + diagnostyki pul/baseline (gdy COVERAGE). */
     private static PlanningSummary buildSummary(List<PlanningSessionDay> days, RoutePreferences prefs,
                                                 CoverageBuildInfo coverageInfo, double totalKmFromBrouter) {
@@ -420,14 +394,6 @@ public class PlanningOrchestrationService {
                 baselineKm, roadAreas, climbWarning);
     }
 
-
-
-    /**
-     * Dzieli {@code waypoints} na chunki ≤ {@link #MAX_WAYPOINTS_PER_DAY} z 1-punktowym overlapem
-     * (koniec chunka N = początek chunka N+1) i klei geometry/distance/duration w jeden wynik.
-     * Bez tego BRouter zwraca 414 Request-URI Too Large przy >~50 lonlatach.
-     */
-
     private ChunkedBrouterRouter chunkedRouter;
     private ChunkedBrouterRouter chunkedRouter() {
         if (chunkedRouter == null) {
@@ -444,12 +410,6 @@ public class PlanningOrchestrationService {
         }
         return "trekking-gminy"; // fallback gdy user nie wybrał profilu (asystent zawsze planuje gminy)
     }
-
-
-
-
-
-
 
     private void setPhase(UUID taskId, String phase) {
         try {

@@ -6,10 +6,6 @@ package velomarker.entity.planning;
  */
 public record Waypoint(double lng, double lat, String name) {
 
-    public static Waypoint of(double lng, double lat) {
-        return new Waypoint(lng, lat, null);
-    }
-
     public double[] toLngLat() {
         return new double[]{lng, lat};
     }

@@ -1,6 +1,7 @@
 package velomarker.service.planning;
 
 import org.junit.jupiter.api.Test;
+import velomarker.entity.planning.AreaPart;
 import velomarker.entity.planning.UnvisitedArea;
 
 import java.util.ArrayList;
@@ -140,7 +141,7 @@ class SnapToBaselineTest {
     @Test
     void scoreArea_nullRing_doesNotCrash() {
         // Brak ring (UnvisitedArea bez geometrii) — kandidat z intersected=false, entry=centroid.
-        var area = UnvisitedArea.level(1, "noRing", 50.05, 16.0, null, 1, 1, "gmina");
+        var area = UnvisitedArea.levelMulti(1, "noRing", 50.05, 16.0, List.of(new AreaPart(null, null)), 1, 1, "gmina");
         var c = CoverageAreaSelection.scoreAreaAgainstBaseline(area, straightBaseline(), false);
         assertThat(c.isIntersected()).isFalse();
         assertThat(c.getEntryLng()).isEqualTo(16.0);

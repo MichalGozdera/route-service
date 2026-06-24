@@ -115,11 +115,6 @@ final class CoverageAreaSelection {
     }
 
     /**
-     * Po pierwszym BRouter sprawdza które entry-points gmin są ZBĘDNE — bo ich gmina jest naturalnie
-     * przecięta przez nową trasę. Te entry-pointy wyrzucamy. Pozwala BRouter narysować trasę bez
-     * pętelek wokół tej samej gminy z trzech stron.
-     */
-    /**
      * In-place: usuwa z {@code picked} kandydatów których ring jest INTERSECTED przez nową geometrię
      * (BRouter naturalnie przez nich przejeżdża → entry-point zbędny). Bez tego dedup tylko wycina
      * waypoints ale picked zachowuje wyrzucone → następny grow je przywraca.
@@ -276,17 +271,38 @@ final class CoverageAreaSelection {
         return picked;
     }
 
-
-
-
+    /**
+     * Po pierwszym BRouter sprawdza które entry-points gmin są ZBĘDNE — bo ich gmina jest naturalnie
+     * przecięta przez nową trasę. Te entry-pointy wyrzucamy (START/VIA/END usera zostają). Pozwala BRouter
+     * narysować trasę bez pętelek wokół tej samej gminy z trzech stron.
+     */
     static List<Waypoint> removeNaturallyCoveredEntries(RoutePreferences prefs, PlanningOrchestrationService.CoverageBuildInfo info,
                                                         List<double[]> newGeometry, List<Waypoint> currentWps) {
-        // Set entry-pointów które MOŻNA wyrzucić = entry-pointy gmin których ring jest intersected by newGeometry.
+        Set<String> droppableEntryNames = droppableEntryKeys(info, newGeometry);
+        if (droppableEntryNames.isEmpty()) return currentWps;
+        Set<String> userAnchorNames = userAnchorNames(prefs);
+        List<Waypoint> kept = new ArrayList<>(currentWps.size());
+        int dropped = 0;
+        // Iteruj currentWps; START + USER VIA + END muszą zostać. Gminy entry-pointy o nazwie
+        // znajdującej się w droppableEntryNames → wyrzucamy.
+        for (Waypoint w : currentWps) {
+            if (w.name() != null && !userAnchorNames.contains(w.name()) && isDroppable(w, droppableEntryNames)) {
+                dropped++;
+                continue;
+            }
+            kept.add(w);
+        }
+        log.info("Dedup analysis: {} entry-points naturally covered, {} actually dropped from waypoints",
+                new Object[]{droppableEntryNames.size(), dropped});
+        return kept;
+    }
+
+    /** Klucze „name@insertionIdx" gmin, których ring jest przecięty przez {@code newGeometry} (entry-point zbędny, okno ±300). */
+    private static Set<String> droppableEntryKeys(PlanningOrchestrationService.CoverageBuildInfo info, List<double[]> newGeometry) {
         Set<String> droppableEntryNames = new HashSet<>();
         for (AreaCandidate c : info.pickedCandidates()) {
             if (c.area.ring() == null || c.area.ring().length < 3) continue;
-            // Sprawdź ±300 punktów wokół insertionIdx newGeometry — czy któryś leży w ringu.
-            // newGeometry ma INNE indeksy niż baselineGeometry, więc szukamy najbliższego punktu.
+            // newGeometry ma INNE indeksy niż baselineGeometry, więc szukamy najbliższego punktu i okna ±300.
             int near = PlanningGeom.findNearestGeomIdx(newGeometry, new double[]{c.area.lng(), c.area.lat()});
             int from = Math.max(0, near - 300);
             int to = Math.min(newGeometry.size(), near + 300);
@@ -297,42 +313,27 @@ final class CoverageAreaSelection {
                 }
             }
         }
-        if (droppableEntryNames.isEmpty()) return currentWps;
-        List<Waypoint> kept = new ArrayList<>(currentWps.size());
-        int dropped = 0;
-        // Iteruj currentWps; START + USER VIA + END muszą zostać. Gminy entry-pointy o nazwie
-        // znajdującej się w droppableEntryNames → wyrzucamy (NIE wszystkie z tą nazwą — tylko tyle ile
-        // jest na droppable set).
-        Set<String> userAnchorNames = new HashSet<>();
-        if (prefs.start() != null && prefs.start().name() != null) userAnchorNames.add(prefs.start().name());
-        if (prefs.end() != null && prefs.end().name() != null) userAnchorNames.add(prefs.end().name());
+        return droppableEntryNames;
+    }
+
+    /** Nazwy waypointów usera (start/via/end) — nigdy nie wyrzucane przy dedupie. */
+    private static Set<String> userAnchorNames(RoutePreferences prefs) {
+        Set<String> names = new HashSet<>();
+        if (prefs.start() != null && prefs.start().name() != null) names.add(prefs.start().name());
+        if (prefs.end() != null && prefs.end().name() != null) names.add(prefs.end().name());
         if (prefs.via() != null) {
             for (Waypoint v : prefs.via()) {
-                if (v.name() != null) userAnchorNames.add(v.name());
+                if (v.name() != null) names.add(v.name());
             }
         }
-        for (Waypoint w : currentWps) {
-            if (w.name() != null && !userAnchorNames.contains(w.name())) {
-                // Gmina entry-point — sprawdź czy nazwa jest w droppable.
-                // Konstrukcja klucza: "name@insertionIdx" wymaga mapowania. Uproszczenie: dropuj wszystkie
-                // entry-pointy o nazwie znajdującej się w droppable (set zawiera "name@idx"), patrzymy
-                // czy name pasuje do KTÓREJKOLWIEK klucza.
-                boolean canDrop = false;
-                for (String key : droppableEntryNames) {
-                    if (key.startsWith(w.name() + "@")) {
-                        canDrop = true;
-                        break;
-                    }
-                }
-                if (canDrop) {
-                    dropped++;
-                    continue;
-                }
-            }
-            kept.add(w);
+        return names;
+    }
+
+    /** Czy entry-point {@code w} pasuje do któregoś klucza „name@idx" w {@code droppable} (gmina pokryta naturalnie). */
+    private static boolean isDroppable(Waypoint w, Set<String> droppable) {
+        for (String key : droppable) {
+            if (key.startsWith(w.name() + "@")) return true;
         }
-        log.info("Dedup analysis: {} entry-points naturally covered, {} actually dropped from waypoints",
-                new Object[]{droppableEntryNames.size(), dropped});
-        return kept;
+        return false;
     }
 }

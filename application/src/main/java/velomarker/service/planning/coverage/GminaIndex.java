@@ -112,6 +112,11 @@ public class GminaIndex {
         return coverage.depthMeters(point, areaId);
     }
 
+    /** Najgłębszy punkt śladu w gminie (czubek = max dist-to-boundary); null gdy ślad nie wchodzi. Kierunek wjazdu. */
+    public double[] deepestPointOnTrack(List<double[]> track, int areaId) {
+        return coverage.deepestPointOnTrack(track, areaId);
+    }
+
     /** Pierwsze wejście ≥minDepth NA fragmencie przelotu (między entry↔exit) — pogłębianie kotwicy przelotu. */
     public double[] firstTrackPointAtDepthBetween(List<double[]> track, int areaId, double minDepthMeters,
                                                   double[] entry, double[] exit) {

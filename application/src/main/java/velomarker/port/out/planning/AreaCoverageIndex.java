@@ -67,6 +67,10 @@ public interface AreaCoverageIndex {
      *  centroid" dla muśnięć (zamiast {@code area.lng/lat}, które bywa przy granicy). {@code null} gdy brak gminy. */
     double[] deepestInteriorPoint(int areaId);
 
+    /** NAJGŁĘBSZY punkt {@code track} w gminie {@code areaId} (max odległość od granicy = czubek śladu w gminie).
+     *  {@code null} gdy ślad nie wchodzi w gminę. Do pogłębiania KIERUNKOWEGO (entry→deepest, przedłuż wzdłuż wjazdu). */
+    double[] deepestPointOnTrack(List<double[]> track, int areaId);
+
     /**
      * Gminy NIEZALICZONE OTOCZONE: nieprzecięte, dla których {@link #allNeighborsVisited} = true (KAŻDY
      * sąsiad wielokątowy — adjacency po realnym styku granic, cross-border — jest w {@code visited}).

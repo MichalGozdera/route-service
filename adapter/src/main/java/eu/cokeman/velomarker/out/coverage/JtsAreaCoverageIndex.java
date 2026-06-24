@@ -23,6 +23,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * JTS implementacja {@link AreaCoverageIndex}: liczy zaliczenia na PEŁNEJ (już uproszczonej na
@@ -530,6 +531,25 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
     }
 
     @Override
+    public double[] deepestPointOnTrack(List<double[]> track, int areaId) {
+        AreaGeom ag = byId.get(areaId);
+        if (ag == null || ag.full() == null) return null;
+        Geometry boundary = ag.full().getBoundary();
+        Envelope env = ag.full().getEnvelopeInternal();
+        double maxDist = -1;
+        double[] deepest = null;
+        for (double[] p : track) {                          // czubek śladu w gminie = max distance-to-boundary
+            Coordinate c = project(p[0], p[1]);
+            if (!env.contains(c)) continue;
+            Point pt = GF.createPoint(c);
+            if (!ag.prepFull().contains(pt)) continue;
+            double d = boundary.distance(pt);
+            if (d > maxDist) { maxDist = d; deepest = p; }
+        }
+        return deepest != null ? deepest.clone() : null;
+    }
+
+    @Override
     public double[] firstTrackPointAtDepthBetween(List<double[]> track, int areaId, double minDepthMeters,
                                                   double[] entry, double[] exit) {
         AreaGeom ag = byId.get(areaId);
@@ -633,29 +653,26 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
         return in;
     }
 
-    private final Map<Integer, double[]> deepPointCache = new HashMap<>(); // RUNDA 31: lazy cache najgłębszych punktów
+    // RUNDA 31: lazy cache najgłębszych punktów. ConcurrentHashMap — czytany RÓWNOLEGLE z parallelStream celów
+    // (Anchorer/SpurCutter liczą cele per gmina współbieżnie); computeIfAbsent = atomowe, MIC liczony raz/gmina.
+    private final Map<Integer, double[]> deepPointCache = new ConcurrentHashMap<>();
 
     @Override
     public double[] deepestInteriorPoint(int areaId) {
         // RUNDA 31: środek największego wpisanego okręgu = punkt NAJDALEJ od każdej granicy (prawdziwy „głęboki centroid").
         // Lazy + cache (liczony tylko dla gmin idących w centroid). Geometria w projekcji → unproject. Fallback: lng/lat.
-        double[] cached = deepPointCache.get(areaId);
-        if (cached != null) {
-            return cached;
-        }
         AreaGeom ag = byId.get(areaId);
         if (ag == null) {
             return null;
         }
-        double[] dp;
-        try {
-            Coordinate c = new MaximumInscribedCircle(ag.full, DEEP_DEPTH_M / METERS_PER_DEG).getCenter().getCoordinate();
-            dp = unproject(c);
-        } catch (RuntimeException e) {
-            dp = new double[]{ag.area.lng(), ag.area.lat()};
-        }
-        deepPointCache.put(areaId, dp);
-        return dp;
+        return deepPointCache.computeIfAbsent(areaId, id -> {
+            try {
+                Coordinate c = new MaximumInscribedCircle(ag.full, DEEP_DEPTH_M / METERS_PER_DEG).getCenter().getCoordinate();
+                return unproject(c);
+            } catch (RuntimeException e) {
+                return new double[]{ag.area.lng(), ag.area.lat()};
+            }
+        });
     }
 
     /** RUNDA 26: o ile metrów ZA granicę rdzenia (−200m) cofnąć `entry` w głąb — żeby wp na pierwszym wejściu realnie

@@ -22,12 +22,4 @@ public record RouteCalculation(
     public RouteCalculation(List<double[]> coordinates, double distanceKm) {
         this(coordinates, distanceKm, List.of(), RouteStats.empty(), null, null);
     }
-
-    public RouteCalculation(List<double[]> coordinates, double distanceKm, List<int[]> flatSpans) {
-        this(coordinates, distanceKm, flatSpans, RouteStats.empty(), null, null);
-    }
-
-    public RouteCalculation(List<double[]> coordinates, double distanceKm, List<int[]> flatSpans, RouteStats stats) {
-        this(coordinates, distanceKm, flatSpans, stats, null, null);
-    }
 }

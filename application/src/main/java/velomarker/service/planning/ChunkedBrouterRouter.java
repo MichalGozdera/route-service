@@ -106,9 +106,36 @@ final class ChunkedBrouterRouter {
     /** Sklej wyniki chunków w jedną trasę (coords bez duplikatu overlapu) + zagreguj stats/spans z offsetem; loguje gdy computeStats. */
     private RouteCalculation mergeChunks(List<RouteCalculation> results, boolean computeStats, String profile,
                                         int waypointCount, int chunkCount, int badCacheSize) {
-        // Sklejanie W KOLEJNOŚCI chunków, pomijając zduplikowany punkt overlapu.
-        // Stats: meters agregujemy przez accumulator + spans łączymy z offsetem per chunk
-        // (indeksy w spans CHUNK'a są lokalne; po sklejaniu mergedCoords muszą być globalne).
+        MergeAccum accum = accumulateChunks(results);
+        velomarker.entity.RouteStats aggregatedMaps = accum.aggregatedMaps();
+        velomarker.entity.RouteStats aggregatedStats = new velomarker.entity.RouteStats(
+                aggregatedMaps.totalMeters(),
+                aggregatedMaps.surfaceMeters(),
+                aggregatedMaps.roadMeters(),
+                aggregatedMaps.smoothnessMeters(),
+                accum.surfaceSpans(),
+                accum.roadSpans(),
+                accum.smoothnessSpans());
+        if (computeStats) {
+            logMergedStats(results, profile, waypointCount, chunkCount, accum, aggregatedStats, badCacheSize);
+        }
+        return new RouteCalculation(accum.coords(), accum.totalDistKm(), java.util.List.of(), aggregatedStats,
+                results.isEmpty() ? null : results.get(0).crosspointStart(),
+                results.isEmpty() ? null : results.get(results.size() - 1).crosspointEnd());
+    }
+
+    /** Wynik sklejania chunków: globalne coords + suma km + spans przesunięte do globalnych indeksów + zagregowane metry. */
+    private record MergeAccum(List<double[]> coords, double totalDistKm,
+                              List<velomarker.entity.RouteSpan> surfaceSpans,
+                              List<velomarker.entity.RouteSpan> roadSpans,
+                              List<velomarker.entity.RouteSpan> smoothnessSpans,
+                              velomarker.entity.RouteStats aggregatedMaps) {}
+
+    /**
+     * Sklejanie W KOLEJNOŚCI chunków, pomijając zduplikowany punkt overlapu. Stats: meters agregujemy przez
+     * accumulator + spans łączymy z offsetem per chunk (indeksy w spans CHUNK'a są lokalne; po sklejaniu globalne).
+     */
+    private MergeAccum accumulateChunks(List<RouteCalculation> results) {
         List<double[]> mergedCoords = new ArrayList<>();
         double totalDistKm = 0;
         velomarker.service.RouteStatsAccumulator statsAcc = new velomarker.service.RouteStatsAccumulator();
@@ -128,42 +155,33 @@ final class ChunkedBrouterRouter {
 
             velomarker.entity.RouteStats chunkStats = r.stats();
             if (chunkStats != null) {
-                int baseOffset = offsetIdx;
-                int firstSkip = skipFirst;
-                appendSpansWithOffset(mergedSurfaceSpans, chunkStats.surfaceSpans(), baseOffset, firstSkip);
-                appendSpansWithOffset(mergedRoadSpans, chunkStats.roadSpans(), baseOffset, firstSkip);
-                appendSpansWithOffset(mergedSmoothnessSpans, chunkStats.smoothnessSpans(), baseOffset, firstSkip);
+                appendSpansWithOffset(mergedSurfaceSpans, chunkStats.surfaceSpans(), offsetIdx, skipFirst);
+                appendSpansWithOffset(mergedRoadSpans, chunkStats.roadSpans(), offsetIdx, skipFirst);
+                appendSpansWithOffset(mergedSmoothnessSpans, chunkStats.smoothnessSpans(), offsetIdx, skipFirst);
             }
         }
-        velomarker.entity.RouteStats aggregatedMaps = statsAcc.build();
-        velomarker.entity.RouteStats aggregatedStats = new velomarker.entity.RouteStats(
-                aggregatedMaps.totalMeters(),
-                aggregatedMaps.surfaceMeters(),
-                aggregatedMaps.roadMeters(),
-                aggregatedMaps.smoothnessMeters(),
-                mergedSurfaceSpans,
-                mergedRoadSpans,
-                mergedSmoothnessSpans);
-        if (computeStats) {
-            log.info("BRouter chunked (parallel): {} waypoints → {} chunks → {} coords total (badCache size={})",
-                    new Object[]{waypointCount, chunkCount, mergedCoords.size(), badCacheSize});
-            // Debug: ile stats z chunks faktycznie dotarło
-            int chunksWithStats = 0;
-            int chunksWithSpans = 0;
-            for (RouteCalculation r : results) {
-                if (r.stats() != null && r.stats().totalMeters() > 0) chunksWithStats++;
-                if (r.stats() != null && !r.stats().surfaceSpans().isEmpty()) chunksWithSpans++;
-            }
-            log.info("Chunks stats debug: {} chunks total, {} z totalMeters>0, {} z surfaceSpans niepuste. Aggregated spans: surface={} road={} smoothness={}, surfaceMeters keys={}, roadMeters keys={}",
-                    new Object[]{results.size(), chunksWithStats, chunksWithSpans,
-                            mergedSurfaceSpans.size(), mergedRoadSpans.size(), mergedSmoothnessSpans.size(),
-                            aggregatedMaps.surfaceMeters().size(), aggregatedMaps.roadMeters().size()});
-            log.info(velomarker.service.RouteStatsFormatter.format(aggregatedStats,
-                    "Statystyki całej trasy (chunked, profil: " + profile + ")"));
+        return new MergeAccum(mergedCoords, totalDistKm, mergedSurfaceSpans, mergedRoadSpans,
+                mergedSmoothnessSpans, statsAcc.build());
+    }
+
+    /** Loguje agregat całej trasy (chunked): liczby chunków/coords + ile stats dotarło + sformatowane statystyki. */
+    private void logMergedStats(List<RouteCalculation> results, String profile, int waypointCount, int chunkCount,
+                                MergeAccum accum, velomarker.entity.RouteStats aggregatedStats, int badCacheSize) {
+        log.info("BRouter chunked (parallel): {} waypoints → {} chunks → {} coords total (badCache size={})",
+                new Object[]{waypointCount, chunkCount, accum.coords().size(), badCacheSize});
+        // Debug: ile stats z chunks faktycznie dotarło
+        int chunksWithStats = 0;
+        int chunksWithSpans = 0;
+        for (RouteCalculation r : results) {
+            if (r.stats() != null && r.stats().totalMeters() > 0) chunksWithStats++;
+            if (r.stats() != null && !r.stats().surfaceSpans().isEmpty()) chunksWithSpans++;
         }
-        return new RouteCalculation(mergedCoords, totalDistKm, java.util.List.of(), aggregatedStats,
-                results.isEmpty() ? null : results.get(0).crosspointStart(),
-                results.isEmpty() ? null : results.get(results.size() - 1).crosspointEnd());
+        log.info("Chunks stats debug: {} chunks total, {} z totalMeters>0, {} z surfaceSpans niepuste. Aggregated spans: surface={} road={} smoothness={}, surfaceMeters keys={}, roadMeters keys={}",
+                new Object[]{results.size(), chunksWithStats, chunksWithSpans,
+                        accum.surfaceSpans().size(), accum.roadSpans().size(), accum.smoothnessSpans().size(),
+                        accum.aggregatedMaps().surfaceMeters().size(), accum.aggregatedMaps().roadMeters().size()});
+        log.info(velomarker.service.RouteStatsFormatter.format(aggregatedStats,
+                "Statystyki całej trasy (chunked, profil: " + profile + ")"));
     }
 
     /**
@@ -216,11 +234,6 @@ final class ChunkedBrouterRouter {
      * trafia tutaj → kolejny chunk pre-filtruje go BEZ retry.
      */
     private RouteCalculation calculateChunkWithIslandRetry(UUID taskId, List<double[]> waypoints, String profile,
-                                                            java.util.Set<String> badCoordsCache) {
-        return calculateChunkWithIslandRetry(taskId, waypoints, profile, badCoordsCache, true);
-    }
-
-    private RouteCalculation calculateChunkWithIslandRetry(UUID taskId, List<double[]> waypoints, String profile,
                                                             java.util.Set<String> badCoordsCache, boolean computeStats) {
         List<double[]> current = new ArrayList<>(waypoints);
         int removedCount = 0;
@@ -256,11 +269,6 @@ final class ChunkedBrouterRouter {
         return routeUseCase.calculate(new CalculateRouteUseCase.CalculateRouteCommand(current, profile, computeStats));
     }
 
-    /** Convenience overload bez cache — dla wywołań nie-chunked (probe, baseline). */
-    private RouteCalculation calculateChunkWithIslandRetry(UUID taskId, List<double[]> waypoints, String profile) {
-        return calculateChunkWithIslandRetry(taskId, waypoints, profile, new java.util.HashSet<>());
-    }
-
     /**
      * Liczy chunk po DROGACH, odpornie na timeout/upstream BRoutera — NIGDY prostą linią (user: „chcę
      * drogowe trasy"). Na błąd: 1 retry (przejściowe nasycenie BRoutera), a gdy dalej pada — TNIE chunk
@@ -268,11 +276,6 @@ final class ChunkedBrouterRouter {
      * który mimo to nie wyrabia, propaguje wyjątek (po bumpie timeoutu to rzadkość — lepiej zgłosić niż
      * narysować prostą). TaskCancellation przechodzi (anuluj = anuluj).
      */
-    private RouteCalculation calculateChunkResilient(UUID taskId, List<double[]> chunk, String profile,
-                                                     java.util.Set<String> badCoordsCache) {
-        return calculateChunkResilient(taskId, chunk, profile, badCoordsCache, true);
-    }
-
     private RouteCalculation calculateChunkResilient(UUID taskId, List<double[]> chunk, String profile,
                                                      java.util.Set<String> badCoordsCache, boolean computeStats) {
         try {

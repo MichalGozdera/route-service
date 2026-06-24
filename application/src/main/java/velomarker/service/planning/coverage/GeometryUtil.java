@@ -18,6 +18,24 @@ final class GeometryUtil {
         return WaypointSelector.haversineKm(a, b);
     }
 
+    /** Przesuń punkt {@code from} o {@code meters} w kierunku {@code to} (interpolacja liniowa lon/lat — wystarcza
+     *  dla małych odległości ~80-240m). Gdy {@code meters} ≥ dystans from→to (lub dystans ≈ 0) → zwraca {@code to}. */
+    static double[] movePointTowards(double[] from, double[] to, double meters) {
+        double distM = WaypointSelector.haversineKm(from, to) * 1000.0;
+        if (distM <= meters || distM < 1e-6) return to.clone();
+        double f = meters / distM;
+        return new double[]{from[0] + (to[0] - from[0]) * f, from[1] + (to[1] - from[1]) * f};
+    }
+
+    /** EKSTRAPOLACJA: punkt ZA {@code to} o {@code meters} wzdłuż kierunku from→to (przedłuża odcinek). W odróżnieniu
+     *  od {@link #movePointTowards} (cap na {@code to}) idzie DALEJ. Gdy dystans from→to ≈ 0 → {@code to}. */
+    static double[] extendBeyond(double[] from, double[] to, double meters) {
+        double distM = WaypointSelector.haversineKm(from, to) * 1000.0;
+        if (distM < 1e-6) return to.clone();
+        double f = (distM + meters) / distM;
+        return new double[]{from[0] + (to[0] - from[0]) * f, from[1] + (to[1] - from[1]) * f};
+    }
+
     /** Łączna długość (km) polilinii (suma haversine kolejnych par). */
     static double polyHavKm(List<double[]> geom) {
         double sum = 0;
