@@ -1340,11 +1340,6 @@ components:
           format: double
           nullable: true
           description: "Baseline BRouter (start→via→meta bez gmin). Dolna granica trasy."
-        roadAreas:
-          type: number
-          format: double
-          nullable: true
-          description: "Współczynnik road/straight dla gęstej puli obszarów (density probe). Diagnostyka."
         climbWarning:
           type: boolean
           description: "true gdy totalElevationGain > refClimbTotal × 1.10 — user-facing warning, nie blokuje verdict."

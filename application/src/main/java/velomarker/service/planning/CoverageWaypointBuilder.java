@@ -61,11 +61,10 @@ final class CoverageWaypointBuilder {
      * <ul>
      *   <li>{@code waypoints} = same anchory (planner/fallback zrobi finalne waypointy)</li>
      *   <li>{@code pickedCandidates} = WSZYSTKIE gminy po score (nie pre-selected przez greedy)</li>
-     *   <li>metryki: poolSize, baselineKm, roadAreas, baselineGeometry</li>
+     *   <li>metryki: poolSize, baselineKm, baselineGeometry</li>
      * </ul>
      */
-    PlanningOrchestrationService.CoverageBuildInfo build(UUID taskId, RoutePreferences prefs, String bearerToken, String profile,
-                                                  RoadFactorCalibrator calibrator) {
+    PlanningOrchestrationService.CoverageBuildInfo build(UUID taskId, RoutePreferences prefs, String bearerToken, String profile) {
         AreaPool areaPool = fetchAreaPool(taskId, prefs, bearerToken);
         List<UnvisitedArea> pool = areaPool.unvisited();
         List<UnvisitedArea> historicallyVisited = areaPool.visited();
@@ -73,7 +72,7 @@ final class CoverageWaypointBuilder {
                 ? prefs.days() * prefs.kmPerDay() : 0;
 
         // ETAP 1: BASELINE — BRouter start→via→meta (rzuca gdy sam > budżet).
-        BaselineComputer.BaselineProbe baseline = runBaseline(taskId, prefs, profile, calibrator, budgetKm);
+        BaselineComputer.BaselineProbe baseline = runBaseline(taskId, prefs, profile, budgetKm);
         List<double[]> baselineGeom = baseline.geometry();
 
         // ETAP 2: SCORING — JTS intersect + detour dla każdej gminy.
@@ -82,30 +81,28 @@ final class CoverageWaypointBuilder {
         log.info("Scoring pool of {} areas by baseline polyline (geom={} points)",
                 new Object[]{pool.size(), baselineGeom.size()});
         if (pool.isEmpty()) {
-            return baselineOnlyInfo(prefs, baseline, calibrator);
+            return baselineOnlyInfo(prefs, baseline);
         }
         List<AreaCandidate> candidates = scoreCandidates(taskId, pool, baselineGeom);
 
         // Zwracamy surową pulę (całość po score) + historycznie zaliczone (do indeksu sąsiedztwa w plannerze).
         List<Waypoint> anchorWps = BaselineComputer.buildAnchorWaypoints(prefs);
         return new PlanningOrchestrationService.CoverageBuildInfo(anchorWps, pool.size(), candidates.size(),
-                baseline.distanceKm(), calibrator.roadAreas(),
-                candidates, historicallyVisited, baseline.geometry());
+                baseline.distanceKm(), candidates, historicallyVisited, baseline.geometry());
     }
 
     /** baseline pre-screen. Rzuca gdy sam baseline > budżet. */
     private BaselineComputer.BaselineProbe runBaseline(UUID taskId, RoutePreferences prefs, String profile,
-                                                       RoadFactorCalibrator calibrator, int budgetKm) {
+                                                       int budgetKm) {
         setPhase.accept(taskId, "baseline");
         checkCancel.accept(taskId);
         long tBaselineNs = System.nanoTime();
-        BaselineComputer.BaselineProbe baseline = baselineComputer.compute(prefs, profile, calibrator);
+        BaselineComputer.BaselineProbe baseline = baselineComputer.compute(prefs, profile);
         long baselineMs = (System.nanoTime() - tBaselineNs) / 1_000_000;
         var baselineVerdict = BudgetReconciler.evaluateBaseline(baseline.distanceKm(), prefs.days(), prefs.kmPerDay());
-        log.info("Baseline: dist={} km, climb={} m, anchorsStraight={} km, roadFactor(seed)={}, verdict={}",
+        log.info("Baseline: dist={} km, climb={} m, anchorsStraight={} km, verdict={}",
                 new Object[]{Math.round(baseline.distanceKm()), Math.round(baseline.climbM()),
-                        Math.round(baseline.anchorsStraightKm()), String.format("%.2f", calibrator.roadAreas()),
-                        baselineVerdict.verdict()});
+                        Math.round(baseline.anchorsStraightKm()), baselineVerdict.verdict()});
         log.info("STARTUP TIMING: baseline (BRouter start→meta, liczony RAZ — reużyty w plannerze) = {} ms", baselineMs);
         if (baselineVerdict.verdict() == BudgetReconciler.Verdict.BUDGET_IMPOSSIBLE) {
             throw new PlanningSessionNotReadyException(
@@ -117,11 +114,10 @@ final class CoverageWaypointBuilder {
 
     /** Pula gmin pusta przy korytarzu bazowej → wyprawa z samych anchorów. */
     private PlanningOrchestrationService.CoverageBuildInfo baselineOnlyInfo(RoutePreferences prefs,
-            BaselineComputer.BaselineProbe baseline, RoadFactorCalibrator calibrator) {
+            BaselineComputer.BaselineProbe baseline) {
         log.warn("No areas near baseline corridor — returning baseline-only trip");
         return new PlanningOrchestrationService.CoverageBuildInfo(BaselineComputer.buildAnchorWaypoints(prefs), 0, 0,
-                baseline.distanceKm(), calibrator.roadAreas(),
-                new ArrayList<>(), new ArrayList<>(), baseline.geometry());
+                baseline.distanceKm(), new ArrayList<>(), new ArrayList<>(), baseline.geometry());
     }
 
     /** Score każdej gminy względem bazowej (detour + intersect + entry-point), sort ASC po detour. */

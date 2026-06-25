@@ -24,23 +24,25 @@ import java.util.Set;
  * {@code visited = historycznie zaliczone ∪ już dobrane}:
  * <pre>
  *   reward   = reward kategorii (różnorodność — rzadkie kategorie cenniejsze)
- *   dist     = min(distToRoute, distToBaseline)   // koszt objazdu wzgl. trasy LUB korytarza
- *   adjFrac  = udział DŁUGOŚCI granicy z `visited` (0..1)  // ZGRANIE z zaliczonymi (też historycznymi)
- *   hole     = adjFrac ≥ HOLE_BORDER_FRACTION ? W_HOLE : 0 // DOMYKANIE dziur (silny bonus, bez gwarancji)
- *   score = reward × (1 + W_ADJ·adjFrac + hole) / max(EPS, dist)   // sort DESC
+ *   dist     = distToBaseline   // STAŁA odległość do PIERWOTNEJ trasy BRoutera (korytarz), nie do rosnącego śladu
+ *   adjFrac   = udział DŁUGOŚCI granicy z `visited` (0..1)        // ZGRANIE z zaliczonymi (też historycznymi)
+ *   holeBonus = w otoczonej enklawie ? W_HOLE/(1+ln(rozmiar)) : 0 // DOMYKANIE dziur (też WIELOGMINOWYCH; malejący z rozmiarem)
+ *   score = reward × (1 + W_ADJ·adjFrac + hole) / max(EPS, dist)^DIST_POW   // sort DESC (bliskość ważna)
  * </pre>
  * Dziury i sąsiedztwo liczone na grafie adjacency JTS (cross-border, zawiera też historycznie zaliczone).
  */
 final class CandidatePicker {
 
-    /** Waga zgrania z zaliczonymi (premiuje gminy graniczące z istniejącym pokryciem). */
-    private static final double W_ADJ = 1.0;
+    /** Waga zgrania z zaliczonymi (premiuje gminy graniczące z istniejącym pokryciem) — mocna, by dobierać
+     *  PRZY froncie i nie zostawiać bliskich gmin na rzecz dalekich objazdów. */
+    private static final double W_ADJ = 3.0;
     /** Bonus za pełne otoczenie (donut-hole) — silny, ale podlega budżetowi (nie gwarancja). */
     private static final double W_HOLE = 5.0;
     /** Dolny clamp dystansu (km) — gmina na/przy trasie nie daje nieskończonego score. */
     private static final double EPS = 0.05;
-    /** Downsample trasy do liczenia distToRoute (ranking jest aproksymacyjny — tani). */
-    private static final int DIST_SAMPLES = 200;
+    /** Wykładnik kary za odległość: dist^DIST_POW w mianowniku — dalekie gminy spadają szybciej (bliskość
+     *  do korytarza ważniejsza niż reward dalekiego sznura → mniej dalekich objazdów dla pojedynczej gminy). */
+    private static final double DIST_POW = 1.5;
 
     /** Wynik doboru: ile gmin wstawiono + czy pula kandydatów się wyczerpała (nic więcej do dobrania). */
     record PickResult(int inserted, boolean poolExhausted) {}
@@ -84,7 +86,8 @@ final class CandidatePicker {
         for (SeedSel s : selected) {
             taken.add(s.area().areaId());
         }
-        List<double[]> distRoute = GeometryUtil.downsample(route, DIST_SAMPLES);
+        // Dziury WIELOGMINOWE: areaId → rozmiar otoczonej enklawy (raz na rerank). Bonus maleje z rozmiarem.
+        Map<Integer, Integer> holeSizes = gminaIndex.enclosedHoleSizes(taken);
 
         List<Cand> ranked = new ArrayList<>();
         for (UnvisitedArea a : pool) {
@@ -93,14 +96,17 @@ final class CandidatePicker {
                 continue;
             }
             double[] point = entryPoint(a);
-            double distR = gminaIndex.distToRoute(a, distRoute);
-            double distB = distBaseCache.getOrDefault(id, distR);
-            double dist = Math.min(distR, distB);
+            // KOSZT = dystans do PIERWOTNEJ trasy BRoutera (seed.baseline()), STAŁY — niezależnie jak pokickany
+            // jest aktualny ślad. Dobieramy WOKÓŁ bazowego korytarza → brak dziur. (distToRoute wyrzucony z kosztu.)
+            double dist = distBaseCache.getOrDefault(id, 0.0);
             double reward = rewards.getOrDefault(RewardModel.categoryKey(a), 1.0);
-            double adjFrac = gminaIndex.neighborVisitedFraction(id, taken);   // udział DŁUGOŚCI granicy z zaliczonymi (też historyczne)
-            boolean hole = adjFrac >= GminaIndex.HOLE_BORDER_FRACTION;        // ≥90% obwodu → donut-hole → silny bonus
-            double score = reward * (1.0 + W_ADJ * adjFrac + (hole ? W_HOLE : 0.0)) / Math.max(EPS, dist);
-            ranked.add(new Cand(a, point, score, distB));
+            double adjFrac = gminaIndex.neighborVisitedFraction(id, taken);   // DYNAMICZNY: zgranie z zaliczonymi (też historyczne)
+            Integer holeSize = holeSizes.get(id);                             // DYNAMICZNY: ≠null → w otoczonej enklawie
+            double holeBonus = holeSize != null ? W_HOLE / (1.0 + Math.log(holeSize)) : 0.0; // malejący z rozmiarem (1→W_HOLE)
+            // Bazowa kolejność po distBase (stały korytarz), ale adjFrac/holeBonus przeliczane co pick → dynamiczna
+            // podmiana gdy pojawia się dziura/enklawa.
+            double score = reward * (1.0 + W_ADJ * adjFrac + holeBonus) / Math.pow(Math.max(EPS, dist), DIST_POW);
+            ranked.add(new Cand(a, point, score, dist));
         }
         ranked.sort(Comparator.comparingDouble((Cand c) -> c.score()).reversed());
 

@@ -55,9 +55,6 @@ public class PlanningSessionEntity {
     @Column(name = "summary_baseline_km")
     private Double summaryBaselineKm;
 
-    @Column(name = "summary_road_areas")
-    private Double summaryRoadAreas;
-
     @Column(name = "summary_climb_warning")
     private Boolean summaryClimbWarning;
 
@@ -93,8 +90,6 @@ public class PlanningSessionEntity {
     public void setSummaryInitialPoolSize(Integer v) { this.summaryInitialPoolSize = v; }
     public Double getSummaryBaselineKm() { return summaryBaselineKm; }
     public void setSummaryBaselineKm(Double v) { this.summaryBaselineKm = v; }
-    public Double getSummaryRoadAreas() { return summaryRoadAreas; }
-    public void setSummaryRoadAreas(Double v) { this.summaryRoadAreas = v; }
     public Boolean getSummaryClimbWarning() { return summaryClimbWarning; }
     public void setSummaryClimbWarning(Boolean v) { this.summaryClimbWarning = v; }
     public Instant getCreatedAt() { return createdAt; }

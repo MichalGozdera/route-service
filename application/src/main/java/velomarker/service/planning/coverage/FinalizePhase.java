@@ -101,15 +101,18 @@ final class FinalizePhase {
                             cycle, Math.round(eFrac * 100));
                     break;
                 }
-                int g = metrics.eval(route).visited().size();
-                int additional = (int) Math.round(g * (1.0 - eFrac) / Math.max(0.05, eFrac));
-                if (additional > 0) {
-                    edgeRouter.setReason("grow");
-                    CandidatePicker.PickResult pr = picker.pick(additional); // HURT: świeży ranking, dobierz `additional` najlepszych
-                    delta = pr.inserted();
-                    grown += delta;
-                    if (pr.poolExhausted()) allCandidatesUsed = true;
-                    realEffort = metrics.effortViaCache(route);
+                // MAŁYMI partiami z pomiarem (jak init-grow), STOP gdy przekroczy 105% — bez wielkiego przestrzału
+                // jednym proporcjonalnym `pick`iem (to robiło dziurę + wymuszało peel → wtórne dziury).
+                edgeRouter.setReason("grow");
+                final int GROW_BATCH = 6;
+                while (realEffort < hiBand) {
+                    CandidatePicker.PickResult pr = picker.pick(GROW_BATCH);
+                    if (pr.inserted() == 0) { allCandidatesUsed = true; break; }
+                    delta += pr.inserted();
+                    grown += pr.inserted();
+                    CoverageLocalSearch.optimize(route);            // 2-opt po partii
+                    realEffort = metrics.effortViaCache(route);     // realny pomiar po KAŻDEJ małej partii
+                    if (pr.poolExhausted()) { allCandidatesUsed = true; break; }
                 }
                 if (delta == 0) allCandidatesUsed = true; // nic nie dobrano → następny under-cykl wyjdzie
             }
@@ -132,9 +135,7 @@ final class FinalizePhase {
                 break;
             }
         }
-        // Domykanie dziur NIE jest już osobnym etapem — kryterium dziur (W_HOLE) jest wbudowane w CandidatePicker,
-        // więc otoczone gminy są dobierane pierwsze w hurtowym grow cyklu budżetowego (gdy starcza budżetu).
-        refine("seed");                      // FINALNY untangle — kontrakt: trasa rozplątana dla plan()
+        // FINALNY untangle — kontrakt: trasa rozplątana dla plan()
         realEffort = metrics.effortViaCache(route);
         return new FinalizeResult(realEffort, grown, trimmed);
     }
@@ -220,7 +221,11 @@ final class FinalizePhase {
             double eOut = edgeRouter.edge(cur, next).distanceKm();
             double detour = Math.max(0.0, eIn + eOut
                     - velomarker.service.planning.WaypointSelector.haversineKm(prev, next));
-            cands.add(new DealCand(s, rw / Math.max(DETOUR_EPS, detour)));
+            // Klucz: niski reward + duży objazd = tnij pierwszy; ALE pomnóż przez (1+adjFrac), by gminy
+            // częściowo wtopione w pokrycie (wysoki udział granicy z zaliczonymi) ciąć PÓŹNIEJ → nie rób
+            // wtórnych dziur. Skrajne/peryferyjne (adjFrac≈0) lecą pierwsze.
+            double adj = gminaIndex.neighborVisitedFraction(aid, union);
+            cands.add(new DealCand(s, (rw / Math.max(DETOUR_EPS, detour)) * (1.0 + adj)));
         }
         return cands;
     }

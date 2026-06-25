@@ -6,6 +6,7 @@ import velomarker.entity.planning.UnvisitedArea;
 import velomarker.port.out.planning.AreaCoverageIndex;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -230,6 +231,39 @@ class JtsAreaCoverageIndexTest {
                 squareGmina(3, 15.1, 50.0, 0.05)));
         double f = idx.neighborVisitedFraction(1, Set.of(2));
         assertThat(f).isGreaterThan(0.0).isLessThan(0.5);
+    }
+
+    @Test
+    void enclosedRegionSizes_multiGminaEnclave() {
+        // Siatka 4×4; środkowy zlepek 2×2 (id 6,7,10,11) NIEzaliczony, reszta zaliczona → enklawa rozmiaru 4.
+        List<UnvisitedArea> grid = new java.util.ArrayList<>();
+        for (int row = 0; row < 4; row++) {
+            for (int col = 0; col < 4; col++) {
+                grid.add(squareGmina(row * 4 + col + 1, 15.0 + col * 0.1, 50.0 + row * 0.1, 0.05));
+            }
+        }
+        AreaCoverageIndex idx = FACTORY.build(grid);
+        Set<Integer> enclave = Set.of(6, 7, 10, 11);
+        Set<Integer> visited = new java.util.HashSet<>();
+        for (int id = 1; id <= 16; id++) if (!enclave.contains(id)) visited.add(id);
+        Map<Integer, Integer> sizes = idx.enclosedRegionSizes(visited, 0.9);
+        assertThat(sizes.keySet()).containsExactlyInAnyOrderElementsOf(enclave);
+        assertThat(sizes.values()).allMatch(s -> s == 4);
+    }
+
+    @Test
+    void enclosedRegionSizes_borderClusterNotEnclave() {
+        // 3×3, NIEzaliczony tylko narożnik (id1) — otwarty na 2 boki (krawędź siatki) → udział obwodu 0.5 < 0.9 → NIE enklawa.
+        List<UnvisitedArea> grid = new java.util.ArrayList<>();
+        int id = 1;
+        for (int row = -1; row <= 1; row++) {
+            for (int col = -1; col <= 1; col++) {
+                grid.add(squareGmina(id++, 15.0 + col * 0.1, 50.0 + row * 0.1, 0.05));
+            }
+        }
+        AreaCoverageIndex idx = FACTORY.build(grid);
+        Set<Integer> visited = Set.of(2, 3, 4, 5, 6, 7, 8, 9); // wszystko poza narożnikiem id1
+        assertThat(idx.enclosedRegionSizes(visited, 0.9)).isEmpty();
     }
 
     @Test

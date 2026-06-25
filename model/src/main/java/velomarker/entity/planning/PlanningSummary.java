@@ -11,7 +11,6 @@ package velomarker.entity.planning;
  * @param poolSize            wybrana pula obszarów (finalna)
  * @param initialPoolSize     pula kandydatów po scoringu (przed wyborem)
  * @param baselineKm          baseline BRouter (start→via→meta, bez obszarów) — null gdy nieliczone (AB/FREESTYLE)
- * @param roadAreas           calibrator.roadAreas() (road/straight dla gęstej puli) — null gdy nieliczone
  * @param climbWarning        true gdy totalElevationGain > refClimbTotal × 1.10 (user-facing warning)
  */
 public record PlanningSummary(
@@ -23,7 +22,6 @@ public record PlanningSummary(
         int poolSize,
         int initialPoolSize,
         Double baselineKm,
-        Double roadAreas,
         boolean climbWarning
 ) {
     public enum BudgetVerdict { OK, SURPLUS, DEFICIT, BUDGET_IMPOSSIBLE }

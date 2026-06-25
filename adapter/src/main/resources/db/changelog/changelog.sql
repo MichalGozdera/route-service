@@ -150,3 +150,8 @@ ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_reconcile_grows;
 -- Pokrycie gmin per dzień liczy teraz front (turf.js) z geometrii — backend nie zwraca coveredAreaIds.
 -- Kolumna była nie do utrzymania (rozjazd backend-JTS vs front-turf). Usuwamy.
 ALTER TABLE planning.session_day DROP COLUMN IF EXISTS covered_area_ids;
+
+-- changeset cokeman:25_06_2026_02_drop_summary_road_areas
+-- RoadFactorCalibrator usunięty: road_areas był tylko raportowanym diagnostykiem (road/straight z baseline),
+-- zero wpływu na planowanie i niewyświetlany na froncie. Usuwamy kolumnę i kalibrator.
+ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_road_areas;

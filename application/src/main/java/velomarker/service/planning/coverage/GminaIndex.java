@@ -81,9 +81,16 @@ public class GminaIndex {
         return coverage.neighborVisitedFraction(areaId, visited);
     }
 
-    /** Czy gmina jest „dziurą": ≥{@link #HOLE_BORDER_FRACTION} obwodu graniczy z {@code visited}. */
+    /** Czy gmina jest „dziurą" (per-gmina): ≥{@link #HOLE_BORDER_FRACTION} obwodu graniczy z {@code visited}.
+     *  Używane w ochronie przed cięciem (FinalizePhase). Dobór w pickerze używa {@link #enclosedHoleSizes}. */
     public boolean enclosedByVisited(int areaId, Set<Integer> visited) {
         return neighborVisitedFraction(areaId, visited) >= HOLE_BORDER_FRACTION;
+    }
+
+    /** Dziury WIELOGMINOWE: areaId → rozmiar enklawy dla gmin w spójnych grupach otoczonych (≥{@link
+     *  #HOLE_BORDER_FRACTION} obwodu zewnętrznego) przez {@code visited}. Do bonusu malejącego z rozmiarem. */
+    public Map<Integer, Integer> enclosedHoleSizes(Set<Integer> visited) {
+        return coverage.enclosedRegionSizes(visited, HOLE_BORDER_FRACTION);
     }
 
     /** Najmniejszy powierzchniowo obszar zawierający punkt (obwarzanek: miasto w dziurze wiejskiej),

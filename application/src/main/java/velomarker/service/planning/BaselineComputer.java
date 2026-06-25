@@ -36,11 +36,10 @@ final class BaselineComputer {
     /**
      * Pre-screen baseline: BRouter na samych anchorach [start, via..., end]. Wznios bierzemy z JUŻ
      * wzbogaconej geometrii ({@code CalculateRouteService} dokleja tunelo-korygowany z do coords) —
-     * bez drugiego strzału w DEM. Seeduje {@code calibrator.measure} stosunkiem road/straight szkieletu.
-     * Zwraca dystans/wznios/straight do dalszego użycia w reconcile (extra = pełna trasa − baseline).
+     * bez drugiego strzału w DEM. Zwraca dystans/wznios/straight + geometrię korytarza (reużywaną w plannerze).
      * Pada BRouter → wyjątek (plan niemożliwy).
      */
-    BaselineProbe compute(RoutePreferences prefs, String profile, RoadFactorCalibrator calibrator) {
+    BaselineProbe compute(RoutePreferences prefs, String profile) {
         List<double[]> anchors = new ArrayList<>();
         anchors.add(prefs.start().toLngLat());
         if (prefs.via() != null) {
@@ -57,7 +56,6 @@ final class BaselineComputer {
         try {
             RouteCalculation r = routeUseCase.calculate(
                     new CalculateRouteUseCase.CalculateRouteCommand(anchors, profile, false));
-            calibrator.measure(r.distanceKm(), straight); // seed road-factor ze szkieletu start→meta
             return new BaselineProbe(r.distanceKm(), ascentFromCoords(r.coordinates()), straight, r.coordinates());
         } catch (RuntimeException e) {
             // Baseline OBOWIĄZKOWY: jeśli BRouter nie policzy trasy start→via→meta, plan jest niemożliwy

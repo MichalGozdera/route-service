@@ -100,6 +100,16 @@ public interface AreaCoverageIndex {
      */
     double neighborVisitedFraction(int areaId, Set<Integer> visited);
 
+    /**
+     * Dziury WIELOGMINOWE: spójne grupy (komponenty sąsiedztwa) niezaliczonych kandydatów otoczone przez
+     * {@code visited}. Dla każdej grupy liczony udział DŁUGOŚCI jej OBWODU ZEWNĘTRZNEGO graniczącego z
+     * {@code visited} (granice wewnątrz grupy się znoszą); grupa z udziałem ≥ {@code minFraction} = enklawa.
+     * Zwraca {@code areaId → rozmiar enklawy} dla KAŻDEJ gminy należącej do takiej enklawy (gmina = grupa
+     * rozmiaru 1 to przypadek szczególny). Otwarte boki (krawędź regionu/zagranica) są w obwodzie → grupa na
+     * brzegu ma niski udział i nie jest enklawą.
+     */
+    Map<Integer, Integer> enclosedRegionSizes(Set<Integer> visited, double minFraction);
+
     /** OBWÓD pokrycia: zaliczone gminy z ≥1 sąsiadem o innym countryId (rim danych); fallback single-country =
      *  gminy z liczbą sąsiadów &lt; max-w-zbiorze. Do cięcia gdy całość pokryta (wszystkie allNeighborsVisited=true,
      *  fringe pusty), a trzeba zejść z budżetu — tnij OBWÓD zamiast robić dziurę w środku. */

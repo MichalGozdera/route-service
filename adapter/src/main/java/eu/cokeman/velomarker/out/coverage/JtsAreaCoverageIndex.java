@@ -748,6 +748,71 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
     }
 
     @Override
+    public Map<Integer, Integer> enclosedRegionSizes(Set<Integer> visited, double minFraction) {
+        Map<Integer, Integer> result = new HashMap<>();
+        if (empty) {
+            return result;
+        }
+        Set<Integer> seen = new HashSet<>();
+        for (int start : byId.keySet()) {
+            if (adjacencyOnly.contains(start) || visited.contains(start) || seen.contains(start)) {
+                continue;   // tylko niezaliczeni kandydaci, każdy komponent raz
+            }
+            // BFS: maksymalny zlepek stykających się niezaliczonych kandydatów (ściana = visited/historyczne).
+            List<Integer> comp = new ArrayList<>();
+            java.util.Deque<Integer> queue = new java.util.ArrayDeque<>();
+            queue.add(start);
+            seen.add(start);
+            while (!queue.isEmpty()) {
+                int id = queue.poll();
+                comp.add(id);
+                int[] nb = adjacency.get(id);
+                if (nb == null) {
+                    continue;
+                }
+                for (int x : nb) {
+                    if (adjacencyOnly.contains(x) || visited.contains(x) || seen.contains(x)) {
+                        continue;   // ściana albo już odwiedzony w BFS
+                    }
+                    seen.add(x);
+                    queue.add(x);
+                }
+            }
+            // Otoczenie po OBWODZIE ZEWNĘTRZNYM zlepka: Σobwód − Σgranice_wewnętrzne; numerator = granice z visited.
+            Set<Integer> compSet = new HashSet<>(comp);
+            double sumPerim = 0, sumInternal = 0, sumVisited = 0;
+            for (int id : comp) {
+                Double per = perimeterKm.get(id);
+                if (per != null) {
+                    sumPerim += per;
+                }
+                int[] nb = adjacency.get(id);
+                double[] sk = neighborSharedKm.get(id);
+                if (nb == null || sk == null) {
+                    continue;
+                }
+                for (int j = 0; j < nb.length; j++) {
+                    if (compSet.contains(nb[j])) {
+                        sumInternal += sk[j];               // krawędź wewnętrzna (liczona z obu członków → 2×)
+                    } else if (visited.contains(nb[j]) || adjacencyOnly.contains(nb[j])) {
+                        sumVisited += sk[j];                // bok zewnętrzny graniczący z zaliczonymi
+                    }
+                }
+            }
+            double outer = sumPerim - sumInternal;
+            if (outer <= 0) {
+                continue;
+            }
+            if (sumVisited / outer >= minFraction) {
+                for (int id : comp) {
+                    result.put(id, comp.size());            // cała enklawa → jej rozmiar (do bonusu malejącego)
+                }
+            }
+        }
+        return result;
+    }
+
+    @Override
     public Set<Integer> borderAreaIds(Set<Integer> visited) {
         Set<Integer> out = new HashSet<>();
         if (empty) {

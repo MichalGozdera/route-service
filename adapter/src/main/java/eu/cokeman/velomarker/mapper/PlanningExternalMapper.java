@@ -59,7 +59,6 @@ public class PlanningExternalMapper {
         dto.setPoolSize(s.poolSize());
         dto.setInitialPoolSize(s.initialPoolSize());
         if (s.baselineKm() != null) dto.setBaselineKm(s.baselineKm());
-        if (s.roadAreas() != null) dto.setRoadAreas(s.roadAreas());
         dto.setClimbWarning(s.climbWarning());
         return dto;
     }

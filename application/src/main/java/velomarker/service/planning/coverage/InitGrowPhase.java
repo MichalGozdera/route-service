@@ -156,8 +156,8 @@ final class InitGrowPhase {
                         new Object[]{selected.size(), round, Math.round(realEffort), Math.round(targetEffort),
                                 Math.round(pct), elapsedS, Math.round(avgSecPerArea * 1000), etaS / 60});
             }
-            if (realEffort >= growCeiling) { // grow do 110% budżetu; FINALIZE ściągnie do pasma [95,105]%
-                log.info("Coverage INIT-GROW: osiągnięto {}% (≥110%) → stop rundy 0",
+            if (realEffort >= hiBand) { // stop na 105% (NIE 110%) — kończymy w paśmie, finalize prawie nie peeluje (mniej dziur z cięcia)
+                log.info("Coverage INIT-GROW: osiągnięto {}% (≥105%) → stop rundy 0",
                         Math.round(realEffort * 100.0 / targetEffort));
                 break;
             }

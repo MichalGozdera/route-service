@@ -145,9 +145,8 @@ public class PlanningOrchestrationService {
             String profile = resolveProfile(prefs);
             resetPlanCounters();
             logPlanStart(taskId, session, profile, prefs);
-            RoadFactorCalibrator calibrator = new RoadFactorCalibrator();
 
-            WaypointBuild wb = buildWaypointsForIntent(taskId, session, prefs, profile, bearerToken, calibrator);
+            WaypointBuild wb = buildWaypointsForIntent(taskId, session, prefs, profile, bearerToken);
             RoutedPlan routed = routePlan(taskId, prefs, wb, profile);
             RouteCalculation full = routed.full();
             List<Waypoint> allWaypoints = routed.finalWaypoints();
@@ -271,7 +270,7 @@ public class PlanningOrchestrationService {
 
     /** Buduje waypointy wg intentu (AB/FREESTYLE/COVERAGE); dla COVERAGE odpala planner pokrycia. */
     private WaypointBuild buildWaypointsForIntent(UUID taskId, PlanningSession session, RoutePreferences prefs,
-                                                  String profile, String bearerToken, RoadFactorCalibrator calibrator) {
+                                                  String profile, String bearerToken) {
             CoverageBuildInfo coverageInfo = null;
             List<Waypoint> allWaypoints;
             // COVERAGE BRANCH: planner pokrycia (seed + compact-loop) ZWRACA gotowy RouteCalculation,
@@ -281,7 +280,7 @@ public class PlanningOrchestrationService {
                 case AB -> allWaypoints = buildAbWaypoints(prefs);
                 case FREESTYLE -> allWaypoints = buildFreestyleWaypoints(prefs);
                 case COVERAGE -> {
-                    coverageInfo = new CoverageWaypointBuilder(visitClient, waypointSelector, this::checkCancel, this::setPhase, coverageIndexFactory, routeUseCase).build(taskId, prefs, bearerToken, profile, calibrator);
+                    coverageInfo = new CoverageWaypointBuilder(visitClient, waypointSelector, this::checkCancel, this::setPhase, coverageIndexFactory, routeUseCase).build(taskId, prefs, bearerToken, profile);
                     allWaypoints = coverageInfo.waypoints;
                     if (coveragePlanner != null) {
                         setPhase(taskId, "coverage-planning");
@@ -362,7 +361,6 @@ public class PlanningOrchestrationService {
             int initialPoolSize,
             int finalPoolSize,
             Double baselineKm,
-            Double roadAreas,
             List<AreaCandidate> pickedCandidates,
             List<UnvisitedArea> historicallyVisited,
             List<double[]> baselineGeometry
@@ -389,7 +387,6 @@ public class PlanningOrchestrationService {
         int initialPool = coverageInfo != null ? coverageInfo.initialPoolSize() : 0;
         int finalPool   = coverageInfo != null ? coverageInfo.finalPoolSize()   : 0;
         Double baselineKm = coverageInfo != null ? coverageInfo.baselineKm() : null;
-        Double roadAreas = coverageInfo != null ? coverageInfo.roadAreas() : null;
 
         // Climb warning: realny wznios > refClimbTotal × 1.10 (CLIMB_WARNING_RATIO).
         int daysCount = prefs.days() != null ? prefs.days() : 1;
@@ -402,7 +399,7 @@ public class PlanningOrchestrationService {
 
         return new PlanningSummary(totalKm, totalElev, budget, v, r.surplusKm(),
                 finalPool, initialPool,
-                baselineKm, roadAreas, climbWarning);
+                baselineKm, climbWarning);
     }
 
     private ChunkedBrouterRouter chunkedRouter;

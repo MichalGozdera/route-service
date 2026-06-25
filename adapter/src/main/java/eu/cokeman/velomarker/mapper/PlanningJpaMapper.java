@@ -71,7 +71,6 @@ public final class PlanningJpaMapper {
             e.setSummaryPoolSize(null);
             e.setSummaryInitialPoolSize(null);
             e.setSummaryBaselineKm(null);
-            e.setSummaryRoadAreas(null);
             e.setSummaryClimbWarning(null);
             return;
         }
@@ -83,7 +82,6 @@ public final class PlanningJpaMapper {
         e.setSummaryPoolSize(s.poolSize());
         e.setSummaryInitialPoolSize(s.initialPoolSize());
         e.setSummaryBaselineKm(s.baselineKm());
-        e.setSummaryRoadAreas(s.roadAreas());
         e.setSummaryClimbWarning(s.climbWarning());
     }
 
@@ -98,7 +96,6 @@ public final class PlanningJpaMapper {
                 e.getSummaryPoolSize() != null ? e.getSummaryPoolSize() : 0,
                 e.getSummaryInitialPoolSize() != null ? e.getSummaryInitialPoolSize() : 0,
                 e.getSummaryBaselineKm(),
-                e.getSummaryRoadAreas(),
                 e.getSummaryClimbWarning() != null && e.getSummaryClimbWarning()
         );
     }
