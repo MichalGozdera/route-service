@@ -23,6 +23,10 @@ import velomarker.port.out.planning.PlanningSessionDayRepository;
 import velomarker.port.out.planning.PlanningSessionRepository;
 import velomarker.port.out.planning.VisitServiceClient;
 
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.context.Scope;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -78,6 +82,9 @@ public class PlanningOrchestrationService {
     /** Planner pokrycia (seed + compact-loop) — COVERAGE intent. */
     private final velomarker.service.planning.coverage.CoveragePlanner coveragePlanner;
     private PlanProgressSink progressSink; // setter-injected by SpringAppConfig (avoids cyclic dep)
+    /** Phase span per virtual-thread planu (ThreadLocal — wiele planów równolegle); child root „plan" (PlanTaskService). */
+    private final ThreadLocal<Span> phaseSpan = new ThreadLocal<>();
+    private final ThreadLocal<Scope> phaseScope = new ThreadLocal<>();
 
     /**
      * Rejestr brakujących tile'ów BRoutera (.rd5) per task. BRouter zwraca 400
@@ -162,6 +169,7 @@ public class PlanningOrchestrationService {
             setPhase(taskId, "saving");
             saveAndSummarize(taskId, userId, session, days, prefs, wb.coverageInfo(), full);
         } finally {
+            closePhaseSpan();
             reportMissingTiles(taskId);
         }
     }
@@ -419,6 +427,19 @@ public class PlanningOrchestrationService {
         } catch (RuntimeException e) {
             log.debug("updatePhase failed: {}", e.getMessage());
         }
+        // OTel: zamknij poprzedni phase span, otwórz nowy (child root „plan") — fazy widoczne w Tempo jako drzewo
+        closePhaseSpan();
+        Span sp = GlobalOpenTelemetry.get().getTracer("route-service-plan").spanBuilder("plan." + phase).startSpan();
+        phaseSpan.set(sp);
+        phaseScope.set(sp.makeCurrent());
+    }
+
+    /** Zamknij bieżący phase span (scope→span) — kolejny setPhase / koniec executePlan. */
+    private void closePhaseSpan() {
+        Scope sc = phaseScope.get();
+        if (sc != null) { sc.close(); phaseScope.remove(); }
+        Span sp = phaseSpan.get();
+        if (sp != null) { sp.end(); phaseSpan.remove(); }
     }
 
     private void checkCancel(UUID taskId) {

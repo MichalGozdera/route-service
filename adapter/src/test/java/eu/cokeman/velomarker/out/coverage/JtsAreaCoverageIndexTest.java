@@ -202,4 +202,29 @@ class JtsAreaCoverageIndexTest {
         AreaCoverageIndex idx = FACTORY.build(List.of(squareGmina(1, 15.0, 50.0, 0.05)));
         assertThat(idx.allNeighborsVisited(1, Set.of())).isFalse();
     }
+
+    @Test
+    void borderAreaIds_crossCountry_bothRim() {
+        // Dwie stykające się gminy z RÓŻNYCH krajów → obie na obwodzie (każda ma sąsiada innego kraju).
+        AreaCoverageIndex idx = FACTORY.build(List.of(
+                UnvisitedArea.levelMulti(1, "a", 50.0, 14.9, List.of(new AreaPart(square(14.9, 50.0, 0.05), null)), 1, 4, "gmina"),
+                UnvisitedArea.levelMulti(2, "b", 50.0, 15.0, List.of(new AreaPart(square(15.0, 50.0, 0.05), null)), 2, 4, "gmina")));
+        assertThat(idx.borderAreaIds(Set.of(1, 2))).containsExactlyInAnyOrder(1, 2);
+    }
+
+    @Test
+    void borderAreaIds_singleCountry_rimByNeighborCount() {
+        // Grid 3×3 jeden kraj: środek (5) ma NAJWIĘCEJ sąsiadów (max-deg) → NIE rim; reszta (mniej sąsiadów) = obwód.
+        List<UnvisitedArea> grid = new java.util.ArrayList<>();
+        int id = 1;
+        for (int row = -1; row <= 1; row++) {
+            for (int col = -1; col <= 1; col++) {
+                grid.add(squareGmina(id++, 15.0 + col * 0.1, 50.0 + row * 0.1, 0.05));
+            }
+        }
+        AreaCoverageIndex idx = FACTORY.build(grid);
+        assertThat(idx.borderAreaIds(Set.of(1, 2, 3, 4, 5, 6, 7, 8, 9)))
+                .containsExactlyInAnyOrder(1, 2, 3, 4, 6, 7, 8, 9)
+                .doesNotContain(5);
+    }
 }

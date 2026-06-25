@@ -71,6 +71,14 @@ public interface AreaCoverageIndex {
      *  {@code null} gdy ślad nie wchodzi w gminę. Do pogłębiania KIERUNKOWEGO (entry→deepest, przedłuż wzdłuż wjazdu). */
     double[] deepestPointOnTrack(List<double[]> track, int areaId);
 
+    /** BATCH (jeden przebieg track + STRtree, jak {@link #firstBufferEntryPoints}): najgłębszy punkt śladu per gmina
+     *  z {@code areaIds} → Map gid→punkt. Zastępuje N× {@link #deepestPointOnTrack} (O(track·log gmin) vs O(track·gmin)). */
+    Map<Integer, double[]> deepestPointsOnTrack(List<double[]> track, Set<Integer> areaIds);
+
+    /** BATCH: PIERWSZE wejście ≥{@code minDepthMeters} per gmina z {@code areaIds} (jeden przebieg + STRtree) → Map gid→punkt.
+     *  Zastępuje N× {@link #firstTrackPointAtDepth} (Anchorer lvl1 — O(track·log gmin) vs O(track·gmin)). */
+    Map<Integer, double[]> firstTrackPointsAtDepth(List<double[]> track, Set<Integer> areaIds, double minDepthMeters);
+
     /**
      * Gminy NIEZALICZONE OTOCZONE: nieprzecięte, dla których {@link #allNeighborsVisited} = true (KAŻDY
      * sąsiad wielokątowy — adjacency po realnym styku granic, cross-border — jest w {@code visited}).
@@ -86,6 +94,11 @@ public interface AreaCoverageIndex {
      * (0 sąsiadów) nie jest otoczona.
      */
     boolean allNeighborsVisited(int areaId, Set<Integer> visited);
+
+    /** OBWÓD pokrycia: zaliczone gminy z ≥1 sąsiadem o innym countryId (rim danych); fallback single-country =
+     *  gminy z liczbą sąsiadów &lt; max-w-zbiorze. Do cięcia gdy całość pokryta (wszystkie allNeighborsVisited=true,
+     *  fringe pusty), a trzeba zejść z budżetu — tnij OBWÓD zamiast robić dziurę w środku. */
+    Set<Integer> borderAreaIds(Set<Integer> visited);
 
     /**
      * PIERWSZY (wzdłuż śladu) punkt {@code track} w gminie {@code areaId} o odległości od granicy ≥ {@code minDepthMeters}

@@ -91,17 +91,52 @@ final class EdgeRouter {
         }
         if (edges.size() < 2) return;
         java.util.concurrent.Semaphore gate = new java.util.concurrent.Semaphore(parallelism);
+        io.opentelemetry.context.Context ctx = io.opentelemetry.context.Context.current();   // propaguj trace-context do vthread
         try (var exec = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
             List<java.util.concurrent.Future<?>> futures = new ArrayList<>(edges.size());
             for (double[][] e : edges) {
                 futures.add(exec.submit(() -> {
                     gate.acquireUninterruptibly();
-                    try { edge(e[0], e[1]); }
-                    catch (RuntimeException ignored) { /* fallback haversine w edge() */ }
+                    try (var sc = ctx.makeCurrent()) { edge(e[0], e[1]); }
+                    catch (RuntimeException ex) { /* fallback haversine w edge() */ }
                     finally { gate.release(); }
                 }));
             }
             for (var f : futures) { try { f.get(); } catch (Exception ignored) { /* best-effort */ } }
+        }
+    }
+
+    /** Liczba wątków równoległych (cap dla {@link #parallelMap}/{@link #prewarmPairs}). */
+    int parallelism() { return parallelism; }
+
+    /**
+     * Równoległa mapa kolekcji → {@code List} na WIRTUALNYCH wątkach (Semaphore cap = {@link #parallelism}, jak
+     * {@link #prewarmPairs}), z propagacją OTel trace-context: {@code ctx.makeCurrent()} w wątku → spany w {@code fn}
+     * (np. BRouter z probeSample) dziedziczą parent span. {@code null}-wyniki odfiltrowane; kolejność nieistotna.
+     * Zastępuje {@code parallelStream} (ForkJoinPool gubi OTel context).
+     */
+    <T, R> List<R> parallelMap(java.util.Collection<T> items, java.util.function.Function<T, R> fn) {
+        if (items == null || items.isEmpty()) return new ArrayList<>();
+        if (parallelism <= 1 || items.size() < 2) {
+            List<R> seq = new ArrayList<>(items.size());
+            for (T it : items) { R r = fn.apply(it); if (r != null) seq.add(r); }
+            return seq;
+        }
+        java.util.concurrent.Semaphore gate = new java.util.concurrent.Semaphore(parallelism);
+        io.opentelemetry.context.Context ctx = io.opentelemetry.context.Context.current();
+        try (var exec = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            List<java.util.concurrent.Future<R>> futures = new ArrayList<>(items.size());
+            for (T item : items) {
+                futures.add(exec.submit(() -> {
+                    gate.acquireUninterruptibly();
+                    try (var ignored = ctx.makeCurrent()) { return fn.apply(item); }
+                    catch (RuntimeException e) { return null; }
+                    finally { gate.release(); }
+                }));
+            }
+            List<R> out = new ArrayList<>(items.size());
+            for (var f : futures) { try { R r = f.get(); if (r != null) out.add(r); } catch (Exception ignored) { } }
+            return out;
         }
     }
 
@@ -117,23 +152,23 @@ final class EdgeRouter {
         double total = Math.max(0.001, h1 + h2);
         double d1 = full.distanceKm() * (h1 / total), d2 = full.distanceKm() * (h2 / total);
         double c1 = full.climbM() * (h1 / total), c2 = full.climbM() * (h2 / total);
-        cache.getOrCompute(a[0], a[1], point[0], point[1], pts -> new EdgeCache.EdgeInfo(d1, c1, d1 + alpha * c1, g1, full.crosspointA(), null));
-        cache.getOrCompute(point[0], point[1], b[0], b[1], pts -> new EdgeCache.EdgeInfo(d2, c2, d2 + alpha * c2, g2, null, full.crosspointB()));
+        cache.putApproximate(a[0], a[1], point[0], point[1], new EdgeCache.EdgeInfo(d1, c1, d1 + alpha * c1, g1, full.crosspointA(), null));
+        cache.putApproximate(point[0], point[1], b[0], b[1], new EdgeCache.EdgeInfo(d2, c2, d2 + alpha * c2, g2, null, full.crosspointB()));
     }
 
-    /** Po cięciu spurów przeroutuj REALNIE legi zasilone slicem (przybliżenie) → ujawnia wtórniaki. */
+    /** Przeroutuj REALNIE wszystkie sliced-legi (approximate) — invalidate + realny BRouter. Po REANCHOR/cięciu: ślad
+     *  staje się realny (pogłębianie/kotwiczenie na realnym, nie na haversine-przybliżeniu starej nogi). Sliced =
+     *  fragment STAREJ krawędzi (a→b), realny edge(a→point) to NOWA trasa do wp — istotnie różne, stąd reroute KAŻDEGO.
+     *  Idempotent: gdy zero approximate (już przerutowane) → 0 reroutów = tani no-op. Zwraca ile przeroutowano. */
     int rerouteApproximateLegs(List<double[]> route) {
         int rerouted = 0;
         cache.setReason("ogonek-relokacja");
         for (int i = 0; i < route.size() - 1; i++) {
             double[] a = route.get(i), b = route.get(i + 1);
             if (!cache.isApproximate(a[0], a[1], b[0], b[1])) continue;
-            EdgeCache.EdgeInfo slice = edge(a, b);
-            double hav = velomarker.service.planning.WaypointSelector.haversineKm(a, b);
-            if (slice.distanceKm() <= 1.3 * Math.max(0.05, hav)) continue;
-            cache.invalidate(a[0], a[1], b[0], b[1]);
-            EdgeCache.EdgeInfo real = edge(a, b);
-            if (real.distanceKm() < 0.97 * slice.distanceKm()) rerouted++;
+            cache.invalidate(a[0], a[1], b[0], b[1]);   // wyrzuć sliced-approx z cache
+            edge(a, b);                                  // realny BRouter (miss → policz, oznacz realny, nie-approximate)
+            rerouted++;
         }
         cache.setReason("pomiar");
         return rerouted;

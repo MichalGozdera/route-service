@@ -550,6 +550,62 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
     }
 
     @Override
+    public Map<Integer, double[]> deepestPointsOnTrack(List<double[]> track, Set<Integer> areaIds) {
+        Map<Integer, double[]> result = new HashMap<>();
+        if (empty || track == null || track.isEmpty() || areaIds == null || areaIds.isEmpty()) return result;
+        Map<Integer, Geometry> boundaries = boundaryCache(areaIds);   // 1× per gmina (nie per punkt)
+        Map<Integer, Double> maxDist = new HashMap<>();
+        for (double[] p : track) {                          // JEDEN przebieg track + STRtree (batch wszystkie gminy)
+            Coordinate c = project(p[0], p[1]);
+            @SuppressWarnings("unchecked")
+            List<AreaGeom> cands = tree.query(new Envelope(c));
+            if (cands.isEmpty()) continue;
+            Point pt = GF.createPoint(c);
+            for (AreaGeom ag : cands) {
+                int id = ag.area.areaId();
+                Geometry b = boundaries.get(id);
+                if (b == null || !ag.prepFull().contains(pt)) continue;
+                double d = b.distance(pt);
+                if (d > maxDist.getOrDefault(id, -1.0)) { maxDist.put(id, d); result.put(id, p.clone()); }
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public Map<Integer, double[]> firstTrackPointsAtDepth(List<double[]> track, Set<Integer> areaIds, double minDepthMeters) {
+        Map<Integer, double[]> result = new HashMap<>();
+        if (empty || track == null || track.isEmpty() || areaIds == null || areaIds.isEmpty()) return result;
+        Map<Integer, Geometry> boundaries = boundaryCache(areaIds);
+        double minDeg = minDepthMeters / METERS_PER_DEG;
+        for (double[] p : track) {                          // JEDEN przebieg track → PIERWSZE wejście ≥depth per gmina
+            Coordinate c = project(p[0], p[1]);
+            @SuppressWarnings("unchecked")
+            List<AreaGeom> cands = tree.query(new Envelope(c));
+            if (cands.isEmpty()) continue;
+            Point pt = GF.createPoint(c);
+            for (AreaGeom ag : cands) {
+                int id = ag.area.areaId();
+                if (result.containsKey(id)) continue;       // pierwsze już znalezione → pomiń
+                Geometry b = boundaries.get(id);
+                if (b == null || !ag.prepFull().contains(pt)) continue;
+                if (b.distance(pt) >= minDeg) result.put(id, p.clone());
+            }
+        }
+        return result;
+    }
+
+    /** Boundary-geometry per gmina z {@code areaIds} (liczone RAZ — {@code getBoundary()} jest drogie per-call). */
+    private Map<Integer, Geometry> boundaryCache(Set<Integer> areaIds) {
+        Map<Integer, Geometry> m = new HashMap<>();
+        for (int id : areaIds) {
+            AreaGeom ag = byId.get(id);
+            if (ag != null && ag.full() != null) m.put(id, ag.full().getBoundary());
+        }
+        return m;
+    }
+
+    @Override
     public double[] firstTrackPointAtDepthBetween(List<double[]> track, int areaId, double minDepthMeters,
                                                   double[] entry, double[] exit) {
         AreaGeom ag = byId.get(areaId);
@@ -715,6 +771,52 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
             }
         }
         return true;
+    }
+
+    @Override
+    public Set<Integer> borderAreaIds(Set<Integer> visited) {
+        Set<Integer> out = new HashSet<>();
+        if (empty) {
+            return out;
+        }
+        // OBWÓD pokrycia = zaliczone gminy z ≥1 sąsiadem o INNYM countryId (rim danych — zagraniczny sąsiad spoza puli).
+        for (int id : visited) {
+            AreaGeom ag = byId.get(id);
+            int[] nb = adjacency.get(id);
+            if (ag == null || nb == null) {
+                continue;
+            }
+            int country = ag.area.countryId();
+            for (int x : nb) {
+                AreaGeom og = byId.get(x);
+                if (og != null && og.area.countryId() != country) {
+                    out.add(id);
+                    break;
+                }
+            }
+        }
+        if (!out.isEmpty()) {
+            return out;
+        }
+        // FALLBACK single-country: gminy z liczbą sąsiadów < max-w-zbiorze (rim ma mniej zarejestrowanych boków).
+        int maxDeg = 0;
+        for (int id : visited) {
+            int[] nb = adjacency.get(id);
+            if (nb != null) {
+                maxDeg = Math.max(maxDeg, nb.length);
+            }
+        }
+        if (maxDeg == 0) {
+            return out;
+        }
+        for (int id : visited) {
+            int[] nb = adjacency.get(id);
+            int deg = nb == null ? 0 : nb.length;
+            if (deg < maxDeg) {
+                out.add(id);
+            }
+        }
+        return out;
     }
 
 

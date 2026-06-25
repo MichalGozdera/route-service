@@ -117,6 +117,16 @@ public class GminaIndex {
         return coverage.deepestPointOnTrack(track, areaId);
     }
 
+    /** BATCH: najgłębszy punkt śladu per gmina z {@code areaIds} (jeden przebieg) — P4 deepenLoop. */
+    public Map<Integer, double[]> deepestPointsOnTrack(List<double[]> track, Set<Integer> areaIds) {
+        return coverage.deepestPointsOnTrack(track, areaIds);
+    }
+
+    /** BATCH: pierwsze wejście ≥minDepth per gmina z {@code areaIds} (jeden przebieg) — P5 Anchorer lvl1. */
+    public Map<Integer, double[]> firstTrackPointsAtDepth(List<double[]> track, Set<Integer> areaIds, double minDepthMeters) {
+        return coverage.firstTrackPointsAtDepth(track, areaIds, minDepthMeters);
+    }
+
     /** Pierwsze wejście ≥minDepth NA fragmencie przelotu (między entry↔exit) — pogłębianie kotwicy przelotu. */
     public double[] firstTrackPointAtDepthBetween(List<double[]> track, int areaId, double minDepthMeters,
                                                   double[] entry, double[] exit) {
@@ -131,6 +141,11 @@ public class GminaIndex {
     /** Czy gmina jest otoczona śladem: ≥1 sąsiad wielokątowy i WSZYSCY zaliczeni (bez progu, cross-border). */
     public boolean allNeighborsVisited(int areaId, Set<Integer> visited) {
         return coverage.allNeighborsVisited(areaId, visited);
+    }
+
+    /** OBWÓD pokrycia (rim danych / cross-country) — do cięcia gdy całość pokryta (fringe pusty). */
+    public Set<Integer> borderAreaIds(Set<Integer> visited) {
+        return coverage.borderAreaIds(visited);
     }
 
     /** DEBUG: GeoJSON granicy gminy pomniejszonej o {@code bufferMeters} (0 = pełna). Do wklejenia w mapę debug. */

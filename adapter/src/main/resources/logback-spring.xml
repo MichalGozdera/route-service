@@ -1,0 +1,3 @@
+<configuration>
+    <include resource="velomarker/logback-base.xml"/>
+</configuration>

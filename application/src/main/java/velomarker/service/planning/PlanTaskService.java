@@ -10,6 +10,13 @@ import velomarker.port.out.planning.PlanTaskProgressPublisher;
 import velomarker.port.out.planning.PlanTaskRepository;
 import velomarker.port.out.planning.PlanningSessionRepository;
 
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
+
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -64,7 +71,8 @@ public class PlanTaskService implements PlanProgressSink, CalculatePlanUseCase {
         sessionRepository.save(session);
         publishSafely(task);
 
-        executor.submit(() -> runTask(task.id(), userId, bearerToken));
+        Context reqCtx = Context.current();   // OTel context wątku HTTP (parent span) → propaguj do virtual thread
+        executor.submit(() -> runTask(task.id(), userId, bearerToken, reqCtx));
         return task;
     }
 
@@ -126,9 +134,14 @@ public class PlanTaskService implements PlanProgressSink, CalculatePlanUseCase {
 
     // ===== private =====
 
-    private void runTask(UUID taskId, UUID userId, String bearerToken) {
+    private void runTask(UUID taskId, UUID userId, String bearerToken, Context reqCtx) {
+        Tracer tracer = GlobalOpenTelemetry.get().getTracer("route-service-plan");
+        Span span = tracer.spanBuilder("plan").setParent(reqCtx)
+                .setAttribute("task.id", taskId.toString())
+                .setAttribute("user.id", userId.toString())
+                .startSpan();
         computationRegistry.begin(taskId);
-        try {
+        try (Scope scope = span.makeCurrent()) {   // root span „plan" — fazy/BRouter/parallelMap dziedziczą parent
             orchestration.executePlan(taskId, userId, bearerToken);
             taskRepository.findById(taskId).ifPresent(task -> {
                 if (task.status() == PlanTaskStatus.RUNNING) {
@@ -144,12 +157,14 @@ public class PlanTaskService implements PlanProgressSink, CalculatePlanUseCase {
             });
         } catch (RuntimeException e) {
             log.error("Plan task " + taskId + " failed", e);
+            span.setStatus(StatusCode.ERROR, e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
             taskRepository.findById(taskId).ifPresent(task -> {
                 task.fail(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
                 publishSafely(taskRepository.save(task));
             });
         } finally {
             computationRegistry.end(taskId);
+            span.end();
         }
     }
 

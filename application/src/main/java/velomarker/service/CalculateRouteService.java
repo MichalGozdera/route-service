@@ -51,8 +51,6 @@ public class CalculateRouteService implements CalculateRouteUseCase {
         if (command.profile() == null || command.profile().isBlank()) {
             throw new IllegalArgumentException("Profile is required");
         }
-        log.debug("Routing {} waypoints with profile {} (computeStats={})",
-                command.waypoints().size(), command.profile(), command.computeStats());
         RouteCalculation result = brouterClient.calculate(command.waypoints(), command.profile(), command.computeStats());
         // ZAWSZE doliczamy wysokość z DEM (HGT/Copernicus) — Coverage cost'uje effort = distance + alpha*ascent,
         // więc elevation MUSI być w coords nawet dla intermediate probing calls (bez tego climbM byłby

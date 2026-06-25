@@ -6,8 +6,10 @@ import velomarker.entity.planning.UnvisitedArea;
 import velomarker.port.out.planning.AreaPassage;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -41,6 +43,8 @@ final class SpurCutter {
     private static final int MAX_PUSH_LVL = 3;
     /** Maks. iteracji pogłębiania w jednej rundzie. */
     private static final int MAX_ITER = 6;
+    /** P1: okno nóg wokół keep dla `nearestLegSegment` (heart=wejście gminy jest BLISKO keep; pełny skan = fallback). */
+    private static final int LEG_WINDOW = 150;
 
     private enum Kind { KEEP, REANCHOR, INNER_TRIM, SHALLOW }
     private enum Source { PRZELOT, MULTI_ZAULEK, KEPT, TRIM, ORIG, PUSH, RESTORE }
@@ -94,6 +98,7 @@ final class SpurCutter {
     private Map<Integer, List<double[]>> wpByGid;       // gid → nie-anchor wp gminy (identity refs)
     private Map<Integer, double[]> entryMap;            // gid → wejście −220 (firstBufferEntryPoints, INNER_TRIM cel)
     private Map<Integer, double[]> roundWp;             // gid → bieżący wp (pogłębianie)
+    private Map<Integer, double[]> deepestMap;          // P4: gid → najgłębszy punkt śladu (batch 1× przebieg, computePush lvl1)
     private List<double[]> realTrackForPush;            // bieżący ślad deepenLoop — computePush (parallel) czyta deepest
     private final Map<Integer, Integer> deepenLevel = new HashMap<>(); // 0/1..MAX push, -1 jezioro; reset co runda
     private List<double[]> pendingRemove;               // stary keep po REANCHOR → collapse (FAZA 2)
@@ -156,8 +161,11 @@ final class SpurCutter {
         wpByGid = buildWpByGid();
         trimmedThisRound = new HashSet<>();
         List<Decision> decisions = computeDecisions();            // (A) PARALLEL
-        int cut = applyDecisions(decisions);                      // (B) SEKWENCYJNIE
-        deepenLoop();                                             // (C) reroute + pogłębianie na świeżym śladzie
+        int cut = applyDecisions(decisions, refTrack);            // (B) SEKWENCYJNIE (oldReal=refTrack, P3 reuse)
+        int rerouted = edgeRouter.rerouteApproximateLegs(route);  // sliced (REANCHOR) → REALNY BRouter PRZED pogłębianiem
+        if (rerouted > 0) log.info("Coverage TAIL-PRUNE [{}] runda {}: reroute {} sliced-legów REALNIE (pogłębianie na realnym śladzie)",
+                new Object[]{debugPhase, round, rerouted});
+        deepenLoop();                                             // (C) pogłębianie na REALNYM śladzie
         // OGARNIĘTE: przycięte palce które po pogłębianiu osiągnęły ≥220 → settled (kolejna runda KEEP, nie oscyluj)
         Set<Integer> deeply = gminaIndex.deeplyVisitedAreaIds(metrics.realGeometry(route));
         for (int gid : trimmedThisRound) if (deeply.contains(gid)) settledAreas.add(gid);
@@ -213,11 +221,9 @@ final class SpurCutter {
     // ──────────────────────────────── (A) COMPUTE — PARALLEL, czysto ────────────────────────────────
 
     private List<Decision> computeDecisions() {
-        return wpByGid.keySet().parallelStream()
-                .filter(gid -> !deepAnchorAreaIds.contains(gid))
-                .map(this::computeDecision)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toList());
+        List<Integer> gids = wpByGid.keySet().stream()
+                .filter(gid -> !deepAnchorAreaIds.contains(gid)).collect(Collectors.toList());
+        return edgeRouter.parallelMap(gids, this::computeDecision);   // virtual threads + OTel context (T4)
     }
 
     /** CZYSTA (read-only). REANCHOR (przelot/≥2 wp) lub INNER_TRIM (palec głęboki >220) lub KEEP. */
@@ -252,10 +258,10 @@ final class SpurCutter {
     // ──────────────────────────────── (B) APPLY — SEKWENCYJNIE (in-place, identity) ────────────────────────────────
 
     /** FAZA 1: REANCHOR slice/add + INNER_TRIM route.set (cele wchodzą ZANIM coś znika). FAZA 2: collapse nadmiarowych. */
-    private int applyDecisions(List<Decision> decisions) {
+    private int applyDecisions(List<Decision> decisions, List<double[]> refTrack) {
         fromPrzelot = fromZaulek = trimCount = keptCount = 0;
         pendingRemove = new ArrayList<>();
-        oldRealForFallback = metrics.realGeometry(route);    // dla fallbackAnchor (przed mutacjami)
+        oldRealForFallback = refTrack;                       // P3: route niezmienione od startu rundy → reuse (bez sklejki 250k)
         fallbackHearts = null;
         int cut = 0;
         for (Decision d : decisions) {
@@ -302,7 +308,9 @@ final class SpurCutter {
         UnvisitedArea entryArea = gminaIndex.findGminaForPoint(heart[0], heart[1]);
         UnvisitedArea area = (entryArea != null && entryArea.areaId() == gid) ? entryArea : idToArea.get(gid);
         if (area == null) return false;
-        LegSeg ls = (entryArea != null && entryArea.areaId() == gid) ? nearestLegSegment(heart) : null;
+        int centerLeg = GeometryUtil.identityIndexOf(route, d.keepWp());     // P1: keep idx = środek okna nearestLegSegment
+        LegSeg ls = (entryArea != null && entryArea.areaId() == gid && centerLeg >= 0)
+                ? nearestLegSegment(heart, centerLeg) : null;
         if (ls == null) { replaceWp(d.keepWp(), heart, area); return true; }  // brak nogi → podmień in-place (przesunięto)
         EdgeCache.EdgeInfo edge = edgeRouter.edge(route.get(ls.leg()), route.get(ls.leg() + 1));
         double[] heartPoint = heart.clone();
@@ -323,11 +331,19 @@ final class SpurCutter {
         ops.swapEntry(selected, old, np, baseline);
     }
 
-    /** Noga+segment trasy najbliższe `heart` (po pełnej geometrii nóg); null gdy >50m od śladu. 1:1 102b3015. */
-    private LegSeg nearestLegSegment(double[] heart) {
+    /** Noga+segment najbliższe `heart`. P1: skanuj OKNO nóg `[centerLeg±LEG_WINDOW]` (heart=wejście gminy BLISKO keep);
+     *  gdy okno chybi (heart daleko — rzadkie) → FALLBACK pełny skan. ~100-200× taniej dla FR (route 35k). */
+    private LegSeg nearestLegSegment(double[] heart, int centerLeg) {
+        LegSeg local = scanLegs(heart, Math.max(0, centerLeg - LEG_WINDOW),
+                Math.min(route.size() - 1, centerLeg + LEG_WINDOW + 1));
+        return local != null ? local : scanLegs(heart, 0, route.size() - 1);
+    }
+
+    /** Skan nóg `[fromLeg, toLeg)` — najbliższy segment do `heart` (po geometrii nóg); null gdy >50m. 1:1 102b3015. */
+    private LegSeg scanLegs(double[] heart, int fromLeg, int toLeg) {
         int bestLeg = -1, bestSeg = -1;
         double bestSD = Double.MAX_VALUE;
-        for (int j = 0; j < route.size() - 1 && bestSD > 1e-7; j++) {
+        for (int j = fromLeg; j < toLeg && bestSD > 1e-7; j++) {
             List<double[]> g = edgeRouter.edge(route.get(j), route.get(j + 1)).geometry();
             for (int m = 0; m < g.size() - 1; m++) {
                 double sd = GeometryUtil.pointToSegmentExactKm(heart, g.get(m), g.get(m + 1));
@@ -339,18 +355,26 @@ final class SpurCutter {
 
     /** FAZA 2: usuń nadmiarowe + stare keepy (po add celów) i scal prev→next (batch BRouter). 1:1 collapseDeletedSpurs. */
     private void collapseRedundant(List<Decision> decisions) {
-        List<double[]> toDelete = new ArrayList<>(pendingRemove);
-        for (Decision d : decisions) toDelete.addAll(d.redundant());
-        if (toDelete.isEmpty()) return;
+        Set<double[]> del = Collections.newSetFromMap(new IdentityHashMap<>());
+        del.addAll(pendingRemove);
+        for (Decision d : decisions) del.addAll(d.redundant());
+        if (del.isEmpty()) return;
+        // P2: JEDEN przebieg route (rebuild skip-del) zamiast identityIndexOf per usuwany (O(route)/delete → O(route)).
+        // mergedPair = (ostatni-zachowany przed blokiem usuwanych, pierwszy-zachowany po) → scala KONSEKUTYWNE usunięcia.
         List<double[][]> mergedPairs = new ArrayList<>();
-        for (double[] d : toDelete) {
-            final double[] dd = d;
-            int di = GeometryUtil.identityIndexOf(route, dd);
-            if (di < 0) continue;
-            if (di > 0 && di < route.size() - 1) mergedPairs.add(new double[][]{route.get(di - 1), route.get(di + 1)});
-            route.remove(di);
-            selected.removeIf(s -> s.point() == dd);
+        List<double[]> newRoute = new ArrayList<>(route.size());
+        double[] lastKept = null;
+        boolean pendingMerge = false;
+        for (double[] p : route) {
+            if (del.contains(p)) { pendingMerge = true; continue; }
+            if (pendingMerge && lastKept != null) mergedPairs.add(new double[][]{lastKept, p});
+            pendingMerge = false;
+            newRoute.add(p);
+            lastKept = p;
         }
+        route.clear();
+        route.addAll(newRoute);
+        selected.removeIf(s -> del.contains(s.point()));
         edgeRouter.setReason("ogonek-scalenie");
         edgeRouter.prewarmPairs(mergedPairs);
         edgeRouter.setReason("pomiar");
@@ -373,9 +397,9 @@ final class SpurCutter {
                 deepenLevel.put(gid, lvl < MAX_PUSH_LVL ? lvl + 1 : -1);
             }
             roundWp = buildRoundWp();
-            List<Decision> pushes = shallow.parallelStream()
-                    .filter(origWp::containsKey)
-                    .map(this::computePush).filter(Objects::nonNull).collect(Collectors.toList());
+            List<Integer> pushGids = shallow.stream().filter(origWp::containsKey).collect(Collectors.toList());
+            deepestMap = gminaIndex.deepestPointsOnTrack(realTrackForPush, new HashSet<>(pushGids));  // P4: 1× batch (nie per-gmina)
+            List<Decision> pushes = edgeRouter.parallelMap(pushGids, this::computePush);   // virtual threads (T4)
             again = applyPushes(pushes);
         }
     }
@@ -401,7 +425,7 @@ final class SpurCutter {
         if (lvl < 0) return shallowDec(gid, origWp.get(gid), cur, Source.RESTORE);   // jezioro → przywróć (chroń ≥200)
         double[] entry = entryMap.get(gid);
         if (lvl == 1) {                                          // +80 wzdłuż kierunku wjazdu entry→czubek śladu
-            double[] deepest = gminaIndex.deepestPointOnTrack(realTrackForPush, gid);
+            double[] deepest = deepestMap.get(gid);             // P4: z batch (1× przebieg track), nie per-gmina skan
             if (entry != null && deepest != null && GeometryUtil.hav(entry, deepest) > 0.001)
                 return shallowDec(gid, GeometryUtil.extendBeyond(entry, deepest, 80.0), cur, Source.PUSH);
         }

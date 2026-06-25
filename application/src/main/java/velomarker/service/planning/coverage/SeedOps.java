@@ -1,46 +1,28 @@
 package velomarker.service.planning.coverage;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
 /**
- * Wspólne operacje na trasie seeda, dzielone przez klasy odpowiedzialności (cięcie spurów / anchor / dobieranie /
- * trim): 2-opt z logiem, przebudowa kolejności wg krzywej Hilberta, podmiana entry-pointu gminy. Bezstanowe poza
- * wstrzykniętymi kolaboratorami — jedna instancja per plan.
+ * Wspólne operacje na trasie seeda: przebudowa kolejności wg krzywej Hilberta ({@code rebuildOrdered} — UŻYWANE
+ * TYLKO w init-grow jako construction) + podmiana entry-pointu gminy. Bezstanowe poza wstrzykniętym
+ * {@link HilbertOrdering} — jedna instancja per plan.
  */
 final class SeedOps {
 
-    private static final Logger log = LoggerFactory.getLogger(SeedOps.class);
-
     private final HilbertOrdering ordering;
-    private final RouteMetrics metrics;
-    private final boolean debugGeoJson;
 
-    SeedOps(HilbertOrdering ordering, RouteMetrics metrics, boolean debugGeoJson) {
+    SeedOps(HilbertOrdering ordering) {
         this.ordering = ordering;
-        this.metrics = metrics;
-        this.debugGeoJson = debugGeoJson;
     }
 
-    /** 2-opt (haversine, tylko skraca); gdy debugGeoJson — loguje Δ długości i fazę. */
-    void twoOpt(List<double[]> route, String phase) {
-        if (!debugGeoJson) {
-            CoverageLocalSearch.optimize(route);
-            return;
-        }
-        double kmBefore = metrics.haversineKm(route);
-        int wp = route.size();
-        CoverageLocalSearch.optimize(route);
-        double kmAfter = metrics.haversineKm(route);
-        log.info("Coverage 2-OPT [{}]: havKm {}→{} (Δ{}), wps={}", new Object[]{phase,
-                Math.round(kmBefore), Math.round(kmAfter), Math.round(kmAfter - kmBefore), wp});
-    }
-
-    /** Przebuduj {@code route} = anchory + selected entry-pointy posortowane wg klucza Hilberta (anchory na brzegach). */
+    /**
+     * Przebuduj {@code route} = anchory + selected entry-pointy posortowane wg klucza Hilberta (anchory na brzegach).
+     * UŻYWANE TYLKO w init-grow (construction seeda od zera — daje 2-optowi geograficznie zwarty start). Gdzie indziej
+     * (anchor/finalize/holefill/fixIslands) PSUŁO zoptymalizowaną trasę (Hilbert-reset gorszy niż 2-opt) — tam in-place
+     * / cheapest-insert.
+     */
     void rebuildOrdered(SeedRoute seed) {
         List<double[]> anchorOnly = seed.anchorOnly();
         List<SeedSel> selected = seed.selected();

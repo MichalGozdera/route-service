@@ -26,11 +26,9 @@ final class Anchorer {
     private final GminaIndex gminaIndex;
     private final RouteMetrics metrics;
     private final HilbertOrdering ordering;
-    private final SeedOps ops;
     private final EdgeRouter edgeRouter;
     private final CoverageDebug debug;
     private final boolean debugGeoJson;
-    private final SeedRoute seed;
     private final List<double[]> route;
     private final List<double[]> anchors;
     private final List<double[]> baseline;
@@ -50,6 +48,8 @@ final class Anchorer {
     /** Wejścia ~220m KAŻDEJ gminy (z {@link #originalTrack}, interpolowane na śladzie) — cel lvl0. Stałe między iter. */
     private Map<Integer, double[]> entryPointsFixed;
     private Set<Integer> touchedFixed;
+    /** P5: gid → pierwsze wejście ≥300m na śladzie (batch 1× przebieg dla lvl1-gmin; computeAnchorFor czyta równolegle). */
+    private Map<Integer, double[]> lvl1Map = Map.of();
     /** Gmina → poziom pogłębiania (0=wejście 220m, 1=track≥250m, 2=track≥300m, ≥3=deepestInteriorPoint MIC). */
     private final Map<Integer, Integer> deepenLevel = new HashMap<>();
     /** Gminy DOTKNIĘTE, w które REALNY ślad NIE wchodzi ≥220m (ustawiane w computeShallow) — do eskalacji/probe. */
@@ -64,11 +64,9 @@ final class Anchorer {
         this.gminaIndex = ctx.gminaIndex();
         this.metrics = ctx.metrics();
         this.ordering = ctx.ordering();
-        this.ops = ctx.ops();
         this.edgeRouter = ctx.edgeRouter();
         this.debug = ctx.debug();
         this.debugGeoJson = ctx.debugGeoJson();
-        this.seed = seed;
         this.route = seed.route();
         this.selected = seed.selected();
         this.anchors = seed.anchors();
@@ -84,7 +82,8 @@ final class Anchorer {
     /** Pętla do-skutku (max 8 iter): kotwicz dotknięte gminy → reroute → płytkie (ślad<220) eskaluj/probuj. */
     void run() {
         boolean again = true;
-        originalTrack = metrics.realGeometry(route);     // pierwotny ślad — cache-hit (poprzednia faza rozgrzała te edge)
+        edgeRouter.rerouteApproximateLegs(route);        // sliced (z poprzedniego SpurCuttera) → REALNY przed kotwiczeniem
+        originalTrack = metrics.realGeometry(route);     // REALNY ślad (po reroute) — CELE/entry liczone na nim, nie na approx
         entryPointsFixed = gminaIndex.firstBufferEntryPoints(originalTrack); // CELE lvl0 stałe (wejścia ~220)
         touchedFixed = gminaIndex.touchedAreaIds(originalTrack);
         while (again && iteration < 8) {
@@ -108,17 +107,47 @@ final class Anchorer {
      *  CELE stałe z {@link #originalTrack} — nie przeliczane co iter (inaczej oscylują, zbiór płytkich wędruje). */
     private void anchorTouchedAreas() {
         touchedCount = touchedFixed.size();
-        // Cele per gmina liczone RÓWNOLEGLE (N6) — gminy niezależne; drogie firstTrackPointAtDepth (skan śladu) + MIC
-        // (deepestInteriorPoint, ConcurrentHashMap) na wielu wątkach. computeAnchorFor jest CZYSTA (read-only stan).
-        List<SeedSel> freshAnchors = touchedFixed.parallelStream()
-                .map(this::computeAnchorFor)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toList());
+        // P5: lvl1 cel = firstTrackPointAtDepth(300) — policz BATCH 1× przebieg śladu dla WSZYSTKICH lvl1-gmin (zamiast
+        // O(track) per gmina w computeAnchorFor); reszta celów (lvl0 entry / lvl≥2 MIC) bez skanu śladu.
+        Set<Integer> lvl1Gids = new HashSet<>();
+        for (int gid : touchedFixed)
+            if (deepenLevel.getOrDefault(gid, 0) == 1 && !deepAnchorAreaIds.contains(gid) && !sampleAnchor.containsKey(gid))
+                lvl1Gids.add(gid);
+        lvl1Map = gminaIndex.firstTrackPointsAtDepth(originalTrack, lvl1Gids, 300.0);
+        // Cele per gmina liczone RÓWNOLEGLE (N6) — gminy niezależne; MIC (deepestInteriorPoint, ConcurrentHashMap) na
+        // wielu wątkach. computeAnchorFor jest CZYSTA (read-only stan); lvl1 czyta gotowy lvl1Map.
+        List<SeedSel> freshAnchors = edgeRouter.parallelMap(touchedFixed, this::computeAnchorFor);   // virtual threads + OTel (T4)
         countSourcesAndLog(freshAnchors);   // liczniki źródeł + log ESCALATE — SEKWENCYJNIE po (tani, bez skanu śladu)
+        // IN-PLACE (bez rebuildOrdered/Hilbert-reset): zachowaj KOLEJNOŚĆ route (nie psuj 2-opt) — podmień stary wp
+        // gminy na świeżą kotwicę NA TEJ SAMEJ pozycji; nietouched/duplikat stare wp usuń; nowe touched-gminy →
+        // cheapest-insert. refineOrder PO anchorze (w finalize) rozplącze. selected = ZBIÓR (kolejność trzyma route).
+        Map<Integer, SeedSel> freshByGid = new HashMap<>();
+        for (SeedSel f : freshAnchors) {
+            freshByGid.put(f.area().areaId(), f);
+        }
+        Set<Integer> placed = new HashSet<>();
+        List<double[]> newRoute = new ArrayList<>(route.size());
+        for (double[] p : route) {
+            if (GeometryUtil.isAnchor(p, anchors)) {
+                newRoute.add(p);   // start/via/end nietykalne
+                continue;
+            }
+            UnvisitedArea g = gminaIndex.findGminaForPoint(p[0], p[1]);
+            if (g != null && freshByGid.containsKey(g.areaId()) && placed.add(g.areaId())) {
+                newRoute.add(freshByGid.get(g.areaId()).point());   // podmień na fresh, ZACHOWAJ pozycję = kolejność 2-opt
+            }
+            // else: stary wp gminy nietouched LUB duplikat tej samej gminy → usuń (pomiń)
+        }
+        route.clear();
+        route.addAll(newRoute);
+        for (SeedSel f : freshAnchors) {   // nowe touched-gminy (fresh bez starego wp) → cheapest-insert (mało)
+            if (!placed.contains(f.area().areaId())) {
+                route.add(GeometryUtil.cheapestInsertPos(route, f.point()), f.point());
+            }
+        }
         selected.removeIf(s -> !GeometryUtil.isAnchor(s.point(), anchors)
                 && gminaIndex.findGminaForPoint(s.point()[0], s.point()[1]) != null);
         selected.addAll(freshAnchors);
-        ops.rebuildOrdered(seed);   // synchronizuj route ← selected (nowe/usunięte wp); 2-opt robi refineOrder PO anchorze
     }
 
     /** CZYSTA (read-only współdzielony stan → bezpieczna w parallelStream): kotwica gminy wg deepenLevel/sampleAnchor.
@@ -140,7 +169,7 @@ final class Anchorer {
             if (lvl == 0) {
                 cel = entry;
             } else if (lvl == 1) {
-                cel = gminaIndex.firstTrackPointAtDepth(originalTrack, areaId, 300.0);
+                cel = lvl1Map.get(areaId);                       // P5: z batch (1× przebieg track), nie per-gmina skan
                 if (cel == null && entry != null)
                     cel = GeometryUtil.movePointTowards(entry, deepInterior(area, areaId), 80.0);
             } else {

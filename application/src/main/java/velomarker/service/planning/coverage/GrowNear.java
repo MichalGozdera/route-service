@@ -135,7 +135,7 @@ final class GrowNear {
         inserted += batchSels.size();
         sinceMeasure += batchSels.size();
         batchCount++;
-        ops.twoOpt(route, "growNear-batch" + batchCount); // pełny 2opt co porcja — skraca trasę na bieżąco
+        CoverageLocalSearch.optimize(route); // pełny 2opt co porcja — skraca trasę na bieżąco
         hav = metrics.haversineKm(route);
         double est = hav * effortFactor;
         boolean doReal = (batchCount % checkpointEvery == 0) || est >= growTarget;
@@ -163,7 +163,7 @@ final class GrowNear {
             myInsertAreas.remove(s.area().areaId());
             inserted--;
         }
-        ops.twoOpt(route, "growNear-undo");
+        CoverageLocalSearch.optimize(route);
         effort = metrics.effortViaCache(route);
         log.info("Coverage BATCH-GROW undo porcji {}: marginal={}/gmine > 3xratio={} (dalekie gminy) -> stop na {}% growTargetu",
                 new Object[]{batchCount, Math.round(marginal), Math.round(ratio), Math.round(effort * 100.0 / growTarget)});
@@ -172,12 +172,12 @@ final class GrowNear {
 
     /** Finalizacja (raz): pełny 2opt → real → usuń wstawki-wyspy → kredyt-verify (max 3 rundy). */
     private GrowNearResult finish() {
-        ops.twoOpt(route, "growNear-final");
+        CoverageLocalSearch.optimize(route);
         effort = metrics.effortViaCache(route);
         int islands = removeFailedInserts();
         inserted -= islands;
         if (islands > 0) {
-            ops.twoOpt(route, "growNear-islands");
+            CoverageLocalSearch.optimize(route);
             effort = metrics.effortViaCache(route);
         }
         for (int vr = 0; vr < 3; vr++) {
@@ -239,17 +239,17 @@ final class GrowNear {
             if (!myInsertAreas.contains(aid) || s.score() != 0.0 || visited.contains(aid)) continue;
             if (retriedCentroid.add(aid)) {
                 double[] centroid = new double[]{s.area().lng(), s.area().lat()};
+                int idx = GeometryUtil.identityIndexOf(route, s.point());
+                if (idx >= 0) route.set(idx, centroid);          // route in-place (bez rebuildOrdered)
                 ops.swapEntry(selected, s.point(), centroid, baseline);
             } else {
                 selected.remove(s);
+                route.remove((Object) s.point());                // route in-place (identity)
                 myInsertAreas.remove(aid);
             }
             changedAny = true;
         }
-        if (changedAny) {
-            ops.rebuildOrdered(seed);
-            ops.twoOpt(route, "verify-insert-credit");
-        }
+        if (changedAny) CoverageLocalSearch.optimize(route);     // rozplącz (bez Hilbert-resetu)
         return changedAny;
     }
 }
