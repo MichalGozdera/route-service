@@ -163,7 +163,7 @@ public class PlanningOrchestrationService {
             List<DaySplitter.DayBoundary> boundaries = daySplitter.splitIntoDays(
                     fullProfile, prefs.days(), prefs.kmPerDay(), prefs.elevationPerDayM(), profile);
 
-            List<PlanningSessionDay> days = new DayBuilder(elevation, coverageIndexFactory, spatialIndexFactory, this::checkCancel, this::setPhase).build(taskId, session, prefs, profile, full, fullProfile, boundaries, allWaypoints, wb.coverageInfo());
+            List<PlanningSessionDay> days = new DayBuilder(elevation, spatialIndexFactory, this::checkCancel, this::setPhase).build(taskId, session, prefs, profile, full, fullProfile, boundaries, allWaypoints);
 
             checkCancel(taskId);
             setPhase(taskId, "saving");
@@ -296,8 +296,10 @@ public class PlanningOrchestrationService {
                         if (coverageInfo.pickedCandidates() != null) {
                             for (AreaCandidate c : coverageInfo.pickedCandidates()) coveragePool.add(c.area);
                         }
-                        log.info("Coverage planner: pool={} areas (z greedy bbox-filtered)", coveragePool.size());
-                        coverageResult = coveragePlanner.plan(taskId, coveragePool, coverageInfo.baselineGeometry(), prefs, profile,
+                        log.info("Coverage planner: pool={} areas + historycznie zaliczone={} (sąsiedztwo)",
+                                new Object[]{coveragePool.size(), coverageInfo.historicallyVisited().size()});
+                        coverageResult = coveragePlanner.plan(taskId, coveragePool, coverageInfo.historicallyVisited(),
+                                coverageInfo.baselineGeometry(), prefs, profile,
                                 brouter, brouterClient::setSnapLogging, this::checkCancel);
                         if (coverageResult != null) {
                             log.info("Coverage planner: visited={} iters={} brouterCalls={}",
@@ -362,6 +364,7 @@ public class PlanningOrchestrationService {
             Double baselineKm,
             Double roadAreas,
             List<AreaCandidate> pickedCandidates,
+            List<UnvisitedArea> historicallyVisited,
             List<double[]> baselineGeometry
     ) {}
 

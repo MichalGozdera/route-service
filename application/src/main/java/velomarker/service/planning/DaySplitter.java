@@ -9,18 +9,10 @@ import java.util.List;
 
 /**
  * Dzieli policzoną geometrię trasy (z BRouter, wzbogaconą o elevation) na N dni
- * stosując algorytm „równego wysiłku":
- *
- * <p>Każde 300 m wzniosu względem referencji C (=elevBudget/days) przesuwa ekwiwalent km:
- * <pre>
- *   szosa,    +300 m nad C → ekwiwalent −20 km dnia
- *   szosa,    −300 m pod C → ekwiwalent +30 km dnia (zjazd w gratisie)
- *   off-road, +300 m nad C → ekwiwalent −30 km dnia
- *   off-road, −300 m pod C → ekwiwalent +20 km dnia
- * </pre>
- *
- * <p>Floor {@link #MIN_DAY_KM} = 20 — najcięższy alpejski etap nie wychodzi na 5 km.
- * Dzień w Tatrach (3000 m wzniosu) dostaje krótszy fizycznie odcinek niż na Mazurach (300 m).
+ * stosując algorytm „równego wysiłku": effort = km + {@link #DAY_EFFORT_ALPHA_KM_PER_M} × climb_m,
+ * SPÓJNY z Coverage (params.alphaKmPerMeter = 0.1). Granice dni stawiane tak, by skumulowany effort
+ * rozkładał się równo (totalEffort / N na dzień). Niezależnie od profilu (road/off-road) — Coverage
+ * też nie rozróżnia.
  *
  * <p>Wynik: lista {@link DayBoundary} z indeksami w geometrii — wołający (PlanningOrchestrationService)
  * tnie {@code List<double[]>} po tych indeksach na N podlist (geometria dnia).
@@ -29,15 +21,9 @@ public class DaySplitter {
 
     private static final Logger log = LoggerFactory.getLogger(DaySplitter.class);
 
-    public static final double MIN_DAY_KM = 20.0;
     /** Współczynnik effortu wzniosu — SPÓJNY z Coverage (params.alphaKmPerMeter = 0.1). User: dziel dni
-     *  EQUAL effort = km + 0.1 × climb_m. Niezależnie od profilu (road/off-road) — bo Coverage też nie
-     *  rozróżnia. Stare ROAD/OFFROAD_KM_PER_300 utrzymane dla kompatybilności helpera equivalentKm. */
+     *  EQUAL effort = km + 0.1 × climb_m. Niezależnie od profilu (road/off-road) — bo Coverage też nie rozróżnia. */
     public static final double DAY_EFFORT_ALPHA_KM_PER_M = 0.1;
-    public static final double ROAD_KM_PER_300_UP = 20.0;
-    public static final double ROAD_KM_PER_300_DOWN = 30.0;
-    public static final double OFFROAD_KM_PER_300_UP = 30.0;
-    public static final double OFFROAD_KM_PER_300_DOWN = 20.0;
     public static final double EFFORT_BASE_CLIMB_PER_180 = 1000.0; // default budżet wzniosu = 1000 m / 180 km
 
     /**
@@ -150,32 +136,6 @@ public class DaySplitter {
             dayStartGain += dayGain;
         }
         return result;
-    }
-
-    /**
-     * Ekwiwalent km dnia: przelicza realny dystans + wznios na „wysiłek" w km względem referencji C.
-     * Bazuje na piecewise wzorze z reguły usera (per 300m). Floor: {@link #MIN_DAY_KM}.
-     *
-     * <p>Floor stosujemy DO DNI (najcięższy alpejski etap ≥ 20 km), NIE do cumulative effort —
-     * dla cumulative użyj {@link #equivalentKmRaw}. Floor na cumulative psuje monotonię na małych
-     * kawałkach (10 km flat → effort = 4.4 → floor 20; 20 km flat → effort 8.9 → floor 20 →
-     * pierwsza 1/3 trasy ma stały effort 20, target dnia trafia w przypadkowe miejsce).
-     */
-    public static double equivalentKm(double km, double climbM, double refClimbPerDay, boolean isRoad) {
-        return Math.max(equivalentKmRaw(km, climbM, refClimbPerDay, isRoad), MIN_DAY_KM);
-    }
-
-    /** Wariant bez floor — do cumulative effort (split na dni). Może być &lt; MIN_DAY_KM. */
-    public static double equivalentKmRaw(double km, double climbM, double refClimbPerDay, boolean isRoad) {
-        double delta = climbM - refClimbPerDay;
-        double per300;
-        if (delta >= 0) {
-            per300 = isRoad ? ROAD_KM_PER_300_UP : OFFROAD_KM_PER_300_UP;
-            return km + (delta / 300.0) * per300;
-        } else {
-            per300 = isRoad ? ROAD_KM_PER_300_DOWN : OFFROAD_KM_PER_300_DOWN;
-            return km - (Math.abs(delta) / 300.0) * per300;
-        }
     }
 
     /** Rozpoznaje profil szosowy vs off-road (do rozróżnienia bonusu/penalty wzniosu). */

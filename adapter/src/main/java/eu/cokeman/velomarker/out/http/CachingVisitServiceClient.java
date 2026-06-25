@@ -5,13 +5,11 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
-import velomarker.entity.planning.UnvisitedArea;
-import velomarker.port.out.planning.AreaCoverage;
+import velomarker.port.out.planning.AreaPool;
 import velomarker.port.out.planning.SpecialGroupRef;
 import velomarker.port.out.planning.VisitServiceClient;
 
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
@@ -55,36 +53,21 @@ public class CachingVisitServiceClient implements VisitServiceClient {
 
     // ── per-user (3 min) ──────────────────────────────────────────────────────────
     @Override
-    public List<AreaCoverage> getAreaCoverage(String bearer) {
-        return user(bearer, "coverage", () -> delegate.getAreaCoverage(bearer));
+    public AreaPool listAreaPool(String bearer, int countryId, int levelId, int limit) {
+        return user(bearer, "areas|" + countryId + "|" + levelId + "|" + limit,
+                () -> delegate.listAreaPool(bearer, countryId, levelId, limit));
     }
 
     @Override
-    public List<UnvisitedArea> listUnvisitedAreas(String bearer, int countryId, int levelId, int limit) {
-        return user(bearer, "unv|" + countryId + "|" + levelId + "|" + limit,
-                () -> delegate.listUnvisitedAreas(bearer, countryId, levelId, limit));
-    }
-
-    @Override
-    public List<UnvisitedArea> listUnvisitedSpecialAreas(String bearer, int groupId, Integer countryId, int limit) {
-        return user(bearer, "unvSpecial|" + groupId + "|" + countryId + "|" + limit,
-                () -> delegate.listUnvisitedSpecialAreas(bearer, groupId, countryId, limit));
+    public AreaPool listSpecialAreaPool(String bearer, int groupId, Integer countryId, int limit) {
+        return user(bearer, "special|" + groupId + "|" + countryId + "|" + limit,
+                () -> delegate.listSpecialAreaPool(bearer, groupId, countryId, limit));
     }
 
     // ── katalog wspólny (1h) ────────────────────────────────────────────────────────
     @Override
     public List<SpecialGroupRef> listSpecialGroupsCatalog(String bearer) {
         return catalog("specialGroups", () -> delegate.listSpecialGroupsCatalog(bearer));
-    }
-
-    @Override
-    public Map<Integer, String> listAllCountries(String bearer) {
-        return catalog("allCountries", () -> delegate.listAllCountries(bearer));
-    }
-
-    @Override
-    public Map<Integer, Integer> levelOrders(String bearer, int countryId) {
-        return catalog("levelOrders|" + countryId, () -> delegate.levelOrders(bearer, countryId));
     }
 
     /** Wyciąga subject (sub/user_id) z JWT do deterministycznego klucza cache (nie zmienia się przy refresh). */

@@ -15,4 +15,9 @@ public class JtsAreaCoverageIndexFactory implements AreaCoverageIndexFactory {
     public AreaCoverageIndex build(List<UnvisitedArea> areas) {
         return new JtsAreaCoverageIndex(areas);
     }
+
+    @Override
+    public AreaCoverageIndex build(List<UnvisitedArea> areas, List<UnvisitedArea> adjacencyAreas) {
+        return new JtsAreaCoverageIndex(areas, adjacencyAreas);
+    }
 }

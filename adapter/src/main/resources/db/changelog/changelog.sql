@@ -134,12 +134,6 @@ ALTER TABLE routes.route_draft ADD COLUMN IF NOT EXISTS stats_json TEXT;
 -- panel "Typy nawierzchni / dróg" dla wyprawy asystenta (multi-day plan) bez ponownego BRouter call.
 ALTER TABLE planning.session_day ADD COLUMN IF NOT EXISTS stats_json TEXT;
 
--- changeset cokeman:13_06_2026_01_session_day_covered_areas
--- v3.18: ID gmin ZALICZONYCH przez dzień (kryterium kredytu ≥200m, liczone backendem JTS) jako JSON
--- array — źródło prawdy dla kolorowania na froncie (zamiast re-derywacji turfem plain-touch).
--- Nullable: stare/ręczne dni bez danych backendowych → front liczy turfem (fallback).
-ALTER TABLE planning.session_day ADD COLUMN IF NOT EXISTS covered_area_ids TEXT;
-
 -- changeset cokeman:20_06_2026_01_drop_summary_road_anchors
 -- RoadFactorCalibrator: usunięto osobny współczynnik road_anchors (start→meta). Realny stosunek
 -- start→meta seeduje teraz road_areas, a sam anchors był tylko diagnostyką w raporcie. Zostaje road_areas.
@@ -151,3 +145,8 @@ ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_road_anchors;
 ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_reconcile_iters;
 ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_reconcile_trims;
 ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_reconcile_grows;
+
+-- changeset cokeman:25_06_2026_01_drop_session_day_covered_areas
+-- Pokrycie gmin per dzień liczy teraz front (turf.js) z geometrii — backend nie zwraca coveredAreaIds.
+-- Kolumna była nie do utrzymania (rozjazd backend-JTS vs front-turf). Usuwamy.
+ALTER TABLE planning.session_day DROP COLUMN IF EXISTS covered_area_ids;

@@ -30,7 +30,9 @@ class EdgeCacheTest {
         EdgeCache cache = new EdgeCache();
         cache.getOrCompute(14.5, 50.0, 15.5, 50.0, pts -> new EdgeCache.EdgeInfo(80.0, 0, 80));
         cache.getOrCompute(15.5, 50.0, 14.5, 50.0, pts -> new EdgeCache.EdgeInfo(82.0, 0, 82));
-        assertThat(cache.size()).isEqualTo(2);
+        // Odwrotny kierunek = osobny klucz → 2 osobne miss'y (zero trafień w cache).
+        assertThat(cache.misses()).isEqualTo(2);
+        assertThat(cache.hits()).isEqualTo(0);
     }
 
     @Test

@@ -2,7 +2,7 @@ package velomarker.service.planning;
 
 import java.util.List;
 
-/** Czyste helpery geometryczne dla wyboru gmin: przecięcia segment/ring, bbox polilinii, najbliższy punkt/indeks. */
+/** Czyste helpery geometryczne dla wyboru gmin: przecięcia segment/ring, najbliższy punkt/indeks. */
 final class PlanningGeom {
 
     private PlanningGeom() {}
@@ -18,23 +18,6 @@ final class PlanningGeom {
             }
         }
         return best;
-    }
-
-    /**
-     * Bbox polyline z OSOBNYMI marginesami lng/lat (w stopniach). [minLng, minLat, maxLng, maxLat].
-     * Osobne marginesy konieczne bo 1° lng ≠ 1° lat (lng kurczy się ku biegunom przez cos(lat)).
-     */
-    static double[] polylineBbox(List<double[]> poly, double marginLngDeg, double marginLatDeg) {
-        double minLng = Double.MAX_VALUE, minLat = Double.MAX_VALUE;
-        double maxLng = -Double.MAX_VALUE, maxLat = -Double.MAX_VALUE;
-        for (double[] p : poly) {
-            if (p[0] < minLng) minLng = p[0];
-            if (p[0] > maxLng) maxLng = p[0];
-            if (p[1] < minLat) minLat = p[1];
-            if (p[1] > maxLat) maxLat = p[1];
-        }
-        return new double[]{minLng - marginLngDeg, minLat - marginLatDeg,
-                            maxLng + marginLngDeg, maxLat + marginLatDeg};
     }
 
     /** Indeks punktu w polyline najbliższy zadanej pozycji (lng, lat). */
@@ -83,17 +66,6 @@ final class PlanningGeom {
         if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0))
                 && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return true;
         return false;
-    }
-
-    /** Haversine od punktu do odcinka start→end (przybliżenie planarne; ok dla wybierania kandydatów). */
-    static double distanceToSegmentKm(double[] p, double[] a, double[] b) {
-        double ax = a[0], ay = a[1];
-        double bx = b[0], by = b[1];
-        double dx = bx - ax, dy = by - ay;
-        double len2 = dx * dx + dy * dy;
-        double t = len2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / len2));
-        double[] proj = new double[]{ax + t * dx, ay + t * dy};
-        return WaypointSelector.haversineKm(p, proj);
     }
 
     static double cross(double[] o, double[] a, double[] b) {

@@ -4,8 +4,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import velomarker.entity.planning.UnvisitedArea;
 
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -31,10 +29,9 @@ final class InitGrowPhase {
     private final EdgeRouter edgeRouter;
     private final RouteMetrics metrics;
     private final GminaIndex gminaIndex;
-    private final HilbertOrdering ordering;
     private final SeedOps ops;
     private final List<UnvisitedArea> pool;
-    private final Map<String, Double> rewards;
+    private final CandidatePicker picker;
     private final CoverageDebug debug;
     private final boolean debugGeoJson;
     private final SeedRoute seed;
@@ -50,20 +47,18 @@ final class InitGrowPhase {
     private double effortFactor;
     private int realCheckpoints;
     private long tRebuildNs, tRouteEffortNs, tEvalNs, tVisitsNs, tPruneNs;
-    private List<SeedSel> scored;
     private final Map<Integer, Integer> entryAttempt = new HashMap<>();
     private final Map<String, UnvisitedArea> gminaPointCache = new HashMap<>();
     private Function<double[], UnvisitedArea> findGminaCached;
 
-    InitGrowPhase(SeedContext ctx, SeedRoute seed, double targetEffort, double hiBand, double growCeiling,
-                  double effortMultiplier, long seedStartTs) {
+    InitGrowPhase(SeedContext ctx, SeedRoute seed, CandidatePicker picker, double targetEffort, double hiBand,
+                  double growCeiling, double effortMultiplier, long seedStartTs) {
         this.edgeRouter = ctx.edgeRouter();
         this.metrics = ctx.metrics();
         this.gminaIndex = ctx.gminaIndex();
-        this.ordering = ctx.ordering();
         this.ops = ctx.ops();
         this.pool = ctx.pool();
-        this.rewards = ctx.rewards();
+        this.picker = picker;
         this.debug = ctx.debug();
         this.debugGeoJson = ctx.debugGeoJson();
         this.seed = seed;
@@ -78,16 +73,15 @@ final class InitGrowPhase {
         this.seedStartTs = seedStartTs;
     }
 
-    /** Score+order → init-grow (batche do 110% + checkpoint-optimise) → islands-fix → log breakdown. */
+    /** Init-grow (pick batchami do 110% + checkpoint-optimise) → islands-fix → log breakdown. */
     IslandFixResult run() {
-        this.scored = seedScoreAndOrder(baseline, effortMultiplier);
         this.effortFactor = effortMultiplier;
         this.realCheckpoints = 0;
         this.findGminaCached = pt -> gminaPointCache.computeIfAbsent(
                 String.format(java.util.Locale.ROOT, "%.6f,%.6f", pt[0], pt[1]),
                 k -> gminaIndex.findGminaForPoint(pt[0], pt[1]));
         log.info("Coverage seed grow START: pool={} obszarów, target effort={} ({}/dzień × {}d)",
-                new Object[]{scored.size(), Math.round(targetEffort),
+                new Object[]{pool.size(), Math.round(targetEffort),
                         Math.round(targetEffort / Math.max(1, route.size())), route.size()});
         edgeRouter.setReason("grow"); // v3.16: INIT-GROW = realne waypointy (księgowanie strzałów per powód)
         debug.skeleton("init", route); // ADMIN DEBUG: start+meta+anchory (przed dorzucaniem gmin)
@@ -97,40 +91,15 @@ final class InitGrowPhase {
     }
 
     /**
-     * FAZA 1: dla każdej gminy licz punkt (najgłębszy interior / fallback sample), jego odległość od korytarza
-     * (baseline) i score = reward/detour; zwróć listę posortowaną wg distBase ważonego rewardem (blisko korytarza +
-     * cenne pierwsze). Właściwa kolejność na trasie ustalana przez rebuildOrdered (Hilbert) co batch.
-     */
-    private List<SeedSel> seedScoreAndOrder(List<double[]> baseline, double effortMultiplier) {
-        int baselineSize = baseline.size();
-        List<SeedSel> scored = new ArrayList<>(pool.size());
-        for (UnvisitedArea area : pool) {
-            double[] point = gminaIndex.deepestInteriorPoint(area.areaId()); // MIC (fallback centroid) — nigdy null dla gmin z puli
-            double distToBaseline = Double.MAX_VALUE;
-            for (int j = 0; j < baselineSize; j++) {
-                double d = velomarker.service.planning.WaypointSelector.haversineKm(point, baseline.get(j));
-                if (d < distToBaseline) distToBaseline = d;
-            }
-            double reward = rewards.getOrDefault(RewardModel.categoryKey(area), 1.0);
-            double detourEffort = Math.max(0.05, 2.0 * distToBaseline * effortMultiplier);
-            double score = reward / detourEffort;
-            scored.add(new SeedSel(area, point, ordering.orderKey(point), score, distToBaseline));
-        }
-        // Sort: blisko korytarza (distBase ASC) WAŻONE rewardem → rzadkie cenne (DE Kreis) nie zatapiane
-        // przez gęste tanie (CZ Obec). PL (jedna kategoria) → czysty distBase.
-        scored.sort(Comparator.comparingDouble((SeedSel s) ->
-                s.distBase() / Math.max(0.05, rewards.getOrDefault(RewardModel.categoryKey(s.area()), 1.0))));
-        return scored;
-    }
-
-    /**
-     * INIT-GROW: jedna runda grow ze scored (baseline-score) do pasma [1.0,1.1]×budżet + islands-fix. Dalsze
-     * dobieranie przejmuje FINALIZE. Zwraca effort + liczniki (usunięte wyspy / ponowione entry / allCandidatesUsed).
+     * INIT-GROW: dobieraj batchami przez {@link CandidatePicker} (dynamiczny ranking reward/dist/zgranie/dziury)
+     * do pasma [1.0,1.1]×budżet + islands-fix. Dalsze dobieranie przejmuje FINALIZE. Zwraca effort + liczniki
+     * (usunięte wyspy / ponowione entry / allCandidatesUsed = pula wyczerpana, nie przerwano na 110%).
      */
     private IslandFixResult seedInitGrow() {
         final int round = 0, BATCH = 20, PROGRESS_EVERY = 500;
-        int idx = 0, lastProgressMilestone = 0, pruned = 0, retried = 0;
+        int lastProgressMilestone = 0, pruned = 0, retried = 0;
         double realEffort = 0;
+        boolean poolExhausted = false;
         long roundStartTs = System.currentTimeMillis();
         int roundStartSelected = selected.size();
         log.info("Coverage seed round {} START: dotąd dodano {} obszarów, effort={}/{} ({}%), elapsed={}s",
@@ -138,15 +107,18 @@ final class InitGrowPhase {
                         realEffort > 0 ? Math.round(realEffort * 100.0 / targetEffort) : 0,
                         (System.currentTimeMillis() - seedStartTs) / 1000});
         int batchCounter = 0;
-        while (idx < scored.size()) {
+        while (true) {
             // PRECYZJA: od 80% budżetu zmniejsz batch 20→6 (dokładny pomiar zanim dobijemy do 110%). Poniżej rośniemy szybko.
             boolean precise = metrics.haversineKm(route) * effortFactor >= targetEffort * 0.80;
             int batchSize = precise ? 6 : BATCH;
-            for (int b = 0; b < batchSize && idx < scored.size(); b++, idx++) {
-                selected.add(scored.get(idx));
+            CandidatePicker.PickResult pr = picker.pick(batchSize);   // ranking + cheapest-insert (jedna klasa dobierająca)
+            if (pr.poolExhausted()) poolExhausted = true;
+            if (pr.inserted() == 0) {                                  // pula kandydatów wyczerpana → koniec rundy
+                poolExhausted = true;
+                break;
             }
             long _tReb = System.nanoTime();
-            ops.rebuildOrdered(seed);   // Hilbert construction — TYLKO init-grow (zwarty start dla 2-opt)
+            ops.rebuildOrdered(seed);   // Hilbert construction — TYLKO init-grow (zwarty start dla 2-opt; nadpisuje insert-pos)
             tRebuildNs += System.nanoTime() - _tReb;
             batchCounter++;
             // Pomiar realEffort progowo (doReal) — co 5/10 batchy lub confirm-before-stop gdy est dobija do hiBand.
@@ -200,8 +172,7 @@ final class InitGrowPhase {
         retried += islandFix.retried();
         debug.skeleton("round0-grown", route);
         if (debugGeoJson) debug.geometry("round0-grown-real", metrics.realGeometry(route), route, metrics.realKm(route));
-        boolean allCandidatesUsed = idx >= scored.size();   // wyczerpano scored (nie przerwano na 110%)
-        return new IslandFixResult(realEffort, pruned, retried, allCandidatesUsed);
+        return new IslandFixResult(realEffort, pruned, retried, poolExhausted); // poolExhausted = nie przerwano na 110%
     }
 
     /**

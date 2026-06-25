@@ -112,8 +112,7 @@ public final class PlanningJpaMapper {
                 geometry, waypoints,
                 e.getDistanceKm(), e.getElevationGain(), e.getElevationLoss(),
                 e.getProfile(), e.getEditedAt(),
-                deserializeStats(e.getStatsJson()),
-                deserializeIntList(e.getCoveredAreaIds()));
+                deserializeStats(e.getStatsJson()));
     }
 
     public PlanningSessionDayEntity toEntity(PlanningSessionDay d) {
@@ -129,25 +128,7 @@ public final class PlanningJpaMapper {
         e.setProfile(d.profile());
         e.setEditedAt(d.editedAt());
         e.setStatsJson(serializeStats(d.stats()));
-        e.setCoveredAreaIds(serializeIntList(d.coveredAreaIds()));
         return e;
-    }
-
-    /** v3.18: lista ID gmin ↔ JSON array (covered_area_ids). */
-    private String serializeIntList(List<Integer> ids) {
-        if (ids == null || ids.isEmpty()) return null;
-        try { return objectMapper.writeValueAsString(ids); }
-        catch (Exception ex) { return null; }
-    }
-
-    private List<Integer> deserializeIntList(String json) {
-        if (json == null || json.isBlank()) return List.of();
-        try {
-            ArrayNode arr = (ArrayNode) objectMapper.readTree(json);
-            List<Integer> out = new ArrayList<>(arr.size());
-            arr.forEach(v -> out.add(v.asInt()));
-            return out;
-        } catch (Exception ex) { return List.of(); }
     }
 
     private String serializeStats(velomarker.entity.RouteStats stats) {

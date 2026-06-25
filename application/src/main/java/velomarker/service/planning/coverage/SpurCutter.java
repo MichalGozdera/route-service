@@ -389,7 +389,7 @@ final class SpurCutter {
         while (again && iter < MAX_ITER) {
             iter++;
             edgeRouter.prewarm(route);                           // równoległy realny BRouter NOWYCH nóg (w tym INNER_TRIM)
-            realTrackForPush = metrics.realGeometry(route);      // computePush (parallel) czyta deepestPointOnTrack na nim
+            realTrackForPush = metrics.realGeometry(route);      // computePush (parallel) czyta deepestPointsOnTrack na nim
             Set<Integer> shallow = computeShallow(realTrackForPush);
             if (shallow.isEmpty()) break;
             for (int gid : shallow) {                            // escalate (lvl++/-1) SEKWENCYJNIE przed pushem

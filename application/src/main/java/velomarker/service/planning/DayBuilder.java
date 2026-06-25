@@ -6,14 +6,11 @@ import velomarker.entity.RouteCalculation;
 import velomarker.entity.planning.RoutePreferences;
 import velomarker.entity.planning.Waypoint;
 import velomarker.port.out.ElevationDataSource;
-import velomarker.port.out.planning.AreaCoverageIndexFactory;
-import velomarker.port.out.planning.AreaCoverageIndex;
 import velomarker.port.out.planning.SpatialIndex;
 import velomarker.port.out.planning.SpatialIndexFactory;
 import velomarker.entity.ElevationProfile;
 import velomarker.entity.planning.PlanningSession;
 import velomarker.entity.planning.PlanningSessionDay;
-import velomarker.entity.planning.UnvisitedArea;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -23,7 +20,7 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
- * Budowa dni planu: mapowanie granic DaySplitter na pełną geometrię BRoutera, realny dystans/wznios/stats/pokrycie
+ * Budowa dni planu: mapowanie granic DaySplitter na pełną geometrię BRoutera, realny dystans/wznios/stats
  * per okno + tworzenie PlanningSessionDay. Wydzielone z PlanningOrchestrationService; deps przez callbacki.
  */
 final class DayBuilder {
@@ -36,26 +33,23 @@ final class DayBuilder {
     }
 
     private final ElevationDataSource elevation;
-    private final AreaCoverageIndexFactory coverageIndexFactory;
     private final SpatialIndexFactory spatialIndexFactory;
     private final Consumer<UUID> checkCancel;
     private final BiConsumer<UUID, String> setPhase;
 
-    DayBuilder(ElevationDataSource elevation, AreaCoverageIndexFactory coverageIndexFactory,
+    DayBuilder(ElevationDataSource elevation,
                SpatialIndexFactory spatialIndexFactory,
                Consumer<UUID> checkCancel, BiConsumer<UUID, String> setPhase) {
         this.elevation = elevation;
-        this.coverageIndexFactory = coverageIndexFactory;
         this.spatialIndexFactory = spatialIndexFactory;
         this.checkCancel = checkCancel;
         this.setPhase = setPhase;
     }
     /** Buduje dni planu: mapuje granice DaySplitter na pełną geometrię BRoutera, liczy realny dystans/wznios/
-     *  stats/pokrycie gmin per okno i tworzy PlanningSessionDay. Wydzielone z executePlan (faza splitting-days). */
+     *  stats per okno i tworzy PlanningSessionDay. Wydzielone z executePlan (faza splitting-days). */
     List<PlanningSessionDay> build(UUID taskId, PlanningSession session, RoutePreferences prefs, String profile,
                                               RouteCalculation full, ElevationProfile fullProfile,
-                                              List<DaySplitter.DayBoundary> boundaries, List<Waypoint> allWaypoints,
-                                              PlanningOrchestrationService.CoverageBuildInfo coverageInfo) {
+                                              List<DaySplitter.DayBoundary> boundaries, List<Waypoint> allWaypoints) {
             // Cumulative km dla pełnej geometrii BRouter (32k+ punktów) — używane do liczenia
             // REALNEGO dystansu dnia (zamiast nieliniowego rescale × scale z sample-space).
             double[] fullCumKm = cumulativeKm(full.coordinates());
@@ -81,15 +75,6 @@ final class DayBuilder {
             log.info("Waypoint mapping: {}/{} planning waypoints zlokalizowane w pełnej geometrii (reszta = BRouter chunk-fail)",
                     new Object[]{wpMapped, allWaypoints.size()});
 
-            // v3.18 FIX C: indeks pokrycia nad pulą (kandydaci po bbox) — per-dzień ID gmin ZALICZONYCH
-            // (kryterium kredytu ≥200 m, port JTS) = źródło prawdy dla kolorowania na froncie (kolor=prawda).
-            AreaCoverageIndex coverageIndex = null;
-            if (coverageInfo != null) {
-                List<UnvisitedArea> coveragePool = new ArrayList<>();
-                if (coverageInfo.pickedCandidates() != null)
-                    for (AreaCandidate c : coverageInfo.pickedCandidates()) coveragePool.add(c.area);
-                if (!coveragePool.isEmpty()) coverageIndex = coverageIndexFactory.build(coveragePool);
-            }
             List<PlanningSessionDay> days = new ArrayList<>(boundaries.size());
             for (int i = 0; i < boundaries.size(); i++) {
                 checkCancel.accept(taskId);
@@ -132,10 +117,6 @@ final class DayBuilder {
                 // nawierzchni / dróg" gotowy do wyświetlenia per dzień na FE, bez ponownego BRouter call.
                 velomarker.entity.RouteStats dayStats = velomarker.service.RouteStatsSlicer.slice(
                         full.stats(), full.coordinates(), fullStartIdx, fullEndIdx);
-                // v3.18 FIX C: gminy zaliczone przez geometrię tego dnia (kryterium kredytu portu JTS).
-                List<Integer> coveredAreaIds = coverageIndex != null
-                        ? new ArrayList<>(coverageIndex.visitedAreaIds(dayGeometry))
-                        : java.util.List.of();
                 days.add(new PlanningSessionDay(
                         UUID.randomUUID(),
                         session.id(),
@@ -147,8 +128,7 @@ final class DayBuilder {
                         (int) Math.round(dayElev.lossM()),
                         profile,
                         Instant.now(),
-                        dayStats,
-                        coveredAreaIds
+                        dayStats
                 ));
             }
         return days;

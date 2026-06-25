@@ -67,12 +67,9 @@ public interface AreaCoverageIndex {
      *  centroid" dla muśnięć (zamiast {@code area.lng/lat}, które bywa przy granicy). {@code null} gdy brak gminy. */
     double[] deepestInteriorPoint(int areaId);
 
-    /** NAJGŁĘBSZY punkt {@code track} w gminie {@code areaId} (max odległość od granicy = czubek śladu w gminie).
-     *  {@code null} gdy ślad nie wchodzi w gminę. Do pogłębiania KIERUNKOWEGO (entry→deepest, przedłuż wzdłuż wjazdu). */
-    double[] deepestPointOnTrack(List<double[]> track, int areaId);
-
     /** BATCH (jeden przebieg track + STRtree, jak {@link #firstBufferEntryPoints}): najgłębszy punkt śladu per gmina
-     *  z {@code areaIds} → Map gid→punkt. Zastępuje N× {@link #deepestPointOnTrack} (O(track·log gmin) vs O(track·gmin)). */
+     *  z {@code areaIds} → Map gid→punkt (max odległość od granicy = czubek śladu w gminie; brak wpisu gdy ślad nie
+     *  wchodzi). Do pogłębiania KIERUNKOWEGO (entry→deepest). O(track·log gmin). */
     Map<Integer, double[]> deepestPointsOnTrack(List<double[]> track, Set<Integer> areaIds);
 
     /** BATCH: PIERWSZE wejście ≥{@code minDepthMeters} per gmina z {@code areaIds} (jeden przebieg + STRtree) → Map gid→punkt.
@@ -95,6 +92,14 @@ public interface AreaCoverageIndex {
      */
     boolean allNeighborsVisited(int areaId, Set<Integer> visited);
 
+    /**
+     * Ułamek sąsiadów wielokątowych gminy {@code areaId} (adjacency po realnym styku granic, cross-border)
+     * należących do {@code visited} — sygnał „zgrania z zaliczonymi": 0 = osobno, 1 = w pełni otoczona (==
+     * {@link #allNeighborsVisited}). {@code visited} może zawierać historycznie zaliczone i już dobrane.
+     * 0 gdy gmina nie ma zarejestrowanych sąsiadów (realna wyspa).
+     */
+    double neighborVisitedFraction(int areaId, Set<Integer> visited);
+
     /** OBWÓD pokrycia: zaliczone gminy z ≥1 sąsiadem o innym countryId (rim danych); fallback single-country =
      *  gminy z liczbą sąsiadów &lt; max-w-zbiorze. Do cięcia gdy całość pokryta (wszystkie allNeighborsVisited=true,
      *  fringe pusty), a trzeba zejść z budżetu — tnij OBWÓD zamiast robić dziurę w środku. */
@@ -113,20 +118,4 @@ public interface AreaCoverageIndex {
      * Do diagnostyki „jak głęboko siedzi wp/crosspoint". 0 BRouter (czysta geometria JTS).
      */
     double depthMeters(double[] point, int areaId);
-
-    /**
-     * Jak {@link #firstTrackPointAtDepth}, ale skan ograniczony do FRAGMENTU śladu między {@code entry} a {@code exit}
-     * (wejściem i wyjściem PRZELOTU). Pogłębianie kotwicy przelotu szuka punktu ≥ minDepth NA przelocie, NIE pierwszego
-     * wejścia gdziekolwiek (które mogłoby trafić w płytki zaułek przed przelotem). {@code null} gdy fragment nie wchodzi
-     * tak głęboko. 0 BRouter.
-     */
-    double[] firstTrackPointAtDepthBetween(List<double[]> track, int areaId, double minDepthMeters,
-                                           double[] entry, double[] exit);
-
-    /**
-     * DEBUG: GeoJSON (FeatureCollection) granicy gminy {@code areaId} pomniejszonej o {@code bufferMeters}
-     * (dodatni = rdzeń −X m, np. 220; 0 = pełna granica). Do wklejenia w mapę debug obok śladu. {@code null}
-     * gdy brak gminy. Wołane ręcznie z debuggera: {@code gminaIndex.debugAreaGeoJson(id, 220)}.
-     */
-    String debugAreaGeoJson(int areaId, double bufferMeters);
 }

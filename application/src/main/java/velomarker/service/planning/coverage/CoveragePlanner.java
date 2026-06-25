@@ -98,6 +98,7 @@ public class CoveragePlanner {
 
     public CoverageResult plan(UUID taskId,
                              List<UnvisitedArea> candidatePool,
+                             List<UnvisitedArea> historicallyVisited,
                              List<double[]> baselineGeom,
                              RoutePreferences prefs,
                              String profile,
@@ -105,6 +106,7 @@ public class CoveragePlanner {
                              Consumer<Boolean> snapToggle,
                              Consumer<UUID> checkCancel) {
         long startTs = System.currentTimeMillis();
+        List<UnvisitedArea> histVisited = historicallyVisited != null ? historicallyVisited : List.of();
 
         // Effort budget
         int kmPerDay = prefs.kmPerDay() != null ? prefs.kmPerDay() : 200;
@@ -118,7 +120,13 @@ public class CoveragePlanner {
                         params.alphaKmPerMeter(), elevPerDay, days, candidatePool.size()});
 
         // Index + cache. Coverage (zaliczenia) liczy JTS na PEŁNEJ geometrii (plain intersect jak front).
-        GminaIndex gminaIndex = new GminaIndex(candidatePool, coverageFactory.build(candidatePool), spatialIndexFactory);
+        // Historycznie zaliczone wchodzą do indeksu TYLKO jako sąsiedztwo (domykanie dziur + zgranie z dawnym pokryciem).
+        java.util.Set<Integer> histVisitedIds = new HashSet<>();
+        for (UnvisitedArea a : histVisited) histVisitedIds.add(a.areaId());
+        GminaIndex gminaIndex = new GminaIndex(candidatePool,
+                coverageFactory.build(candidatePool, histVisited), spatialIndexFactory, histVisitedIds);
+        log.info("Coverage init: candidates={} + historycznie zaliczone (sąsiedztwo)={}",
+                new Object[]{candidatePool.size(), histVisited.size()});
         HilbertOrdering ordering = new HilbertOrdering();
         ordering.computeBbox(candidatePool);
         EdgeRouter edgeRouter = new EdgeRouter(brouter, profile, params.alphaKmPerMeter(), elevation, brouterParallelism);

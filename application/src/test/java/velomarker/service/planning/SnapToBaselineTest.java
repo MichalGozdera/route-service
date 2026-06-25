@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.within;
 
 /**
  * Test pakietu snap-to-baseline (Faza 4) — bezpośrednia weryfikacja core'u nowego algorytmu:
- * scoreAreaAgainstBaseline / polylineBbox / findNearestGeomIdx.
+ * scoreAreaAgainstBaseline / findNearestGeomIdx.
  *
  * <p>Algorytm: zamiast TSP przez centroidy gmin, baseline BRouter (start→via→meta) JEST trasą,
  * a gminy są DOLEPIANE mini-detorami na granicę polygonu — wjazd ~50 m za granicę wystarczy
@@ -23,7 +23,6 @@ import static org.assertj.core.api.Assertions.within;
  *   <li>gmina DALEKO (offset 30 km) → intersected=false, detour~60 km</li>
  *   <li>insertionIdx zachowuje monotonię wzdłuż baseline</li>
  *   <li>entryLng/entryLat są WEWNĄTRZ ringa (nie na granicy ani poza)</li>
- *   <li>polylineBbox zawiera wszystkie punkty + margines</li>
  * </ul>
  */
 class SnapToBaselineTest {
@@ -106,21 +105,6 @@ class SnapToBaselineTest {
         assertThat(c.getEntryLat()).isBetween(lat - half, lat + half);
         // Bliżej południowej granicy (bazowa) niż centroid:
         assertThat(c.getEntryLat()).isLessThan(lat);
-    }
-
-    @Test
-    void polylineBbox_returnsBboxWithSeparateLngLatMargins() {
-        List<double[]> poly = List.of(
-                new double[]{14.0, 50.0},
-                new double[]{16.0, 51.0},
-                new double[]{18.0, 50.5}
-        );
-        // Osobne marginesy lng/lat — odzwierciedla rzeczywistość: 1° lng ≠ 1° lat w km.
-        double[] bbox = PlanningGeom.polylineBbox(poly, 0.8, 0.5);
-        assertThat(bbox[0]).isEqualTo(13.2);  // minLng - marginLng (14.0 - 0.8)
-        assertThat(bbox[1]).isEqualTo(49.5);  // minLat - marginLat (50.0 - 0.5)
-        assertThat(bbox[2]).isEqualTo(18.8);  // maxLng + marginLng (18.0 + 0.8)
-        assertThat(bbox[3]).isEqualTo(51.5);  // maxLat + marginLat (51.0 + 0.5)
     }
 
     @Test

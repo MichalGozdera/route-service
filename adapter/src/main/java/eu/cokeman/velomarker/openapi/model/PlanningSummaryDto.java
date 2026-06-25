@@ -78,15 +78,7 @@ public class PlanningSummaryDto {
 
   private Integer initialPoolSize;
 
-  private Integer reconcileIters;
-
-  private Integer reconcileTrims;
-
-  private Integer reconcileGrows;
-
   private @Nullable Double baselineKm = null;
-
-  private @Nullable Double roadAnchors = null;
 
   private @Nullable Double roadAreas = null;
 
@@ -207,11 +199,11 @@ public class PlanningSummaryDto {
   }
 
   /**
-   * Liczba obszarów po reconcile (finalna pula)
+   * Wybrana pula obszarów (finalna)
    * @return poolSize
    */
   @NotNull 
-  @Schema(name = "poolSize", description = "Liczba obszarów po reconcile (finalna pula)", requiredMode = Schema.RequiredMode.REQUIRED)
+  @Schema(name = "poolSize", description = "Wybrana pula obszarów (finalna)", requiredMode = Schema.RequiredMode.REQUIRED)
   @JsonProperty("poolSize")
   public Integer getPoolSize() {
     return poolSize;
@@ -228,11 +220,11 @@ public class PlanningSummaryDto {
   }
 
   /**
-   * Liczba obszarów PRZED reconcile (cap MAX_TSP_AREAS)
+   * Pula kandydatów po scoringu (przed wyborem)
    * @return initialPoolSize
    */
   @NotNull 
-  @Schema(name = "initialPoolSize", description = "Liczba obszarów PRZED reconcile (cap MAX_TSP_AREAS)", requiredMode = Schema.RequiredMode.REQUIRED)
+  @Schema(name = "initialPoolSize", description = "Pula kandydatów po scoringu (przed wyborem)", requiredMode = Schema.RequiredMode.REQUIRED)
   @JsonProperty("initialPoolSize")
   public Integer getInitialPoolSize() {
     return initialPoolSize;
@@ -241,69 +233,6 @@ public class PlanningSummaryDto {
   @JsonProperty("initialPoolSize")
   public void setInitialPoolSize(Integer initialPoolSize) {
     this.initialPoolSize = initialPoolSize;
-  }
-
-  public PlanningSummaryDto reconcileIters(Integer reconcileIters) {
-    this.reconcileIters = reconcileIters;
-    return this;
-  }
-
-  /**
-   * Get reconcileIters
-   * @return reconcileIters
-   */
-  @NotNull 
-  @Schema(name = "reconcileIters", requiredMode = Schema.RequiredMode.REQUIRED)
-  @JsonProperty("reconcileIters")
-  public Integer getReconcileIters() {
-    return reconcileIters;
-  }
-
-  @JsonProperty("reconcileIters")
-  public void setReconcileIters(Integer reconcileIters) {
-    this.reconcileIters = reconcileIters;
-  }
-
-  public PlanningSummaryDto reconcileTrims(Integer reconcileTrims) {
-    this.reconcileTrims = reconcileTrims;
-    return this;
-  }
-
-  /**
-   * Get reconcileTrims
-   * @return reconcileTrims
-   */
-  @NotNull 
-  @Schema(name = "reconcileTrims", requiredMode = Schema.RequiredMode.REQUIRED)
-  @JsonProperty("reconcileTrims")
-  public Integer getReconcileTrims() {
-    return reconcileTrims;
-  }
-
-  @JsonProperty("reconcileTrims")
-  public void setReconcileTrims(Integer reconcileTrims) {
-    this.reconcileTrims = reconcileTrims;
-  }
-
-  public PlanningSummaryDto reconcileGrows(Integer reconcileGrows) {
-    this.reconcileGrows = reconcileGrows;
-    return this;
-  }
-
-  /**
-   * Get reconcileGrows
-   * @return reconcileGrows
-   */
-  @NotNull 
-  @Schema(name = "reconcileGrows", requiredMode = Schema.RequiredMode.REQUIRED)
-  @JsonProperty("reconcileGrows")
-  public Integer getReconcileGrows() {
-    return reconcileGrows;
-  }
-
-  @JsonProperty("reconcileGrows")
-  public void setReconcileGrows(Integer reconcileGrows) {
-    this.reconcileGrows = reconcileGrows;
   }
 
   public PlanningSummaryDto baselineKm(@Nullable Double baselineKm) {
@@ -325,27 +254,6 @@ public class PlanningSummaryDto {
   @JsonProperty("baselineKm")
   public void setBaselineKm(@Nullable Double baselineKm) {
     this.baselineKm = baselineKm;
-  }
-
-  public PlanningSummaryDto roadAnchors(@Nullable Double roadAnchors) {
-    this.roadAnchors = roadAnchors;
-    return this;
-  }
-
-  /**
-   * Współczynnik road/straight dla anchors-only (probe baseline). Diagnostyka.
-   * @return roadAnchors
-   */
-  
-  @Schema(name = "roadAnchors", description = "Współczynnik road/straight dla anchors-only (probe baseline). Diagnostyka.", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
-  @JsonProperty("roadAnchors")
-  public @Nullable Double getRoadAnchors() {
-    return roadAnchors;
-  }
-
-  @JsonProperty("roadAnchors")
-  public void setRoadAnchors(@Nullable Double roadAnchors) {
-    this.roadAnchors = roadAnchors;
   }
 
   public PlanningSummaryDto roadAreas(@Nullable Double roadAreas) {
@@ -406,18 +314,14 @@ public class PlanningSummaryDto {
         Objects.equals(this.surplusKm, planningSummary.surplusKm) &&
         Objects.equals(this.poolSize, planningSummary.poolSize) &&
         Objects.equals(this.initialPoolSize, planningSummary.initialPoolSize) &&
-        Objects.equals(this.reconcileIters, planningSummary.reconcileIters) &&
-        Objects.equals(this.reconcileTrims, planningSummary.reconcileTrims) &&
-        Objects.equals(this.reconcileGrows, planningSummary.reconcileGrows) &&
         Objects.equals(this.baselineKm, planningSummary.baselineKm) &&
-        Objects.equals(this.roadAnchors, planningSummary.roadAnchors) &&
         Objects.equals(this.roadAreas, planningSummary.roadAreas) &&
         Objects.equals(this.climbWarning, planningSummary.climbWarning);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(totalDistanceKm, totalElevationGain, budgetKm, verdict, surplusKm, poolSize, initialPoolSize, reconcileIters, reconcileTrims, reconcileGrows, baselineKm, roadAnchors, roadAreas, climbWarning);
+    return Objects.hash(totalDistanceKm, totalElevationGain, budgetKm, verdict, surplusKm, poolSize, initialPoolSize, baselineKm, roadAreas, climbWarning);
   }
 
   @Override
@@ -431,11 +335,7 @@ public class PlanningSummaryDto {
     sb.append("    surplusKm: ").append(toIndentedString(surplusKm)).append("\n");
     sb.append("    poolSize: ").append(toIndentedString(poolSize)).append("\n");
     sb.append("    initialPoolSize: ").append(toIndentedString(initialPoolSize)).append("\n");
-    sb.append("    reconcileIters: ").append(toIndentedString(reconcileIters)).append("\n");
-    sb.append("    reconcileTrims: ").append(toIndentedString(reconcileTrims)).append("\n");
-    sb.append("    reconcileGrows: ").append(toIndentedString(reconcileGrows)).append("\n");
     sb.append("    baselineKm: ").append(toIndentedString(baselineKm)).append("\n");
-    sb.append("    roadAnchors: ").append(toIndentedString(roadAnchors)).append("\n");
     sb.append("    roadAreas: ").append(toIndentedString(roadAreas)).append("\n");
     sb.append("    climbWarning: ").append(toIndentedString(climbWarning)).append("\n");
     sb.append("}");

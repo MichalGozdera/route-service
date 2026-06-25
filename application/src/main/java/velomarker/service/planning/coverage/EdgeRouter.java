@@ -106,9 +106,6 @@ final class EdgeRouter {
         }
     }
 
-    /** Liczba wątków równoległych (cap dla {@link #parallelMap}/{@link #prewarmPairs}). */
-    int parallelism() { return parallelism; }
-
     /**
      * Równoległa mapa kolekcji → {@code List} na WIRTUALNYCH wątkach (Semaphore cap = {@link #parallelism}, jak
      * {@link #prewarmPairs}), z propagacją OTel trace-context: {@code ctx.makeCurrent()} w wątku → spany w {@code fn}

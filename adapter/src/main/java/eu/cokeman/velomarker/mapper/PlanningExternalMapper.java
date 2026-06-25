@@ -77,7 +77,6 @@ public class PlanningExternalMapper {
         if (day.elevationGain() != null) dto.setElevationGain(day.elevationGain());
         if (day.elevationLoss() != null) dto.setElevationLoss(day.elevationLoss());
         dto.setStats(routeDraftExternalMapper.toStatsDto(day.stats()));
-        dto.setCoveredAreaIds(day.coveredAreaIds()); // v3.18: zaliczone gminy (kompiluje się po `mvn -P api`)
         return dto;
     }
 

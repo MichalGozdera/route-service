@@ -66,56 +66,6 @@ class DaySplitterTest {
     }
 
     @Test
-    void equivalentKm_road_climbAboveRef_addsEffort() {
-        // 100 km szosa, climb 600 m > ref 300 m → delta 300 → effort = 100 + (300/300)×20 = 120
-        double effort = DaySplitter.equivalentKm(100, 600, 300, true);
-        assertThat(effort).isCloseTo(120, within(0.1));
-    }
-
-    @Test
-    void equivalentKm_road_climbBelowRef_subtractsEffort() {
-        // 100 km szosa, climb 0 m, ref 300 m → delta -300 → effort = 100 - (300/300)×30 = 70
-        double effort = DaySplitter.equivalentKm(100, 0, 300, true);
-        assertThat(effort).isCloseTo(70, within(0.1));
-    }
-
-    @Test
-    void equivalentKm_offroad_climbAboveRef_addsMoreEffort() {
-        // 100 km offroad, climb 600 m > ref 300 m → delta 300 → effort = 100 + (300/300)×30 = 130
-        double effort = DaySplitter.equivalentKm(100, 600, 300, false);
-        assertThat(effort).isCloseTo(130, within(0.1));
-    }
-
-    @Test
-    void equivalentKm_offroad_climbBelowRef_smallerBonusThanRoad() {
-        // 100 km offroad, climb 0 → effort = 100 - (300/300)×20 = 80
-        double effort = DaySplitter.equivalentKm(100, 0, 300, false);
-        assertThat(effort).isCloseTo(80, within(0.1));
-    }
-
-    @Test
-    void equivalentKm_floorAtMinDayKm() {
-        // 30 km szosa, climb 3000 m, ref 300 → delta 2700 → effort = 30 + (2700/300)×20 = 210
-        // ale floor MIN_DAY_KM=20 jest dla LIGHT TRIP. Dla HEAVY trip wartosci sa wieksze niz 20.
-        double effort = DaySplitter.equivalentKm(30, 3000, 300, true);
-        assertThat(effort).isCloseTo(210, within(0.1));
-    }
-
-    @Test
-    void equivalentKm_negativeFloor_capsAtMinDay() {
-        // 10 km szosa, climb 0, ref 1000 → delta -1000 → 10 - 100 = -90 → floor MIN_DAY_KM=20
-        double effort = DaySplitter.equivalentKm(10, 0, 1000, true);
-        assertThat(effort).isEqualTo(DaySplitter.MIN_DAY_KM);
-    }
-
-    @Test
-    void equivalentKmRaw_noFloor_canGoNegative() {
-        // 10 km flat, ref 1000 → bez floora wynik ujemny.
-        double effort = DaySplitter.equivalentKmRaw(10, 0, 1000, true);
-        assertThat(effort).isCloseTo(-90, within(0.1));
-    }
-
-    @Test
     void cumDistConversion_metersToKilometers() {
         // Wejscie w METRACH (1 000 000 = 1000 km). Po konwersji wewnetrznej totalKm = 1000.
         var p = flatProfile(1000, 200);

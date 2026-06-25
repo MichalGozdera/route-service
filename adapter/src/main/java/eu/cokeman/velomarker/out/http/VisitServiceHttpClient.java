@@ -7,12 +7,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import velomarker.entity.planning.UnvisitedArea;
 import velomarker.exception.VisitServiceUnavailableException;
-import velomarker.port.out.planning.AreaCoverage;
+import velomarker.port.out.planning.AreaPool;
 import velomarker.port.out.planning.SpecialGroupRef;
 import velomarker.port.out.planning.VisitServiceClient;
 
 import java.net.URI;
-import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -20,7 +19,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -51,56 +49,47 @@ public class VisitServiceHttpClient implements VisitServiceClient {
     }
 
     @Override
-    public List<AreaCoverage> getAreaCoverage(String bearerToken) {
-        String userId = userIdFromBearer(bearerToken);
-        Object body = getJson("/statistics/user-areas?userId=" + enc(userId), bearerToken);
-        List<AreaCoverage> out = new ArrayList<>();
-        for (Map<?, ?> m : asListOfMaps(body)) {
-            out.add(new AreaCoverage(
-                    toInt(m.get("countryId")), str(m.get("countryName")),
-                    toInt(m.get("levelId")), toInt(m.get("levelOrder")), str(m.get("levelName")),
-                    toLong(m.get("visitedCount")), toLong(m.get("totalAreas")), toDouble(m.get("percentage"))));
-        }
-        return out;
-    }
-
-    @Override
-    public List<UnvisitedArea> listUnvisitedAreas(String bearerToken, int countryId, int levelId, int limit) {
+    public AreaPool listAreaPool(String bearerToken, int countryId, int levelId, int limit) {
         String userId = userIdFromBearer(bearerToken);
         Object areasJson = getJson("/areas?countryId=" + countryId + "&levelId=" + levelId, bearerToken);
         Set<Integer> visited = fetchVisitedIds(bearerToken, countryId, levelId, userId);
-        String levelName = resolveLevelName(bearerToken, countryId, levelId, levelNameOf(areasJson));
+        String levelName = levelNameOf(areasJson);   // nazwa poziomu z klucza areasByLevel (bez /statistics)
 
         List<Map<?, ?>> all = flattenAreas(areasJson);
-        List<UnvisitedArea> out = new ArrayList<>();
+        List<UnvisitedArea> unvisited = new ArrayList<>();
+        List<UnvisitedArea> visitedAreas = new ArrayList<>();
         int skippedNoCentroid = 0;
         for (Map<?, ?> a : all) {
             Integer id = toInt(a.get("id"));
-            if (id == null || visited.contains(id)) {
+            if (id == null) {
                 continue;
             }
             java.util.List<velomarker.entity.planning.AreaPart> parts = partsOf(a.get("geometry"));
             double[] c = parts.isEmpty() ? null : GeoJson.representative(parts);
             if (c == null || parts.isEmpty()) {
+                // Zaliczone bez geometrii i tak nie wniosą sąsiedztwa — pomijamy oba przypadki.
                 skippedNoCentroid++;
-                log.warn("Nieodwiedzona gmina BEZ centroidu (geometria null/niepoprawna) — pomijam: id={}, name={}",
-                        id, str(a.get("name")));
+                if (!visited.contains(id)) {
+                    log.warn("Nieodwiedzona gmina BEZ centroidu (geometria null/niepoprawna) — pomijam: id={}, name={}",
+                            id, str(a.get("name")));
+                }
                 continue;
             }
-            out.add(UnvisitedArea.levelMulti(id, str(a.get("name")), c[1], c[0],
-                    parts, countryId, levelId, levelName));
-            if (out.size() >= limit) {
-                log.warn("Osiągnięto limit {} nieodwiedzonych — reszta ucięta", limit);
-                break;
+            UnvisitedArea area = UnvisitedArea.levelMulti(id, str(a.get("name")), c[1], c[0],
+                    parts, countryId, levelId, levelName);
+            if (visited.contains(id)) {
+                visitedAreas.add(area);                       // historycznie zaliczona — do indeksu sąsiedztwa
+            } else if (unvisited.size() < limit) {
+                unvisited.add(area);                          // kandydat (limit MAX_AREAS_TO_FETCH, praktycznie nieosiągalny)
             }
         }
-        log.info("Nieodwiedzone: {} (z /areas={}, odwiedzonych={}, bez centroidu={}, countryId={}, levelId={})",
-                out.size(), all.size(), visited.size(), skippedNoCentroid, countryId, levelId);
-        return out;
+        log.info("Obszary (countryId={}, levelId={}): kandydaci={}, zaliczeni={} (z /areas={}, bez centroidu={})",
+                new Object[]{countryId, levelId, unvisited.size(), visitedAreas.size(), all.size(), skippedNoCentroid});
+        return new AreaPool(unvisited, visitedAreas);
     }
 
     @Override
-    public List<UnvisitedArea> listUnvisitedSpecialAreas(String bearerToken, int groupId, Integer countryId, int limit) {
+    public AreaPool listSpecialAreaPool(String bearerToken, int groupId, Integer countryId, int limit) {
         String userId = userIdFromBearer(bearerToken);
         String groupName = null;
         Integer selectorLevelId = null;
@@ -128,11 +117,12 @@ public class VisitServiceHttpClient implements VisitServiceClient {
             }
         }
 
-        List<UnvisitedArea> out = new ArrayList<>();
+        List<UnvisitedArea> unvisited = new ArrayList<>();
+        List<UnvisitedArea> visitedAreas = new ArrayList<>();
         int skippedNoCentroid = 0;
         for (Map<?, ?> a : asListOfMaps(areasJson)) {
             Integer id = toInt(a.get("id"));
-            if (id == null || visited.contains(id)) {
+            if (id == null) {
                 continue;
             }
             if (selectorAreaIds != null && !linkedIntersects(a.get("linkedAreaIds"), selectorAreaIds)) {
@@ -144,15 +134,17 @@ public class VisitServiceHttpClient implements VisitServiceClient {
                 skippedNoCentroid++;
                 continue;
             }
-            out.add(UnvisitedArea.special(id, str(a.get("name")),  c[1], c[0],
-                    parts, countryId != null ? countryId : 0, groupName, groupId));
-            if (out.size() >= limit) {
-                break;
+            UnvisitedArea area = UnvisitedArea.special(id, str(a.get("name")), c[1], c[0],
+                    parts, countryId != null ? countryId : 0, groupName, groupId);
+            if (visited.contains(id)) {
+                visitedAreas.add(area);
+            } else if (unvisited.size() < limit) {
+                unvisited.add(area);
             }
         }
-        log.info("Nieodwiedzone specjale grupy {} ({}): {} (countryId={}, selectorLevelId={}, bez centroidu={})",
-                groupId, groupName, out.size(), countryId, selectorLevelId, skippedNoCentroid);
-        return out;
+        log.info("Specjale grupy {} ({}): kandydaci={}, zaliczeni={} (countryId={}, selectorLevelId={}, bez centroidu={})",
+                new Object[]{groupId, groupName, unvisited.size(), visitedAreas.size(), countryId, selectorLevelId, skippedNoCentroid});
+        return new AreaPool(unvisited, visitedAreas);
     }
 
     @Override
@@ -176,34 +168,6 @@ public class VisitServiceHttpClient implements VisitServiceClient {
                 }
             } else {
                 out.add(new SpecialGroupRef(gid, name, 0, null));
-            }
-        }
-        return out;
-    }
-
-    @Override
-    public Map<Integer, String> listAllCountries(String bearerToken) {
-        Object body = getJson("/countries", bearerToken);
-        Map<Integer, String> out = new LinkedHashMap<>();
-        for (Map<?, ?> m : asListOfMaps(body)) {
-            Integer id = toInt(m.get("id"));
-            String name = str(m.get("name"));
-            if (id != null && name != null) {
-                out.put(id, name);
-            }
-        }
-        return out;
-    }
-
-    @Override
-    public Map<Integer, Integer> levelOrders(String bearerToken, int countryId) {
-        Object body = getJson("/levels?countryId=" + countryId, bearerToken);
-        Map<Integer, Integer> out = new HashMap<>();
-        for (Map<?, ?> m : asListOfMaps(body)) {
-            Integer id = toInt(m.get("id"));
-            Integer order = toInt(m.get("order") != null ? m.get("order") : m.get("levelOrder"));
-            if (id != null && order != null) {
-                out.put(id, order);
             }
         }
         return out;
@@ -252,23 +216,6 @@ public class VisitServiceHttpClient implements VisitServiceClient {
             }
         }
         return false;
-    }
-
-    /** Czytelna nazwa poziomu (gmina/powiat/Kreis/...) z UserAreaStatistics po (countryId, levelId). */
-    private String resolveLevelName(String bearer, int countryId, int levelId, String fallback) {
-        try {
-            for (AreaCoverage c : getAreaCoverage(bearer)) {
-                if (c.countryId() != null && c.countryId() == countryId
-                        && c.levelId() != null && c.levelId() == levelId
-                        && c.levelName() != null && !c.levelName().isBlank()) {
-                    return c.levelName();
-                }
-            }
-        } catch (RuntimeException e) {
-            log.warn("Nie udało się pobrać nazwy poziomu (countryId={}, levelId={}): {}",
-                    countryId, levelId, e.getMessage());
-        }
-        return fallback;
     }
 
     private String levelNameOf(Object body) {
@@ -376,10 +323,6 @@ public class VisitServiceHttpClient implements VisitServiceClient {
         }
     }
 
-    private static String enc(String s) {
-        return URLEncoder.encode(s == null ? "" : s, StandardCharsets.UTF_8);
-    }
-
     private static String str(Object o) {
         if (o == null) {
             return null;
@@ -399,11 +342,4 @@ public class VisitServiceHttpClient implements VisitServiceClient {
         }
     }
 
-    private static long toLong(Object o) {
-        return o instanceof Number n ? n.longValue() : 0L;
-    }
-
-    private static double toDouble(Object o) {
-        return o instanceof Number n ? n.doubleValue() : (o == null ? 0 : Double.parseDouble(o.toString()));
-    }
 }

@@ -50,10 +50,6 @@ public class PlanningSessionDayEntity {
     @Column(name = "stats_json", columnDefinition = "text")
     private String statsJson;
 
-    /** v3.18: ID gmin ZALICZONYCH przez ten dzień (JSON array) — źródło prawdy dla kolorowania na froncie. */
-    @Column(name = "covered_area_ids", columnDefinition = "text")
-    private String coveredAreaIds;
-
     public UUID getId() { return id; }
     public void setId(UUID id) { this.id = id; }
     public UUID getSessionId() { return sessionId; }
@@ -76,6 +72,4 @@ public class PlanningSessionDayEntity {
     public void setEditedAt(Instant editedAt) { this.editedAt = editedAt; }
     public String getStatsJson() { return statsJson; }
     public void setStatsJson(String statsJson) { this.statsJson = statsJson; }
-    public String getCoveredAreaIds() { return coveredAreaIds; }
-    public void setCoveredAreaIds(String coveredAreaIds) { this.coveredAreaIds = coveredAreaIds; }
 }

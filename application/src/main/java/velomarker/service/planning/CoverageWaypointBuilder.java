@@ -7,6 +7,7 @@ import velomarker.entity.ElevationProfile;
 import velomarker.entity.planning.RoutePreferences;
 import velomarker.entity.planning.UnvisitedArea;
 import velomarker.entity.planning.Waypoint;
+import velomarker.port.out.planning.AreaPool;
 import velomarker.port.out.planning.VisitServiceClient;
 import velomarker.port.out.planning.AreaCoverageIndex;
 import velomarker.port.out.planning.AreaCoverageIndexFactory;
@@ -65,7 +66,9 @@ final class CoverageWaypointBuilder {
      */
     PlanningOrchestrationService.CoverageBuildInfo build(UUID taskId, RoutePreferences prefs, String bearerToken, String profile,
                                                   RoadFactorCalibrator calibrator) {
-        List<UnvisitedArea> pool = fetchAreaPool(taskId, prefs, bearerToken);
+        AreaPool areaPool = fetchAreaPool(taskId, prefs, bearerToken);
+        List<UnvisitedArea> pool = areaPool.unvisited();
+        List<UnvisitedArea> historicallyVisited = areaPool.visited();
         int budgetKm = (prefs.days() != null && prefs.kmPerDay() != null)
                 ? prefs.days() * prefs.kmPerDay() : 0;
 
@@ -83,11 +86,11 @@ final class CoverageWaypointBuilder {
         }
         List<AreaCandidate> candidates = scoreCandidates(taskId, pool, baselineGeom);
 
-        // Zwracamy surową pulę (całość po score) — planner/fallback zrobi selekcję.
+        // Zwracamy surową pulę (całość po score) + historycznie zaliczone (do indeksu sąsiedztwa w plannerze).
         List<Waypoint> anchorWps = BaselineComputer.buildAnchorWaypoints(prefs);
         return new PlanningOrchestrationService.CoverageBuildInfo(anchorWps, pool.size(), candidates.size(),
                 baseline.distanceKm(), calibrator.roadAreas(),
-                candidates, baseline.geometry());
+                candidates, historicallyVisited, baseline.geometry());
     }
 
     /** baseline pre-screen. Rzuca gdy sam baseline > budżet. */
@@ -118,7 +121,7 @@ final class CoverageWaypointBuilder {
         log.warn("No areas near baseline corridor — returning baseline-only trip");
         return new PlanningOrchestrationService.CoverageBuildInfo(BaselineComputer.buildAnchorWaypoints(prefs), 0, 0,
                 baseline.distanceKm(), calibrator.roadAreas(),
-                new ArrayList<>(), baseline.geometry());
+                new ArrayList<>(), new ArrayList<>(), baseline.geometry());
     }
 
     /** Score każdej gminy względem bazowej (detour + intersect + entry-point), sort ASC po detour. */
@@ -139,9 +142,12 @@ final class CoverageWaypointBuilder {
         return candidates;
     }
 
-    /** Pobierz pulę nieodwiedzonych gmin (country+level pary + special groups) z visit-service. */
-    List<UnvisitedArea> fetchAreaPool(UUID taskId, RoutePreferences prefs, String bearerToken) {
+    /** Pobierz pulę z visit-service: kandydaci (nieodwiedzeni) + historycznie zaliczeni (do indeksu sąsiedztwa).
+     *  Agregacja po WSZYSTKICH wybranych parach (country, level) + grupach specjalnych — cross-border domyka się
+     *  naturalnie, gdy obie strony są w wyborze planu. */
+    AreaPool fetchAreaPool(UUID taskId, RoutePreferences prefs, String bearerToken) {
         List<UnvisitedArea> pool = new ArrayList<>();
+        List<UnvisitedArea> visited = new ArrayList<>();
         setPhase.accept(taskId, "fetching-areas");
         checkCancel.accept(taskId);
         if (prefs.countryIds() != null && prefs.levelIds() != null) {
@@ -150,7 +156,9 @@ final class CoverageWaypointBuilder {
                 checkCancel.accept(taskId);
                 int countryId = prefs.countryIds().get(i);
                 int levelId = prefs.levelIds().get(i);
-                pool.addAll(visitClient.listUnvisitedAreas(bearerToken, countryId, levelId, MAX_AREAS_TO_FETCH));
+                AreaPool ap = visitClient.listAreaPool(bearerToken, countryId, levelId, MAX_AREAS_TO_FETCH);
+                pool.addAll(ap.unvisited());
+                visited.addAll(ap.visited());
             }
         }
         if (prefs.specialGroupIds() != null) {
@@ -158,12 +166,14 @@ final class CoverageWaypointBuilder {
                     ? prefs.countryIds().get(0) : null;
             for (Integer groupId : prefs.specialGroupIds()) {
                 checkCancel.accept(taskId);
-                pool.addAll(visitClient.listUnvisitedSpecialAreas(bearerToken, groupId, scopedCountryId, MAX_AREAS_TO_FETCH));
+                AreaPool ap = visitClient.listSpecialAreaPool(bearerToken, groupId, scopedCountryId, MAX_AREAS_TO_FETCH);
+                pool.addAll(ap.unvisited());
+                visited.addAll(ap.visited());
             }
         }
         if (pool.isEmpty()) {
             throw new PlanningSessionNotReadyException("no unvisited areas in scope");
         }
-        return pool;
+        return new AreaPool(pool, visited);
     }
 }

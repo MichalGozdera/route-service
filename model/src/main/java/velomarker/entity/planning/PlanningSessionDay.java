@@ -11,8 +11,7 @@ import java.util.UUID;
  * w adapterze (tutaj surowy {@code List<double[]>}). {@code waypoints} = punkty „kotwic" które user
  * może edytować na mapie po otwarciu dnia. {@code stats} = snapshot RouteStats wycięty dla okna dnia
  * z pełnej trasy (FE renderuje overlay nawierzchni / typów dróg bez ponownego wywołania BRoutera).
- * {@code coveredAreaIds} = ID gmin ZALICZONYCH przez ten dzień (kryterium kredytu ≥200 m, port JTS) —
- * źródło prawdy dla kolorowania na froncie (v3.18, zamiast re-derywacji turfem plain-touch).
+ * Pokrycie gmin liczy front (turf.js) z geometrii — backend go nie zwraca.
  */
 public record PlanningSessionDay(
         UUID id,
@@ -25,16 +24,13 @@ public record PlanningSessionDay(
         Integer elevationLoss,
         String profile,
         Instant editedAt,
-        RouteStats stats,
-        List<Integer> coveredAreaIds
+        RouteStats stats
 ) {
 
     public PlanningSessionDay withEditedGeometry(List<double[]> newGeometry, List<Waypoint> newWaypoints,
                                                  double newDistanceKm,
                                                  int newGain, int newLoss) {
-        // coveredAreaIds zachowane ze stanu sprzed edycji — przy live-edit dnia front i tak przelicza
-        // pokrycie sam (warstwa edycji); backendowe ID są dla podglądu PLANU.
         return new PlanningSessionDay(id, sessionId, dayNumber, newGeometry, newWaypoints,
-                newDistanceKm, newGain, newLoss, profile, Instant.now(), stats, coveredAreaIds);
+                newDistanceKm, newGain, newLoss, profile, Instant.now(), stats);
     }
 }

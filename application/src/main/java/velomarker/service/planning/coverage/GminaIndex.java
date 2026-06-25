@@ -34,6 +34,8 @@ public class GminaIndex {
     private final List<UnvisitedArea> allAreas;
     private final AreaCoverageIndex coverage;
     private final SpatialIndexFactory spatialIndexFactory;
+    /** Id gmin zaliczonych HISTORYCZNIE (z visit-service) — stała baza „visited" dla domykania dziur i zgrania. */
+    private final Set<Integer> historicallyVisited;
     private final Map<Integer, double[][]> samplePointsCache = new HashMap<>();
     /** Ile entry-pointów (ring vertices) generować per gmina — fallback dla null-MIC + retry wysp. */
     private static final int SAMPLE_POINTS = 8;
@@ -44,9 +46,44 @@ public class GminaIndex {
     private Map<Integer, int[]> kNearestCache;
 
     public GminaIndex(List<UnvisitedArea> areas, AreaCoverageIndex coverage, SpatialIndexFactory spatialIndexFactory) {
+        this(areas, coverage, spatialIndexFactory, java.util.Set.of());
+    }
+
+    public GminaIndex(List<UnvisitedArea> areas, AreaCoverageIndex coverage, SpatialIndexFactory spatialIndexFactory,
+                      Set<Integer> historicallyVisited) {
         this.allAreas = new ArrayList<>(areas);
         this.coverage = coverage;
         this.spatialIndexFactory = spatialIndexFactory;
+        this.historicallyVisited = historicallyVisited == null ? java.util.Set.of() : Set.copyOf(historicallyVisited);
+    }
+
+    /** Id gmin zaliczonych historycznie (stała baza). */
+    public Set<Integer> historicallyVisited() {
+        return historicallyVisited;
+    }
+
+    /**
+     * Suma „zaliczonych": historyczne (z visit-service) ∪ pokryte BUDOWANĄ trasą. Baza dla domykania dziur
+     * i zgrania (enclosed/sąsiedztwo). {@code routeGeometry} = realna geometria śladu (nie waypointy).
+     */
+    public Set<Integer> visitedUnion(List<double[]> routeGeometry) {
+        Set<Integer> u = new java.util.HashSet<>(historicallyVisited);
+        u.addAll(coverage.visitedAreaIds(routeGeometry));
+        return u;
+    }
+
+    /** Próg „dziury": udział DŁUGOŚCI granicy z zaliczonymi, od którego gmina jest traktowana jako otoczona
+     *  (silny bonus przy doborze + ochrona przed cięciem). 0.9 = ≥90% obwodu graniczy z zaliczonymi. */
+    public static final double HOLE_BORDER_FRACTION = 0.9;
+
+    /** Udział DŁUGOŚCI granicy gminy z {@code visited} (zgranie z zaliczonymi; 1.0 = pełne otoczenie). */
+    public double neighborVisitedFraction(int areaId, Set<Integer> visited) {
+        return coverage.neighborVisitedFraction(areaId, visited);
+    }
+
+    /** Czy gmina jest „dziurą": ≥{@link #HOLE_BORDER_FRACTION} obwodu graniczy z {@code visited}. */
+    public boolean enclosedByVisited(int areaId, Set<Integer> visited) {
+        return neighborVisitedFraction(areaId, visited) >= HOLE_BORDER_FRACTION;
     }
 
     /** Najmniejszy powierzchniowo obszar zawierający punkt (obwarzanek: miasto w dziurze wiejskiej),
@@ -112,11 +149,6 @@ public class GminaIndex {
         return coverage.depthMeters(point, areaId);
     }
 
-    /** Najgłębszy punkt śladu w gminie (czubek = max dist-to-boundary); null gdy ślad nie wchodzi. Kierunek wjazdu. */
-    public double[] deepestPointOnTrack(List<double[]> track, int areaId) {
-        return coverage.deepestPointOnTrack(track, areaId);
-    }
-
     /** BATCH: najgłębszy punkt śladu per gmina z {@code areaIds} (jeden przebieg) — P4 deepenLoop. */
     public Map<Integer, double[]> deepestPointsOnTrack(List<double[]> track, Set<Integer> areaIds) {
         return coverage.deepestPointsOnTrack(track, areaIds);
@@ -125,12 +157,6 @@ public class GminaIndex {
     /** BATCH: pierwsze wejście ≥minDepth per gmina z {@code areaIds} (jeden przebieg) — P5 Anchorer lvl1. */
     public Map<Integer, double[]> firstTrackPointsAtDepth(List<double[]> track, Set<Integer> areaIds, double minDepthMeters) {
         return coverage.firstTrackPointsAtDepth(track, areaIds, minDepthMeters);
-    }
-
-    /** Pierwsze wejście ≥minDepth NA fragmencie przelotu (między entry↔exit) — pogłębianie kotwicy przelotu. */
-    public double[] firstTrackPointAtDepthBetween(List<double[]> track, int areaId, double minDepthMeters,
-                                                  double[] entry, double[] exit) {
-        return coverage.firstTrackPointAtDepthBetween(track, areaId, minDepthMeters, entry, exit);
     }
 
     /** Gminy nieprzecięte OTOCZONE śladem z każdej strony (≥1 sąsiad, wszyscy zaliczeni, cross-border, bez progu). */
@@ -146,11 +172,6 @@ public class GminaIndex {
     /** OBWÓD pokrycia (rim danych / cross-country) — do cięcia gdy całość pokryta (fringe pusty). */
     public Set<Integer> borderAreaIds(Set<Integer> visited) {
         return coverage.borderAreaIds(visited);
-    }
-
-    /** DEBUG: GeoJSON granicy gminy pomniejszonej o {@code bufferMeters} (0 = pełna). Do wklejenia w mapę debug. */
-    public String debugAreaGeoJson(int areaId, double bufferMeters) {
-        return coverage.debugAreaGeoJson(areaId, bufferMeters);
     }
 
     /**
@@ -285,7 +306,4 @@ public class GminaIndex {
         }
         return sumNN / n;
     }
-
-    public List<UnvisitedArea> allAreas() { return allAreas; }
-    public int size() { return allAreas.size(); }
 }

@@ -45,19 +45,6 @@ final class GeometryUtil {
         return sum;
     }
 
-    /** Punkt p do segmentu A→B w km — próbkowanie 11 punktów (przybliżone). */
-    static double pointToSegmentKm(double[] p, double[] a, double[] b) {
-        final int N = 10;
-        double best = Double.MAX_VALUE;
-        for (int k = 0; k <= N; k++) {
-            double t = k / (double) N;
-            double[] q = {a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t};
-            double d = WaypointSelector.haversineKm(p, q);
-            if (d < best) best = d;
-        }
-        return best;
-    }
-
     /**
      * Analityczna odległość punkt→odcinek (km) — rzut prostopadły w płaszczyźnie equirectangular
      * (lng × cos(lat)), clamp t∈[0,1], jeden sqrt, zero trygonometrii w pętli. Dla segmentu
@@ -111,16 +98,6 @@ final class GeometryUtil {
         return out;
     }
 
-    /** Indeks wierzchołka geometrii najbliższego punktowi p (haversine). -1 gdy pusta. */
-    static int nearestVertexIdx(List<double[]> geom, double[] p) {
-        int best = -1;
-        double bestD = Double.MAX_VALUE;
-        for (int i = 0; i < geom.size(); i++) {
-            double d = WaypointSelector.haversineKm(geom.get(i), p);
-            if (d < bestD) { bestD = d; best = i; }
-        }
-        return best;
-    }
 
     /** Pozycja najtańszej insercji punktu w trasę (haversine; in-memory). */
     static int cheapestInsertPos(List<double[]> route, double[] p) {

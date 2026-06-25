@@ -83,9 +83,12 @@ final class SeedBuilder {
         final double growCeiling = targetEffort * 1.10;  // INIT-GROW zbiera do 110%; FINALIZE ściąga do pasma
         long seedStartTs = System.currentTimeMillis();
 
-        // FAZA DOBIERANIA WSTĘPNEGO: score → grow do 110% (Hilbert construction + checkpoint-optimise) → islands-fix.
+        // JEDNA klasa dobierająca (ranking + wstawianie) — wspólna dla init-grow (batche) i finalize (hurt).
+        CandidatePicker picker = new CandidatePicker(ctx, seed);
+
+        // FAZA DOBIERANIA WSTĘPNEGO: pick batchami do 110% (Hilbert construction + checkpoint-optimise) → islands-fix.
         InitGrowPhase.IslandFixResult ig = new InitGrowPhase(
-                ctx, seed, targetEffort, hiBand, growCeiling, EFFORT_MULTIPLIER, seedStartTs).run();
+                ctx, seed, picker, targetEffort, hiBand, growCeiling, EFFORT_MULTIPLIER, seedStartTs).run();
         double realEffort = ig.realEffort();
         int totalPruned = ig.pruned();
         int totalRetried = ig.retried();
@@ -93,12 +96,12 @@ final class SeedBuilder {
         debug.resetShots();
         if (debugGeoJson) debug.logShots("init-grow");
 
-        // OSTATNIA FAZA: zakotwicz surowy seed → cykl budżetowy ≤5 (dobierz/utnij → refine→anchor→refine→cut) → dziury.
+        // OSTATNIA FAZA: zakotwicz surowy seed → cykl budżetowy ≤5 (dobierz hurtem/utnij → refine→anchor→refine→cut).
         FinalizePhase.FinalizeResult fr = new FinalizePhase(
-                ctx, seed, targetEffort, hiBand, growCeiling, realEffort, ig.allCandidatesUsed()).run();
+                ctx, seed, picker, targetEffort, hiBand, growCeiling, realEffort, ig.allCandidatesUsed()).run();
         realEffort = fr.realEffort();
         if (debugGeoJson) debug.logShots("seed-final");
-        int densified = fr.grown() + fr.enclosed();
+        int densified = fr.grown();
         debug.skeleton("seed", route);
         if (debugGeoJson) debug.geometry("seed-real", metrics.realGeometry(route), route, metrics.realKm(route));
 

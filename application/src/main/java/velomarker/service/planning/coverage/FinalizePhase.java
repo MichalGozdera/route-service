@@ -2,7 +2,6 @@ package velomarker.service.planning.coverage;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import velomarker.entity.planning.UnvisitedArea;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -20,12 +19,8 @@ final class FinalizePhase {
 
     private static final Logger log = LoggerFactory.getLogger(FinalizePhase.class);
 
-    /** Score-sentinel wstawek ENCLOSED — peel (sort reward/detour ASC) nigdy ich nie rusza: otoczona dziura w środku
-     *  blobu jest gorsza niż przestrzał budżetu (decyzja usera 2026-06-12). */
-    static final double ENCLOSED_PROTECTED_SCORE = Double.MAX_VALUE;
-
-    /** Wynik finalize: effort + ile dobrano (grow) / ucięto (trim) / domknięto dziur (enclosed). */
-    record FinalizeResult(double realEffort, int grown, int trimmed, int enclosed) {}
+    /** Wynik finalize: effort + ile dobrano (grow) / ucięto (trim). */
+    record FinalizeResult(double realEffort, int grown, int trimmed) {}
 
     /** Kandydat do ucięcia: wp + klucz reward/koszt-objazdu (niski = zły deal = tnij pierwszy). */
     private record DealCand(SeedSel s, double key) {}
@@ -37,35 +32,31 @@ final class FinalizePhase {
     private final EdgeRouter edgeRouter;
     private final RouteMetrics metrics;
     private final GminaIndex gminaIndex;
-    private final HilbertOrdering ordering;
-    private final List<UnvisitedArea> pool;
     private final java.util.Map<String, Double> rewards;
     private final CoverageDebug debug;
     private final boolean debugGeoJson;
+    private final CandidatePicker picker;
     private final SeedRoute seed;
     private final List<double[]> route;
     private final List<SeedSel> selected;
-    private final List<double[]> baseline;
 
     private final double targetEffort, hiBand, growCeiling;
     private double realEffort;
     private boolean allCandidatesUsed;
 
-    FinalizePhase(SeedContext ctx, SeedRoute seed, double targetEffort, double hiBand, double growCeiling,
-                  double realEffort, boolean allCandidatesUsed) {
+    FinalizePhase(SeedContext ctx, SeedRoute seed, CandidatePicker picker, double targetEffort, double hiBand,
+                  double growCeiling, double realEffort, boolean allCandidatesUsed) {
         this.ctx = ctx;
         this.edgeRouter = ctx.edgeRouter();
         this.metrics = ctx.metrics();
         this.gminaIndex = ctx.gminaIndex();
-        this.ordering = ctx.ordering();
-        this.pool = ctx.pool();
         this.rewards = ctx.rewards();
         this.debug = ctx.debug();
         this.debugGeoJson = ctx.debugGeoJson();
+        this.picker = picker;
         this.seed = seed;
         this.route = seed.route();
         this.selected = seed.selected();
-        this.baseline = seed.baseline();
         this.targetEffort = targetEffort;
         this.hiBand = hiBand;
         this.growCeiling = growCeiling;
@@ -79,7 +70,7 @@ final class FinalizePhase {
      */
     FinalizeResult run() {
         final double STALL_EPS = 1.0;
-        int grown = 0, trimmed = 0, enclosed = 0;
+        int grown = 0, trimmed = 0;
         // OBOWIĄZKOWY pierwszy przebieg (NIEZALEŻNIE od budżetu): init-grow zostawił SUROWE wp (sorted, bez 2-opt/
         // anchor/cut) → zakotwicz na wjazdach + przytnij ogonki ZANIM zmierzymy budżet (inaczej eFrac na surowej
         // trasie = śmieć → zła decyzja; a eFrac w paśmie → break zwróciłby trasę niezakotwiczoną).
@@ -100,9 +91,7 @@ final class FinalizePhase {
             }
             int delta = 0;
             if (eFrac > 1.05) {
-                int g = metrics.eval(route).visited().size();
-                int removeN = Math.max(1, (int) Math.round(g * (eFrac - 1.0) / eFrac));
-                PeelResult pr = peelToCeiling(removeN, "fin" + cycle);
+                PeelResult pr = peelToCeiling("fin" + cycle);   // porcję cięcia liczy sam peel (rn per iteracja)
                 realEffort = pr.realEffort();
                 trimmed += pr.peeled();
                 delta = -pr.peeled();
@@ -116,18 +105,23 @@ final class FinalizePhase {
                 int additional = (int) Math.round(g * (1.0 - eFrac) / Math.max(0.05, eFrac));
                 if (additional > 0) {
                     edgeRouter.setReason("grow");
-                    GrowNear.GrowNearResult gr = new GrowNear(ctx, seed, growCeiling,
-                            Math.min(additional, 16), additional + 1, additional).run();
-                    delta = gr.inserted();
+                    CandidatePicker.PickResult pr = picker.pick(additional); // HURT: świeży ranking, dobierz `additional` najlepszych
+                    delta = pr.inserted();
                     grown += delta;
-                    realEffort = gr.effort();
+                    if (pr.poolExhausted()) allCandidatesUsed = true;
+                    realEffort = metrics.effortViaCache(route);
                 }
-                if (delta == 0) allCandidatesUsed = true; // grow nic nie znalazł → następny under-cykl wyjdzie
+                if (delta == 0) allCandidatesUsed = true; // nic nie dobrano → następny under-cykl wyjdzie
             }
-            // 2× OPTYMALIZACJA: refine → anchor → refine → cut (SpurCutter pętli rundy aż cut==0).
-            refine("fin" + cycle + "-pre-anchor");
-            new Anchorer(ctx, seed, "fin" + cycle).run();
-            refine("fin" + cycle + "-pre-cut");
+            // Po GROW: anchor (nowe gminy potrzebują wp ≥220m), potem cut. Po PEEL: BEZ anchora — re-kotwiczenie
+            // ISTNIEJĄCYCH gmin re-influje dystans i NIWECZY peel (obserwacja: peel 116→103%, anchor 103→138%).
+            // Usuwanie wp nie tworzy nowych gmin do zakotwiczenia, a cut (redukuje) sam doczyszcza spury po 2-opt.
+            boolean grew = delta > 0;
+            refine("fin" + cycle + (grew ? "-pre-anchor" : "-pre-cut"));
+            if (grew) {
+                new Anchorer(ctx, seed, "fin" + cycle).run();
+                refine("fin" + cycle + "-pre-cut");
+            }
             realEffort = new SpurCutter(ctx, seed, targetEffort, 3, "fin" + cycle + "-cut").run();   // 3-pass
             if (debugGeoJson) {
                 debug.geometry("fin" + cycle + "-real", metrics.realGeometry(route), route, metrics.realKm(route));
@@ -138,17 +132,11 @@ final class FinalizePhase {
                 break;
             }
         }
-        // DOMKNIJ otoczone dziury RAZ (najtańsze — ślad już je opływa; overshoot >105% akceptowany, dziura gorsza).
-        enclosed = closeEnclosedHoles();
-        if (enclosed > 0) {
-            refine("fin-holeclose-pre-anchor");
-            new Anchorer(ctx, seed, "fin-holeclose").run();
-            refine("fin-holeclose-pre-cut");
-            realEffort = new SpurCutter(ctx, seed, targetEffort, 3, "fin-holeclose-cut").run();
-        }
+        // Domykanie dziur NIE jest już osobnym etapem — kryterium dziur (W_HOLE) jest wbudowane w CandidatePicker,
+        // więc otoczone gminy są dobierane pierwsze w hurtowym grow cyklu budżetowego (gdy starcza budżetu).
         refine("seed");                      // FINALNY untangle — kontrakt: trasa rozplątana dla plan()
         realEffort = metrics.effortViaCache(route);
-        return new FinalizeResult(realEffort, grown, trimmed, enclosed);
+        return new FinalizeResult(realEffort, grown, trimmed);
     }
 
     /** FINALNY refine kolejności (pełny or-opt + 2-opt do zbieżności). Loguje Δkm + debug-skeleton PRZED/PO. */
@@ -167,10 +155,12 @@ final class FinalizePhase {
 
     /** Tnij FRINGE (nie-otoczone, reward/detour ASC) porcjami aż ≤hiBand lub brak bezpiecznych; gdy fringe pusty
      *  (pełne pokrycie) → tnij OBWÓD (borderAreaIds, chroń reward-P95). Zwraca {effort, ucięte}. */
-    private PeelResult peelToCeiling(int removeN, String phase) {
+    private PeelResult peelToCeiling(String phase) {
         final double PROGRESS_EPS = 1.0;
         int peeled = 0;
-        for (int peelK = 1; peelK <= 8 && realEffort > hiBand; peelK++) {
+        // Zbijaj proporcjonalnie do 100% (nie do hiBand=105%): anchor/cut PO peel już nie re-influją (anchor tylko po grow),
+        // więc to peel musi dowieźć do budżetu — nie ma na czym „polegać", że dotnie resztę.
+        for (int peelK = 1; peelK <= 8 && realEffort > targetEffort; peelK++) {
             long peelCallsStart = edgeRouter.realCalls();
             double before = realEffort;
             RouteMetrics.EvalResult evt = metrics.eval(route);
@@ -209,17 +199,19 @@ final class FinalizePhase {
      *  {@code border=true}: OBWÓD (borderAreaIds), chroń reward≥P95 (cenne stolice na rim). Klucz reward/detour. */
     private List<DealCand> collectDealCandidates(Set<Integer> visited, boolean border) {
         final double DETOUR_EPS = 0.05;
-        Set<Integer> rim = border ? gminaIndex.borderAreaIds(visited) : null;
+        // Union z historycznie zaliczonymi: nie tnij gminy, której usunięcie tworzy dziurę także na styku z DAWNYM pokryciem.
+        Set<Integer> union = new java.util.HashSet<>(visited);
+        union.addAll(gminaIndex.historicallyVisited());
+        Set<Integer> rim = border ? gminaIndex.borderAreaIds(union) : null;
         double p95 = border ? rewardP95(visited) : Double.MAX_VALUE;
         List<DealCand> cands = new ArrayList<>();
         for (SeedSel s : selected) {
-            if (s.score() >= ENCLOSED_PROTECTED_SCORE) continue;
             int aid = s.area().areaId();
             double rw = rewards.getOrDefault(RewardModel.categoryKey(s.area()), 1.0);
             if (border) {
                 if (!rim.contains(aid) || rw >= p95) continue;            // tylko obwód, chroń cenne stolice
             } else {
-                if (gminaIndex.allNeighborsVisited(aid, visited)) continue; // otoczona śladem → dziura
+                if (gminaIndex.enclosedByVisited(aid, union)) continue;    // usunięcie zrobiłoby dziurę (≥90% obwodu) → chroń
             }
             int wpIdx = GeometryUtil.identityIndexOf(route, s.point());
             if (wpIdx <= 0 || wpIdx >= route.size() - 1) continue;
@@ -242,25 +234,5 @@ final class FinalizePhase {
         if (rs.isEmpty()) return Double.MAX_VALUE;
         rs.sort(null);
         return rs.get((int) Math.floor(0.95 * (rs.size() - 1)));
-    }
-
-    /** Domknij gminy OTOCZONE zaliczonymi (donut-holes) — wp w najgłębszym punkcie, cheapest-insert (BEZ rebuildOrdered).
-     *  Wstawki chronione {@link #ENCLOSED_PROTECTED_SCORE}. Zwraca liczbę dopiętych. */
-    private int closeEnclosedHoles() {
-        Set<Integer> visited = gminaIndex.visitedAreaIds(metrics.realGeometry(route));
-        Set<Integer> enclosed = gminaIndex.enclosedUnvisited(visited);
-        if (enclosed.isEmpty()) return 0;
-        int added = 0;
-        for (UnvisitedArea a : pool) {
-            if (!enclosed.contains(a.areaId())) continue;
-            double[] deep = gminaIndex.deepestInteriorPoint(a.areaId());
-            if (deep == null) continue;
-            selected.add(new SeedSel(a, deep, ordering.orderKey(deep),
-                    ENCLOSED_PROTECTED_SCORE, GeometryUtil.minDistToBaselineKm(deep, baseline)));
-            route.add(GeometryUtil.cheapestInsertPos(route, deep), deep);  // cheapest-insert, BEZ Hilbert-resetu
-            added++;
-        }
-        log.info("Coverage FINALIZE holeclose: {} otoczonych dziur (cheapest-insert + anchor + cut)", added);
-        return added;
     }
 }

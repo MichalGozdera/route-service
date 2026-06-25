@@ -204,6 +204,35 @@ class JtsAreaCoverageIndexTest {
     }
 
     @Test
+    void neighborVisitedFraction_byBorderLength_notNeighborCount() {
+        // Grid 3×3: środek (5) ma 4 sąsiadów ortogonalnych (2,4,6,8 — wspólne pełne krawędzie) + 4 narożne
+        // (1,3,7,9 — styk w punkcie ≈0 długości). Udział liczony wg DŁUGOŚCI granicy, nie liczby sąsiadów.
+        List<UnvisitedArea> grid = new java.util.ArrayList<>();
+        int id = 1;
+        for (int row = -1; row <= 1; row++) {
+            for (int col = -1; col <= 1; col++) {
+                grid.add(squareGmina(id++, 15.0 + col * 0.1, 50.0 + row * 0.1, 0.05));
+            }
+        }
+        AreaCoverageIndex idx = FACTORY.build(grid);
+        assertThat(idx.neighborVisitedFraction(5, Set.of(2, 4, 6, 8))).isGreaterThan(0.95); // cały obwód → ~1.0
+        assertThat(idx.neighborVisitedFraction(5, Set.of(2, 4))).isBetween(0.4, 0.6);       // 1 pion + 1 poziom = pół obwodu
+        assertThat(idx.neighborVisitedFraction(5, Set.of())).isZero();
+    }
+
+    @Test
+    void neighborVisitedFraction_edgeGmina_lowDespiteSingleNeighborVisited() {
+        // Rząd 3 gmin: skrajna (id1) ma 1 wspólną krawędź z 4 boków. Count dałby 1/1=1.0 (otoczona — błędnie);
+        // wg DŁUGOŚCI granicy ~0.3 → NIE dziura (otwarta na 3 boki).
+        AreaCoverageIndex idx = FACTORY.build(List.of(
+                squareGmina(1, 14.9, 50.0, 0.05),
+                squareGmina(2, 15.0, 50.0, 0.05),
+                squareGmina(3, 15.1, 50.0, 0.05)));
+        double f = idx.neighborVisitedFraction(1, Set.of(2));
+        assertThat(f).isGreaterThan(0.0).isLessThan(0.5);
+    }
+
+    @Test
     void borderAreaIds_crossCountry_bothRim() {
         // Dwie stykające się gminy z RÓŻNYCH krajów → obie na obwodzie (każda ma sąsiada innego kraju).
         AreaCoverageIndex idx = FACTORY.build(List.of(

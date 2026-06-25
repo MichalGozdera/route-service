@@ -9,14 +9,6 @@ public class AreaCandidate {
     final double detourStraightKm; // szacowany nadkład straight: 2× (dystans gminy do bazowej) + 0.2 km (wjazd+wyjazd)
     final double entryLng;
     final double entryLat;
-    /**
-     * Iter 9 Fix #1: true jeśli `dedupByMutualCoverage` uznał ten obszar za "covered by neighbor"
-     * (entry-point sąsiada w ringu LUB ring przecięty przez segment sąsiadów). AREA ZOSTAJE w
-     * `picked` list (= raportowana jako zaliczona), ale NIE dostaje waypointu w tour (trasa
-     * BRouter naturalnie przejdzie przez nią). User: "biale dziury blisko trasy" — to były te
-     * obszary które mutual dedup usuwał z picked completely.
-     */
-    boolean mutuallyCoveredByNeighbor = false;
 
     // Gettery dla testów (intersected, insertionIdx, detourStraightKm, entryLng/Lat).
     public boolean isIntersected() { return intersected; }
@@ -25,8 +17,6 @@ public class AreaCandidate {
     public double getEntryLng() { return entryLng; }
     public double getEntryLat() { return entryLat; }
     public UnvisitedArea getArea() { return area; }
-    public boolean isMutuallyCoveredByNeighbor() { return mutuallyCoveredByNeighbor; }
-    public void setMutuallyCoveredByNeighbor(boolean v) { this.mutuallyCoveredByNeighbor = v; }
 
     public AreaCandidate(UnvisitedArea area, boolean intersected, int insertionIdx,
                   double detourStraightKm, double entryLng, double entryLat) {

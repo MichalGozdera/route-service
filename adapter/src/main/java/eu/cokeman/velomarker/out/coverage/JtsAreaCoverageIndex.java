@@ -66,13 +66,31 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
     private final Map<Integer, AreaGeom> byId = new HashMap<>();
     /** areaId → areaId sąsiadów (realny styk granic, liczone raz). v3.15: enclosedUnvisited. */
     private final Map<Integer, int[]> adjacency = new HashMap<>();
+    /** areaId → długość (km) wspólnej granicy z każdym sąsiadem (aligned z {@link #adjacency}). Do
+     *  neighborVisitedFraction wg DŁUGOŚCI granic (nie liczby sąsiadów). */
+    private final Map<Integer, double[]> neighborSharedKm = new HashMap<>();
+    /** areaId → całkowity obwód gminy (km) = mianownik udziału granicy z zaliczonymi. */
+    private final Map<Integer, Double> perimeterKm = new HashMap<>();
+    /** Historycznie zaliczone (adjacency-only): w byId/tree/adjacency, ale WYKLUCZONE z zaliczeń trasy
+     *  (visitedAreaIds/touched/deeply/find*ForPoint/enclosedUnvisited) — nie są kandydatami pokrycia. */
+    private final Set<Integer> adjacencyOnly = new HashSet<>();
     private final double cosRef;
     private final boolean empty;
 
     JtsAreaCoverageIndex(List<UnvisitedArea> areas) {
-        this.cosRef = refCos(areas);
+        this(areas, List.of());
+    }
+
+    /** {@code areas} = kandydaci (liczą się jako pokrycie); {@code adjacencyAreas} = historycznie zaliczone
+     *  (tylko do sąsiedztwa). Oba wchodzą do byId/tree i grafu adjacency; adjacencyAreas wykluczone z zaliczeń. */
+    JtsAreaCoverageIndex(List<UnvisitedArea> areas, List<UnvisitedArea> adjacencyAreas) {
+        List<UnvisitedArea> all = new ArrayList<>(areas);
+        if (adjacencyAreas != null) {
+            all.addAll(adjacencyAreas);
+        }
+        this.cosRef = refCos(all);
         int n = 0;
-        for (UnvisitedArea a : areas) {
+        for (UnvisitedArea a : all) {
             Geometry g = toGeometry(a);
             if (g == null || g.isEmpty()) {
                 continue;
@@ -108,6 +126,11 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
             byId.put(a.areaId(), ag);
             n++;
         }
+        if (adjacencyAreas != null) {
+            for (UnvisitedArea a : adjacencyAreas) {
+                adjacencyOnly.add(a.areaId());   // historycznie zaliczone: w adjacency, ale nie liczą się jako pokrycie trasy
+            }
+        }
         this.empty = n == 0;
         if (!empty) {
             tree.query(new Envelope(-360, 360, -180, 180)); // wymuś build (lazy build NIE jest thread-safe)
@@ -123,25 +146,54 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
 
     private void buildAdjacency() {
         double tolProj = ADJ_TOLERANCE_M / METERS_PER_DEG;
+        Map<Integer, Geometry> bufferedCache = new HashMap<>();   // bufor(other, tol) liczony RAZ per gmina
         for (AreaGeom ag : byId.values()) {
+            Geometry agBoundary = ag.full.getBoundary();
+            perimeterKm.put(ag.area.areaId(), agBoundary.getLength() * METERS_PER_DEG / 1000.0);
             Envelope env = new Envelope(ag.full.getEnvelopeInternal());
             env.expandBy(tolProj);
             @SuppressWarnings("unchecked")
             List<AreaGeom> cands = tree.query(env);
             List<Integer> nb = new ArrayList<>();
+            List<Double> shared = new ArrayList<>();
             for (AreaGeom other : cands) {
                 if (other.area.areaId() == ag.area.areaId()) {
                     continue;
                 }
-                if (ag.full.distance(other.full) <= tolProj) {
-                    nb.add(other.area.areaId());
+                if (ag.full.distance(other.full) > tolProj) {
+                    continue;
                 }
+                nb.add(other.area.areaId());
+                // Wspólna granica ≈ część obwodu ag w buforze sąsiada (bufor mostkuje ~metrowe luki po
+                // niezależnym upraszczaniu granic). Długość w km (projekcja izotropowa × METERS_PER_DEG).
+                Geometry buf = bufferedCache.computeIfAbsent(other.area.areaId(), id -> safeBuffer(other.full, tolProj));
+                double km = 0;
+                if (buf != null) {
+                    try {
+                        km = agBoundary.intersection(buf).getLength() * METERS_PER_DEG / 1000.0;
+                    } catch (RuntimeException e) {
+                        km = 0;   // zdegenerowana geometria → udział tej krawędzi 0 (nie wywala buildu)
+                    }
+                }
+                shared.add(km);
             }
             int[] arr = new int[nb.size()];
+            double[] sk = new double[nb.size()];
             for (int i = 0; i < arr.length; i++) {
                 arr[i] = nb.get(i);
+                sk[i] = shared.get(i);
             }
             adjacency.put(ag.area.areaId(), arr);
+            neighborSharedKm.put(ag.area.areaId(), sk);
+        }
+    }
+
+    /** {@code g.buffer(tol)} z osłoną na zdegenerowaną geometrię (null gdy wyjątek). */
+    private static Geometry safeBuffer(Geometry g, double tol) {
+        try {
+            return g.buffer(tol);
+        } catch (RuntimeException e) {
+            return null;
         }
     }
 
@@ -210,8 +262,8 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
             }
             LineString seg = GF.createLineString(new Coordinate[]{c1, c2});
             for (AreaGeom ag : cands) {
-                if (visited.contains(ag.area.areaId())) {
-                    continue;
+                if (adjacencyOnly.contains(ag.area.areaId()) || visited.contains(ag.area.areaId())) {
+                    continue;   // historycznie zaliczone (adjacency-only) NIE liczą się jako pokrycie trasy
                 }
                 if (ag.prepCredit.intersects(seg)) { // ≥100m w głąb (skurczona geometria)
                     visited.add(ag.area.areaId());
@@ -243,7 +295,7 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
             }
             LineString seg = GF.createLineString(new Coordinate[]{c1, c2});
             for (AreaGeom ag : cands) {
-                if (visited.contains(ag.area.areaId())) {
+                if (adjacencyOnly.contains(ag.area.areaId()) || visited.contains(ag.area.areaId())) {
                     continue;
                 }
                 if (ag.prepCreditDeep.intersects(seg)) { // ≥220m w głąb (głęboki rdzeń)
@@ -283,7 +335,7 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
             }
             LineString seg = GF.createLineString(new Coordinate[]{c1, c2});
             for (AreaGeom ag : cands) {
-                if (touched.contains(ag.area.areaId())) {
+                if (adjacencyOnly.contains(ag.area.areaId()) || touched.contains(ag.area.areaId())) {
                     continue;
                 }
                 if (ag.prepFull.intersects(seg)) { // PEŁNY wielokąt — nawet otarcie krawędzi
@@ -306,6 +358,7 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
         UnvisitedArea best = null;
         double bestKm2 = Double.MAX_VALUE;
         for (AreaGeom ag : cands) {
+            if (adjacencyOnly.contains(ag.area.areaId())) continue; // historycznie zaliczone nie są wynikiem lookupu kandydata
             if (ag.prepFull.contains(pt) && ag.km2 < bestKm2) { // najmniejsza (obwarzanek: miasto w dziurze)
                 bestKm2 = ag.km2;
                 best = ag.area;
@@ -326,6 +379,7 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
         UnvisitedArea best = null;
         double bestKm2 = Double.MAX_VALUE;
         for (AreaGeom ag : cands) {
+            if (adjacencyOnly.contains(ag.area.areaId())) continue;
             if (ag.prepCredit.contains(pt) && ag.km2 < bestKm2) { // rdzeń kredytu (bufor −200m), nie pełny wielokąt
                 bestKm2 = ag.km2;
                 best = ag.area;
@@ -347,6 +401,7 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
         UnvisitedArea best = null;
         double bestKm2 = Double.MAX_VALUE;
         for (AreaGeom ag : cands) {
+            if (adjacencyOnly.contains(ag.area.areaId())) continue;
             if (ag.prepCreditDeep.contains(pt) && ag.km2 < bestKm2) { // bufor −220m
                 bestKm2 = ag.km2;
                 best = ag.area;
@@ -531,25 +586,6 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
     }
 
     @Override
-    public double[] deepestPointOnTrack(List<double[]> track, int areaId) {
-        AreaGeom ag = byId.get(areaId);
-        if (ag == null || ag.full() == null) return null;
-        Geometry boundary = ag.full().getBoundary();
-        Envelope env = ag.full().getEnvelopeInternal();
-        double maxDist = -1;
-        double[] deepest = null;
-        for (double[] p : track) {                          // czubek śladu w gminie = max distance-to-boundary
-            Coordinate c = project(p[0], p[1]);
-            if (!env.contains(c)) continue;
-            Point pt = GF.createPoint(c);
-            if (!ag.prepFull().contains(pt)) continue;
-            double d = boundary.distance(pt);
-            if (d > maxDist) { maxDist = d; deepest = p; }
-        }
-        return deepest != null ? deepest.clone() : null;
-    }
-
-    @Override
     public Map<Integer, double[]> deepestPointsOnTrack(List<double[]> track, Set<Integer> areaIds) {
         Map<Integer, double[]> result = new HashMap<>();
         if (empty || track == null || track.isEmpty() || areaIds == null || areaIds.isEmpty()) return result;
@@ -603,88 +639,6 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
             if (ag != null && ag.full() != null) m.put(id, ag.full().getBoundary());
         }
         return m;
-    }
-
-    @Override
-    public double[] firstTrackPointAtDepthBetween(List<double[]> track, int areaId, double minDepthMeters,
-                                                  double[] entry, double[] exit) {
-        AreaGeom ag = byId.get(areaId);
-        if (ag == null || ag.full() == null || track == null || track.isEmpty() || entry == null || exit == null) {
-            return null;
-        }
-        int lo = nearestTrackIndex(track, entry), hi = nearestTrackIndex(track, exit);
-        if (lo < 0 || hi < 0) {
-            return null;
-        }
-        if (lo > hi) {                                      // entry/exit w dowolnej kolejności wzdłuż śladu
-            int t = lo; lo = hi; hi = t;
-        }
-        Geometry boundary = ag.full().getBoundary();
-        Envelope env = ag.full().getEnvelopeInternal();
-        double minDeg = minDepthMeters / METERS_PER_DEG;
-        for (int i = lo; i <= hi && i < track.size(); i++) {  // PIERWSZE dość głębokie wejście NA fragmencie przelotu
-            double[] p = track.get(i);
-            Coordinate c = project(p[0], p[1]);
-            if (!env.contains(c)) {
-                continue;
-            }
-            Point pt = GF.createPoint(c);
-            if (!ag.prepFull().contains(pt)) {
-                continue;
-            }
-            if (boundary.distance(pt) >= minDeg) {
-                return p.clone();
-            }
-        }
-        return null;
-    }
-
-    /** Indeks punktu {@code track} najbliższego {@code target} (w projekcji) — do wyznaczenia fragmentu przelotu. */
-    private int nearestTrackIndex(List<double[]> track, double[] target) {
-        Coordinate tc = project(target[0], target[1]);
-        int best = -1;
-        double bestD = Double.MAX_VALUE;
-        for (int i = 0; i < track.size(); i++) {
-            Coordinate c = project(track.get(i)[0], track.get(i)[1]);
-            double d = (c.x - tc.x) * (c.x - tc.x) + (c.y - tc.y) * (c.y - tc.y);
-            if (d < bestD) {
-                bestD = d;
-                best = i;
-            }
-        }
-        return best;
-    }
-
-    @Override
-    public String debugAreaGeoJson(int areaId, double bufferMeters) {
-        AreaGeom ag = byId.get(areaId);
-        if (ag == null || ag.full() == null) {
-            return null;
-        }
-        Geometry g = ag.full();
-        if (bufferMeters != 0) {                                  // dodatni = POMNIEJSZ o X m (rdzeń); 0 = pełna granica
-            try {
-                Geometry shrunk = g.buffer(-bufferMeters / METERS_PER_DEG);
-                if (shrunk != null && !shrunk.isEmpty()) {
-                    g = shrunk;
-                }
-            } catch (RuntimeException ignored) {
-                // zdegenerowana geometria → pełna
-            }
-        }
-        Geometry lonLat = g.copy();                               // unproject in-place (NIE psuj ag.full)
-        lonLat.apply((org.locationtech.jts.geom.CoordinateFilter) c -> c.x = c.x / cosRef);
-        lonLat.geometryChanged();
-        org.locationtech.jts.io.geojson.GeoJsonWriter writer = new org.locationtech.jts.io.geojson.GeoJsonWriter();
-        writer.setEncodeCRS(false);
-        String geom = writer.write(lonLat);
-        return "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\",\"properties\":{\"areaId\":"
-                + areaId + ",\"name\":\"" + jsonEscape(ag.area().name()) + "\",\"bufferMeters\":" + bufferMeters
-                + "},\"geometry\":" + geom + "}]}";
-    }
-
-    private static String jsonEscape(String s) {
-        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     /** Domknij przejście: cięciwa entry↔exit w metrach (projekcja izotropowa × METERS_PER_DEG), dopisz do listy gminy. */
@@ -747,8 +701,8 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
         }
         for (AreaGeom ag : byId.values()) {
             int id = ag.area.areaId();
-            if (visited.contains(id)) {
-                continue; // tylko nieprzecięte
+            if (adjacencyOnly.contains(id) || visited.contains(id)) {
+                continue; // tylko nieprzecięte kandydaty (historycznie zaliczone pomijamy)
             }
             if (allNeighborsVisited(id, visited)) {
                 out.add(id); // otoczona: ≥1 sąsiad wielokątowy i WSZYSCY zaliczeni (cross-border, bez progu)
@@ -771,6 +725,26 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
             }
         }
         return true;
+    }
+
+    @Override
+    public double neighborVisitedFraction(int areaId, Set<Integer> visited) {
+        // Udział DŁUGOŚCI granicy z zaliczonymi (nie liczby sąsiadów): gmina z 1 sąsiadem owijającym cały
+        // obwód → ~1.0; z 5 sąsiadami zajmującymi pół obwodu → ~0.5. Otwarte boki (brak sąsiada) są w
+        // mianowniku (obwód), więc gmina brzegowa ma niski udział (nie jest dziurą).
+        int[] nb = adjacency.get(areaId);
+        double[] sk = neighborSharedKm.get(areaId);
+        Double per = perimeterKm.get(areaId);
+        if (nb == null || nb.length == 0 || sk == null || per == null || per <= 0) {
+            return 0;   // realna wyspa / brak obwodu
+        }
+        double sum = 0;
+        for (int i = 0; i < nb.length; i++) {
+            if (visited.contains(nb[i])) {
+                sum += sk[i];
+            }
+        }
+        return Math.min(1.0, sum / per);
     }
 
     @Override

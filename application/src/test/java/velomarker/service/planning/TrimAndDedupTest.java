@@ -11,11 +11,10 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Faza 5 — meta-must + dedup gmin pokrytych naturalnie:
+ * Budowa waypointów z wybranych gmin + helpery geometryczne:
  * <ul>
- *   <li>{@code trimExpensiveGminy}: wyrzuca najdroższe gminy gdy meta nie osiągnięta</li>
- *   <li>{@code removeNaturallyCoveredEntries}: usuwa entry-pointy gmin pokrytych przez nową trasę</li>
  *   <li>{@code buildWaypointsFromPicked}: utrzymuje kolejność anchors w finalnej liście</li>
+ *   <li>{@code segmentIntersectsRing}: przecięcie segmentu z ringiem gminy</li>
  * </ul>
  */
 class TrimAndDedupTest {
@@ -42,50 +41,6 @@ class TrimAndDedupTest {
     private static RoutePreferences prefs(Waypoint start, Waypoint end, List<Waypoint> via) {
         return new RoutePreferences(List.of(), List.of(), List.of(), start, end, via,
                 false, 10, 100, 1000, "fastbike");
-    }
-
-    private static PlanningOrchestrationService.CoverageBuildInfo coverageInfo(
-            List<AreaCandidate> picked, List<double[]> baselineGeom) {
-        return new PlanningOrchestrationService.CoverageBuildInfo(
-                List.of(), 0, picked.size(),
-                100.0, 1.1, picked, baselineGeom);
-    }
-
-    @Test
-    void trimExpensiveGminy_drops30Percent_byDetour() {
-        var baseline = straightBaseline();
-        var picked = new ArrayList<AreaCandidate>();
-        // 10 gmin: 0..4 = cheap (5 km off), 5..9 = expensive (40 km off).
-        for (int i = 0; i < 5; i++) picked.add(scored(i, 14.5 + i * 0.5, 50.05, 0.02, baseline));
-        for (int i = 5; i < 10; i++) picked.add(scored(i, 14.5 + (i - 5) * 0.5, 50.36, 0.02, baseline));
-
-        var startWp = new Waypoint(14.0, 50.0, "start");
-        var endWp = new Waypoint(17.96, 50.0, "end");
-        var info = coverageInfo(picked, baseline);
-
-        // Wyrzuć 30% (3 najdroższe).
-        var trimmedWps = CoverageAreaSelection.trimExpensiveGminy(prefs(startWp, endWp, List.of()), info, 0.3);
-        // Final list = start + 7 gmin + end = 9 wp.
-        assertThat(trimmedWps).hasSize(9);
-        assertThat(trimmedWps.get(0)).isEqualTo(startWp);
-        assertThat(trimmedWps.get(trimmedWps.size() - 1)).isEqualTo(endWp);
-    }
-
-    @Test
-    void trimExpensiveGminy_drop100percent_returnsBaselineAnchorsOnly() {
-        var baseline = straightBaseline();
-        var picked = List.of(
-                scored(1, 14.5, 50.05, 0.02, baseline),
-                scored(2, 15.5, 50.05, 0.02, baseline));
-        var info = coverageInfo(picked, baseline);
-        var startWp = new Waypoint(14.0, 50.0, "start");
-        var endWp = new Waypoint(17.96, 50.0, "end");
-
-        var trimmedWps = CoverageAreaSelection.trimExpensiveGminy(prefs(startWp, endWp, List.of()), info, 1.0);
-        // Wszystkie gminy wyrzucone → tylko start + end.
-        assertThat(trimmedWps).hasSize(2);
-        assertThat(trimmedWps.get(0)).isEqualTo(startWp);
-        assertThat(trimmedWps.get(1)).isEqualTo(endWp);
     }
 
     @Test
@@ -131,66 +86,6 @@ class TrimAndDedupTest {
     }
 
     @Test
-    void removeNaturallyCoveredEntries_dropsCoveredGmina() {
-        // Baseline original = linia lat=50.0. Po pierwszym BRouter, newGeometry przechodzi przez TĘ SAMĄ linię
-        // ALE ALSO doszla na lat=50.05 (przez gminę G1). G1 oryginalnie miała entry-point bo NIE była intersected
-        // by baseline. Teraz NEW geometry przecina G1 ring naturalnie → dropowalna.
-        var baseline = straightBaseline();
-        // G1 centroid (15.0, 50.05), ring ±0.04° → przecina lat 50.05 ale NIE 50.0.
-        var g1 = scored(1, 15.0, 50.05, 0.04, baseline);
-        assertThat(g1.isIntersected()).as("G1 nie powinna być intersected by original baseline").isFalse();
-
-        // newGeometry: jak baseline ALE w środku skacze na lat 50.05 (przez gminę G1).
-        var newGeom = new ArrayList<double[]>();
-        for (int i = 0; i < 100; i++) {
-            if (i >= 20 && i <= 30) newGeom.add(new double[]{14.0 + i * 0.04, 50.05});
-            else newGeom.add(new double[]{14.0 + i * 0.04, 50.0});
-        }
-
-        var startWp = new Waypoint(14.0, 50.0, "start");
-        var endWp = new Waypoint(17.96, 50.0, "end");
-        var info = coverageInfo(List.of(g1), baseline);
-
-        // currentWps = [start, A1 entry-point, end].
-        var entry = new Waypoint(g1.getEntryLng(), g1.getEntryLat(), g1.getArea().name());
-        var currentWps = List.of(startWp, entry, endWp);
-
-        var deduped = CoverageAreaSelection.removeNaturallyCoveredEntries(
-                prefs(startWp, endWp, List.of()), info, newGeom, currentWps);
-        // G1 naturalnie pokryta → entry-point wyrzucony.
-        assertThat(deduped).hasSize(2);
-        assertThat(deduped.get(0)).isEqualTo(startWp);
-        assertThat(deduped.get(1)).isEqualTo(endWp);
-    }
-
-    @Test
-    void removeNaturallyCoveredEntries_nameCollisionWithUserAnchor_keepsAll() {
-        // Edge case: user dał via z nazwą "A1" (zbieżną z gminą). NIE umiemy odróżnić po nazwie,
-        // więc preferujemy BEZPIECZNY scenariusz — NIE wyrzucamy żadnego "A1". Test sprawdza że
-        // gmina entry-point Z NAZWĄ KOLIDUJĄCĄ z user-anchor ZOSTAJE (bo nie umiemy odróżnić).
-        var baseline = straightBaseline();
-        var g1 = scored(1, 15.0, 50.05, 0.04, baseline);
-        var newGeom = new ArrayList<double[]>();
-        for (int i = 0; i < 100; i++) {
-            if (i >= 20 && i <= 30) newGeom.add(new double[]{14.0 + i * 0.04, 50.05});
-            else newGeom.add(new double[]{14.0 + i * 0.04, 50.0});
-        }
-
-        var startWp = new Waypoint(14.0, 50.0, "start");
-        var endWp = new Waypoint(17.96, 50.0, "end");
-        var collidingVia = new Waypoint(15.5, 50.0, "A1");
-        var info = coverageInfo(List.of(g1), baseline);
-
-        var currentWps = List.of(startWp, collidingVia, new Waypoint(g1.getEntryLng(), g1.getEntryLat(), "A1"), endWp);
-
-        var deduped = CoverageAreaSelection.removeNaturallyCoveredEntries(
-                prefs(startWp, endWp, List.of(collidingVia)), info, newGeom, currentWps);
-        // collidingVia + gmina entry-point z tą samą nazwą — bez zmian (safety preferred).
-        assertThat(deduped).hasSize(4);
-        assertThat(deduped).contains(collidingVia);
-    }
-
-    @Test
     void greedyPick_leavesReserve_whenBudgetTight() {
         // 5 gmin: 3 mieszczą się w surplusie, 2 nie (drogie) — reserve powinien mieć 2.
         // To jest dokumentacja zachowania greedy_pick (które wbudowane w buildCoverageWaypointsWithInfo),
@@ -228,55 +123,6 @@ class TrimAndDedupTest {
     }
 
     @Test
-    void dedupByMutualCoverage_entryInsideNeighborRing_dropsRedundant() {
-        // 3 gminy w klastrze: B's entry leży w A.ring → A jest "covered" gdy BRouter idzie do B.
-        // Zachowaj tę z mniejszym detour.
-        var baseline = straightBaseline();
-        // A: large gmina centroid (15.0, 50.05) ringi ±0.05° (~5km half-width)
-        var a = new UnvisitedArea(1, "A", 50.05, 15.0,
-                new double[][]{{14.95, 50.0}, {15.05, 50.0}, {15.05, 50.10}, {14.95, 50.10}},
-                1, 1, "gmina", null);
-        // B: small gmina inside A — entry-point ~(14.98, 50.04) leży w A.ring
-        var b = new UnvisitedArea(2, "B", 50.04, 14.98,
-                new double[][]{{14.975, 50.035}, {14.985, 50.035}, {14.985, 50.045}, {14.975, 50.045}},
-                1, 1, "gmina", null);
-        // C: gmina daleko od A i B — nie skipowalna
-        var c = new UnvisitedArea(3, "C", 50.05, 17.0,
-                new double[][]{{16.95, 50.0}, {17.05, 50.0}, {17.05, 50.10}, {16.95, 50.10}},
-                1, 1, "gmina", null);
-
-        var ca = CoverageAreaSelection.scoreAreaAgainstBaseline(a, baseline, false);
-        var cb = CoverageAreaSelection.scoreAreaAgainstBaseline(b, baseline, false);
-        var cc = CoverageAreaSelection.scoreAreaAgainstBaseline(c, baseline, false);
-
-        var picked = new java.util.ArrayList<>(java.util.List.of(ca, cb, cc));
-        var deduped = CoverageAreaSelection.dedupByMutualCoverage(picked);
-
-        // Iter 9 Fix #1: NIE usuwamy areas z listy, tylko flagujemy mutually-covered.
-        // A i B overlap → JEDNA z nich oznaczona flagą (większy detour). C bez flagi.
-        assertThat(deduped).hasSize(3);
-        long flaggedCount = deduped.stream()
-                .filter(AreaCandidate::isMutuallyCoveredByNeighbor)
-                .count();
-        assertThat(flaggedCount).isGreaterThanOrEqualTo(1);
-        // C bez flagi
-        var cFlag = deduped.stream().filter(x -> x.getArea().name().equals("C")).findFirst().orElseThrow();
-        assertThat(cFlag.isMutuallyCoveredByNeighbor()).isFalse();
-    }
-
-    @Test
-    void dedupByMutualCoverage_noOverlap_keepsAll() {
-        var baseline = straightBaseline();
-        var picked = List.of(
-                scored(1, 14.5, 50.05, 0.02, baseline),
-                scored(2, 15.5, 50.05, 0.02, baseline),
-                scored(3, 16.5, 50.05, 0.02, baseline)
-        );
-        var deduped = CoverageAreaSelection.dedupByMutualCoverage(picked);
-        assertThat(deduped).hasSize(3);
-    }
-
-    @Test
     void segmentIntersectsRing_endpointInside_returnsTrue() {
         double[][] ring = {{14.0, 50.0}, {15.0, 50.0}, {15.0, 51.0}, {14.0, 51.0}};
         assertThat(PlanningGeom.segmentIntersectsRing(
@@ -297,24 +143,5 @@ class TrimAndDedupTest {
         // Segment far away
         assertThat(PlanningGeom.segmentIntersectsRing(
                 new double[]{20.0, 60.0}, new double[]{21.0, 60.0}, ring)).isFalse();
-    }
-
-    @Test
-    void removeNaturallyCoveredEntries_noCovered_keepsAll() {
-        var baseline = straightBaseline();
-        var g1 = scored(1, 15.0, 50.10, 0.02, baseline); // 10 km off
-
-        // newGeometry = baseline (NIE przecina G1).
-        var newGeom = new ArrayList<>(baseline);
-
-        var startWp = new Waypoint(14.0, 50.0, "start");
-        var endWp = new Waypoint(17.96, 50.0, "end");
-        var info = coverageInfo(List.of(g1), baseline);
-        var entry = new Waypoint(g1.getEntryLng(), g1.getEntryLat(), g1.getArea().name());
-        var currentWps = List.of(startWp, entry, endWp);
-
-        var deduped = CoverageAreaSelection.removeNaturallyCoveredEntries(
-                prefs(startWp, endWp, List.of()), info, newGeom, currentWps);
-        assertThat(deduped).hasSize(3); // bez zmian
     }
 }

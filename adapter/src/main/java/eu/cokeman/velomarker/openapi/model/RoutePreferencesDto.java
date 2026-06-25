@@ -5,9 +5,6 @@ import java.util.Objects;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonTypeName;
-import com.fasterxml.jackson.annotation.JsonValue;
-import eu.cokeman.velomarker.openapi.model.PlanningRouteStyleDto;
-import eu.cokeman.velomarker.openapi.model.PlanningTempoDto;
 import eu.cokeman.velomarker.openapi.model.WaypointDto;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -56,10 +53,6 @@ public class RoutePreferencesDto {
   private @Nullable Integer elevationPerDayM = null;
 
   private @Nullable String profile = null;
-
-  private @Nullable PlanningRouteStyleDto style;
-
-  private @Nullable PlanningTempoDto tempo;
 
   public RoutePreferencesDto countryIds(@Nullable List<Integer> countryIds) {
     this.countryIds = countryIds;
@@ -330,48 +323,6 @@ public class RoutePreferencesDto {
     this.profile = profile;
   }
 
-  public RoutePreferencesDto style(@Nullable PlanningRouteStyleDto style) {
-    this.style = style;
-    return this;
-  }
-
-  /**
-   * Get style
-   * @return style
-   */
-  @Valid 
-  @Schema(name = "style", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
-  @JsonProperty("style")
-  public @Nullable PlanningRouteStyleDto getStyle() {
-    return style;
-  }
-
-  @JsonProperty("style")
-  public void setStyle(@Nullable PlanningRouteStyleDto style) {
-    this.style = style;
-  }
-
-  public RoutePreferencesDto tempo(@Nullable PlanningTempoDto tempo) {
-    this.tempo = tempo;
-    return this;
-  }
-
-  /**
-   * Get tempo
-   * @return tempo
-   */
-  @Valid 
-  @Schema(name = "tempo", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
-  @JsonProperty("tempo")
-  public @Nullable PlanningTempoDto getTempo() {
-    return tempo;
-  }
-
-  @JsonProperty("tempo")
-  public void setTempo(@Nullable PlanningTempoDto tempo) {
-    this.tempo = tempo;
-  }
-
   @Override
   public boolean equals(Object o) {
     if (this == o) {
@@ -391,14 +342,12 @@ public class RoutePreferencesDto {
         Objects.equals(this.days, routePreferences.days) &&
         Objects.equals(this.kmPerDay, routePreferences.kmPerDay) &&
         Objects.equals(this.elevationPerDayM, routePreferences.elevationPerDayM) &&
-        Objects.equals(this.profile, routePreferences.profile) &&
-        Objects.equals(this.style, routePreferences.style) &&
-        Objects.equals(this.tempo, routePreferences.tempo);
+        Objects.equals(this.profile, routePreferences.profile);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(countryIds, levelIds, specialGroupIds, start, end, via, loop, days, kmPerDay, elevationPerDayM, profile, style, tempo);
+    return Objects.hash(countryIds, levelIds, specialGroupIds, start, end, via, loop, days, kmPerDay, elevationPerDayM, profile);
   }
 
   @Override
@@ -416,8 +365,6 @@ public class RoutePreferencesDto {
     sb.append("    kmPerDay: ").append(toIndentedString(kmPerDay)).append("\n");
     sb.append("    elevationPerDayM: ").append(toIndentedString(elevationPerDayM)).append("\n");
     sb.append("    profile: ").append(toIndentedString(profile)).append("\n");
-    sb.append("    style: ").append(toIndentedString(style)).append("\n");
-    sb.append("    tempo: ").append(toIndentedString(tempo)).append("\n");
     sb.append("}");
     return sb.toString();
   }

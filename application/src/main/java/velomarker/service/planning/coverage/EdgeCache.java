@@ -115,7 +115,6 @@ public class EdgeCache {
 
     public long hits() { return hits.get(); }
     public long misses() { return misses.get(); }
-    public int size() { return cache.size(); }
     public double hitRatio() {
         long total = hits.get() + misses.get();
         return total == 0 ? 0 : (double) hits.get() / total;

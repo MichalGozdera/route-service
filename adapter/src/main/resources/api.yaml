@@ -1239,16 +1239,6 @@ components:
         editedAt:
           type: string
           format: date-time
-        coveredAreaIds:
-          type: array
-          nullable: true
-          items:
-            type: integer
-          description: |
-            ID gmin ZALICZONYCH przez ten dzień (kryterium kredytu ≥200 m, liczone backendem JTS).
-            Front koloruje TE ID (źródło prawdy = co realnie zaliczysz jadąc) zamiast re-derywacji
-            turfem (plain-touch). Pusta/brak = brak danych z backendu (np. ręczne rysowanie) → front
-            liczy turfem.
 
     PlanningSessionResponse:
       type: object
