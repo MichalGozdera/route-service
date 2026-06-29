@@ -4,8 +4,10 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import eu.cokeman.velomarker.out.persistence.jpa.entity.ManualSessionEntity;
 import eu.cokeman.velomarker.out.persistence.jpa.entity.PlanningSessionDayEntity;
 import eu.cokeman.velomarker.out.persistence.jpa.entity.PlanningSessionEntity;
+import velomarker.entity.planning.ManualSession;
 import velomarker.entity.planning.PlanningIntent;
 import velomarker.entity.planning.PlanningSession;
 import velomarker.entity.planning.PlanningSessionDay;
@@ -62,42 +64,12 @@ public final class PlanningJpaMapper {
     }
 
     private static void applySummaryTo(PlanningSummary s, PlanningSessionEntity e) {
-        if (s == null) {
-            e.setSummaryTotalDistanceKm(null);
-            e.setSummaryTotalElevationGain(null);
-            e.setSummaryBudgetKm(null);
-            e.setSummaryVerdict(null);
-            e.setSummarySurplusKm(null);
-            e.setSummaryPoolSize(null);
-            e.setSummaryInitialPoolSize(null);
-            e.setSummaryBaselineKm(null);
-            e.setSummaryClimbWarning(null);
-            return;
-        }
-        e.setSummaryTotalDistanceKm(s.totalDistanceKm());
-        e.setSummaryTotalElevationGain(s.totalElevationGain());
-        e.setSummaryBudgetKm(s.budgetKm());
-        e.setSummaryVerdict(s.verdict() != null ? s.verdict().name() : null);
-        e.setSummarySurplusKm(s.surplusKm());
-        e.setSummaryPoolSize(s.poolSize());
-        e.setSummaryInitialPoolSize(s.initialPoolSize());
-        e.setSummaryBaselineKm(s.baselineKm());
-        e.setSummaryClimbWarning(s.climbWarning());
+        e.setSummaryBudgetFit(s != null && s.budgetFit() != null ? s.budgetFit().name() : null);
     }
 
     private static PlanningSummary deserializeSummary(PlanningSessionEntity e) {
-        if (e.getSummaryVerdict() == null) return null;
-        return new PlanningSummary(
-                e.getSummaryTotalDistanceKm() != null ? e.getSummaryTotalDistanceKm() : 0,
-                e.getSummaryTotalElevationGain() != null ? e.getSummaryTotalElevationGain() : 0,
-                e.getSummaryBudgetKm() != null ? e.getSummaryBudgetKm() : 0,
-                PlanningSummary.BudgetVerdict.valueOf(e.getSummaryVerdict()),
-                e.getSummarySurplusKm() != null ? e.getSummarySurplusKm() : 0,
-                e.getSummaryPoolSize() != null ? e.getSummaryPoolSize() : 0,
-                e.getSummaryInitialPoolSize() != null ? e.getSummaryInitialPoolSize() : 0,
-                e.getSummaryBaselineKm(),
-                e.getSummaryClimbWarning() != null && e.getSummaryClimbWarning()
-        );
+        if (e.getSummaryBudgetFit() == null) return null;
+        return new PlanningSummary(PlanningSummary.BudgetFit.valueOf(e.getSummaryBudgetFit()));
     }
 
     // ===== PlanningSessionDay =====
@@ -126,6 +98,36 @@ public final class PlanningJpaMapper {
         e.setEditedAt(d.editedAt());
         e.setStatsJson(serializeStats(d.stats()));
         return e;
+    }
+
+    // ===== ManualSession =====
+
+    public ManualSession toDomain(ManualSessionEntity e) {
+        return new ManualSession(e.getId(), e.getUserId(),
+                Polyline3DCodec.decode(e.getGeometry()),
+                deserializeWaypoints(e.getWaypoints()),
+                e.getDistanceKm(), e.getElevationGain(), e.getElevationLoss(),
+                e.getProfile(), deserializeStats(e.getStatsJson()), e.getEditedAt());
+    }
+
+    public ManualSessionEntity toEntity(ManualSession m) {
+        ManualSessionEntity e = new ManualSessionEntity();
+        e.setId(m.id());
+        e.setUserId(m.userId());
+        applyTo(m, e);
+        return e;
+    }
+
+    /** In-place update istniejącej encji (UPDATE zamiast INSERT przy upsert po user_id). */
+    public void applyTo(ManualSession m, ManualSessionEntity e) {
+        e.setGeometry(Polyline3DCodec.encode(m.geometry()));
+        e.setWaypoints(serializeWaypoints(m.waypoints()));
+        e.setDistanceKm(m.distanceKm());
+        e.setElevationGain(m.elevationGain());
+        e.setElevationLoss(m.elevationLoss());
+        e.setProfile(m.profile());
+        e.setStatsJson(serializeStats(m.stats()));
+        e.setEditedAt(m.editedAt());
     }
 
     private String serializeStats(velomarker.entity.RouteStats stats) {
@@ -183,7 +185,8 @@ public final class PlanningJpaMapper {
                     n.has("days") ? n.get("days").asInt() : null,
                     n.has("kmPerDay") ? n.get("kmPerDay").asInt() : null,
                     n.has("elevationPerDayM") ? n.get("elevationPerDayM").asInt() : null,
-                    n.has("profile") ? n.get("profile").asText() : null
+                    n.has("profile") ? n.get("profile").asText() : null,
+                    null, null   // clearStart/clearEnd — komendy PATCH, nigdy nie persystowane
             );
         } catch (Exception e) {
             throw new IllegalStateException("Failed to deserialize preferences: " + json, e);

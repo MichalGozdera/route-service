@@ -1,5 +1,16 @@
 package velomarker.service.planning;
 
+import velomarker.service.planning.route.*;
+import velomarker.service.planning.day.*;
+import velomarker.service.planning.coverage.*;
+import velomarker.service.planning.coverage.prep.*;
+import velomarker.service.planning.coverage.seed.*;
+import velomarker.service.planning.coverage.index.*;
+import velomarker.service.planning.coverage.metric.*;
+import velomarker.service.planning.coverage.geom.*;
+import velomarker.service.planning.coverage.scoring.*;
+import velomarker.service.planning.coverage.debug.*;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import velomarker.entity.RouteCalculation;
@@ -22,16 +33,11 @@ import velomarker.port.out.planning.PlanningSessionRepository;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
-/**
- * Implementacja CRUD na sesji asystenta + edycja dni + zapis jako wyprawa.
- *
- * <p>Edycja dnia: re-route przez BRouter, re-sample elevation, update tabeli planning.session_day.
- * Zapis jako wyprawa: wszystkie dni sesji → osobne wpisy w routes.route_draft z wspólnym group_id
- * (kompatybilne z istniejącym widokiem „Wyprawy" w UI manualnym).
- */
+// CRUD na sesji asystenta + edycja dni + zapis jako wyprawa.
 public class PlanningSessionService implements PlanningSessionUseCase, UpdatePlanningDayUseCase, SavePlanAsExpeditionUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(PlanningSessionService.class);
@@ -65,7 +71,6 @@ public class PlanningSessionService implements PlanningSessionUseCase, UpdatePla
                 .orElseGet(() -> PlanningSession.freshFor(userId));
         session.setIntent(intent);
         PlanningSession saved = sessionRepository.save(session);
-        // Zmiana intentu = wykasowanie policzonych dni (CASCADE byłoby przy DELETE; tu manualnie).
         dayRepository.deleteBySessionId(saved.id());
         return saved;
     }
@@ -74,16 +79,49 @@ public class PlanningSessionService implements PlanningSessionUseCase, UpdatePla
     public PlanningSession updateForm(UUID userId, RoutePreferences delta) {
         PlanningSession session = sessionRepository.findByUserId(userId)
                 .orElseGet(() -> PlanningSession.freshFor(userId));
+        // Zmiana kształtu formularza unieważnia policzony wynik (żeby po reloadzie nie wracał stary ślad).
+        boolean shapeChanged = shapeChanged(session.preferences(), delta);
         session.mergePreferences(delta);
+        if (shapeChanged) {
+            dayRepository.deleteBySessionId(session.id());
+            session.setLastTaskId(null);
+        }
         return sessionRepository.save(session);
+    }
+
+    /** Czy delta zmienia KSZTAŁT planu (lustro frontowego touchesShape). Budżet (days/kmPerDay/
+     *  elevationPerDayM/profile) NIE liczy się; waypointy porównywane TYLKO po współrzędnych (ignoruj name,
+     *  by zmiana języka/re-geokodowanie nie kasowało wyniku). Delta jest częściowa → bierzemy pola non-null. */
+    private static boolean shapeChanged(RoutePreferences cur, RoutePreferences d) {
+        if (d == null) return false;
+        if (Boolean.TRUE.equals(d.clearStart()) || Boolean.TRUE.equals(d.clearEnd())) return true;
+        return (d.countryIds() != null && !Objects.equals(d.countryIds(), cur.countryIds()))
+                || (d.levelIds() != null && !Objects.equals(d.levelIds(), cur.levelIds()))
+                || (d.specialGroupIds() != null && !Objects.equals(d.specialGroupIds(), cur.specialGroupIds()))
+                || (d.loop() != null && !Objects.equals(d.loop(), cur.loop()))
+                || (d.start() != null && !coordsEq(d.start(), cur.start()))
+                || (d.end() != null && !coordsEq(d.end(), cur.end()))
+                || (d.via() != null && !viaCoordsEq(d.via(), cur.via()));
+    }
+
+    private static boolean coordsEq(Waypoint a, Waypoint b) {
+        if (a == null && b == null) return true;
+        if (a == null || b == null) return false;
+        return a.lng() == b.lng() && a.lat() == b.lat(); // BEZ name (display-only)
+    }
+
+    private static boolean viaCoordsEq(List<Waypoint> a, List<Waypoint> b) {
+        if (a == null && b == null) return true;
+        if (a == null || b == null) return false;
+        if (a.size() != b.size()) return false;
+        for (int i = 0; i < a.size(); i++) if (!coordsEq(a.get(i), b.get(i))) return false;
+        return true;
     }
 
     @Override
     public void reset(UUID userId) {
         sessionRepository.deleteByUserId(userId);
     }
-
-    // ===== UpdatePlanningDayUseCase =====
 
     @Override
     public PlanningSessionDay updateDay(UUID userId, int dayNumber, List<Waypoint> newWaypoints) {
@@ -111,8 +149,6 @@ public class PlanningSessionService implements PlanningSessionUseCase, UpdatePla
         return dayRepository.save(updated);
     }
 
-    // ===== SavePlanAsExpeditionUseCase =====
-
     @Override
     public SavePlanAsExpeditionUseCase.ExpeditionResult saveAsExpedition(UUID userId, String groupName) {
         PlanningSession session = sessionRepository.findByUserId(userId)
@@ -126,8 +162,6 @@ public class PlanningSessionService implements PlanningSessionUseCase, UpdatePla
         List<UUID> draftIds = new ArrayList<>(days.size());
         for (PlanningSessionDay day : days) {
             String name = groupName + " – Dzień " + day.dayNumber();
-            // Konwersja waypointów dnia do formatu encoded (Polyline3DCodec) — używamy istniejącego
-            // pola String w route_draft.waypoints. Najprościej: zapisz jako lng,lat;lng,lat (csv).
             String encodedWaypoints = encodeWaypoints(day.waypoints());
             var created = routeDraftUseCase.create(new RouteDraftCreateCommand(
                     userId,
@@ -141,7 +175,7 @@ public class PlanningSessionService implements PlanningSessionUseCase, UpdatePla
                     groupName,
                     day.dayNumber(),
                     encodedWaypoints,
-                    day.stats() // slice z full-route stats — FE rysuje overlay nawierzchni per dzień
+                    day.stats()
             ));
             draftIds.add(created.id());
         }

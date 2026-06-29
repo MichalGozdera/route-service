@@ -2,6 +2,7 @@ eu/cokeman/velomarker/openapi/api/ApiUtil.java
 eu/cokeman/velomarker/openapi/api/DraftsApi.java
 eu/cokeman/velomarker/openapi/api/ElevationApi.java
 eu/cokeman/velomarker/openapi/api/ElevationTilesApi.java
+eu/cokeman/velomarker/openapi/api/ManualApi.java
 eu/cokeman/velomarker/openapi/api/PlanningApi.java
 eu/cokeman/velomarker/openapi/api/ProfilesApi.java
 eu/cokeman/velomarker/openapi/api/RoutingApi.java
@@ -16,6 +17,8 @@ eu/cokeman/velomarker/openapi/model/DownloadSegmentRequestDto.java
 eu/cokeman/velomarker/openapi/model/ElevationRequestDto.java
 eu/cokeman/velomarker/openapi/model/ElevationResponseDto.java
 eu/cokeman/velomarker/openapi/model/LineStringGeoJsonDto.java
+eu/cokeman/velomarker/openapi/model/ManualSessionResponseDto.java
+eu/cokeman/velomarker/openapi/model/ManualSessionUpsertRequestDto.java
 eu/cokeman/velomarker/openapi/model/PlanTaskDto.java
 eu/cokeman/velomarker/openapi/model/PlanTaskStatusDto.java
 eu/cokeman/velomarker/openapi/model/PlanningIntentDto.java

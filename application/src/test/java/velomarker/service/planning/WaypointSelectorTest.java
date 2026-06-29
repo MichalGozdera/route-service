@@ -35,16 +35,4 @@ class WaypointSelectorTest {
         double d = WaypointSelector.haversineKm(praha, kosice);
         assertThat(d).isCloseTo(518, within(10.0)); // ~518 km linia prosta
     }
-
-    @Test
-    void pointInRing_inside() {
-        double[][] ring = {{14.0, 50.0}, {15.0, 50.0}, {15.0, 51.0}, {14.0, 51.0}};
-        assertThat(WaypointSelector.pointInRing(new double[]{14.5, 50.5}, ring)).isTrue();
-    }
-
-    @Test
-    void pointInRing_outside() {
-        double[][] ring = {{14.0, 50.0}, {15.0, 50.0}, {15.0, 51.0}, {14.0, 51.0}};
-        assertThat(WaypointSelector.pointInRing(new double[]{13.0, 50.5}, ring)).isFalse();
-    }
 }

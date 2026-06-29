@@ -54,6 +54,10 @@ public class RoutePreferencesDto {
 
   private @Nullable String profile = null;
 
+  private @Nullable Boolean clearStart = null;
+
+  private @Nullable Boolean clearEnd = null;
+
   public RoutePreferencesDto countryIds(@Nullable List<Integer> countryIds) {
     this.countryIds = countryIds;
     return this;
@@ -323,6 +327,48 @@ public class RoutePreferencesDto {
     this.profile = profile;
   }
 
+  public RoutePreferencesDto clearStart(@Nullable Boolean clearStart) {
+    this.clearStart = clearStart;
+    return this;
+  }
+
+  /**
+   * PATCH command — when true, clears (nulls) start. Command-only, never stored.
+   * @return clearStart
+   */
+  
+  @Schema(name = "clearStart", description = "PATCH command — when true, clears (nulls) start. Command-only, never stored.", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
+  @JsonProperty("clearStart")
+  public @Nullable Boolean getClearStart() {
+    return clearStart;
+  }
+
+  @JsonProperty("clearStart")
+  public void setClearStart(@Nullable Boolean clearStart) {
+    this.clearStart = clearStart;
+  }
+
+  public RoutePreferencesDto clearEnd(@Nullable Boolean clearEnd) {
+    this.clearEnd = clearEnd;
+    return this;
+  }
+
+  /**
+   * PATCH command — when true, clears (nulls) end. Command-only, never stored.
+   * @return clearEnd
+   */
+  
+  @Schema(name = "clearEnd", description = "PATCH command — when true, clears (nulls) end. Command-only, never stored.", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
+  @JsonProperty("clearEnd")
+  public @Nullable Boolean getClearEnd() {
+    return clearEnd;
+  }
+
+  @JsonProperty("clearEnd")
+  public void setClearEnd(@Nullable Boolean clearEnd) {
+    this.clearEnd = clearEnd;
+  }
+
   @Override
   public boolean equals(Object o) {
     if (this == o) {
@@ -342,12 +388,14 @@ public class RoutePreferencesDto {
         Objects.equals(this.days, routePreferences.days) &&
         Objects.equals(this.kmPerDay, routePreferences.kmPerDay) &&
         Objects.equals(this.elevationPerDayM, routePreferences.elevationPerDayM) &&
-        Objects.equals(this.profile, routePreferences.profile);
+        Objects.equals(this.profile, routePreferences.profile) &&
+        Objects.equals(this.clearStart, routePreferences.clearStart) &&
+        Objects.equals(this.clearEnd, routePreferences.clearEnd);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(countryIds, levelIds, specialGroupIds, start, end, via, loop, days, kmPerDay, elevationPerDayM, profile);
+    return Objects.hash(countryIds, levelIds, specialGroupIds, start, end, via, loop, days, kmPerDay, elevationPerDayM, profile, clearStart, clearEnd);
   }
 
   @Override
@@ -365,6 +413,8 @@ public class RoutePreferencesDto {
     sb.append("    kmPerDay: ").append(toIndentedString(kmPerDay)).append("\n");
     sb.append("    elevationPerDayM: ").append(toIndentedString(elevationPerDayM)).append("\n");
     sb.append("    profile: ").append(toIndentedString(profile)).append("\n");
+    sb.append("    clearStart: ").append(toIndentedString(clearStart)).append("\n");
+    sb.append("    clearEnd: ").append(toIndentedString(clearEnd)).append("\n");
     sb.append("}");
     return sb.toString();
   }

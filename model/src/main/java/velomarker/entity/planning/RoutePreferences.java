@@ -20,32 +20,39 @@ public record RoutePreferences(
         Integer days,
         Integer kmPerDay,
         Integer elevationPerDayM,
-        String profile                   // jawny profil BRouter (fastbike/trekking/safety/fastbike-lowtraffic)
+        String profile,                  // jawny profil BRouter (fastbike/trekking/safety/fastbike-lowtraffic)
+        Boolean clearStart,              // KOMENDA PATCH: true → wyczyść start (null). Nie jest stanem (nie persystowane).
+        Boolean clearEnd                 // KOMENDA PATCH: true → wyczyść end (null). Nie jest stanem (nie persystowane).
 ) {
 
     public static RoutePreferences empty() {
         return new RoutePreferences(List.of(), List.of(), List.of(), null, null, List.of(),
-                null, null, null, null, null);
+                null, null, null, null, null, null, null);
     }
 
     /**
      * Nadpisuje pola wartościami nie-null z {@code o} (PATCH semantyka).
      * Listy zastępują w całości (gdy {@code o.list} nie-null — nawet jeśli pusta).
+     * Komendy {@code clearStart}/{@code clearEnd} = true czyszczą odpowiednio start/end (null);
+     * wynik NIE nosi tych flag (to komendy, nie stan).
      */
     public RoutePreferences mergedWith(RoutePreferences o) {
         if (o == null) return this;
+        boolean clrStart = Boolean.TRUE.equals(o.clearStart);
+        boolean clrEnd = Boolean.TRUE.equals(o.clearEnd);
         return new RoutePreferences(
                 o.countryIds != null ? o.countryIds : countryIds,
                 o.levelIds != null ? o.levelIds : levelIds,
                 o.specialGroupIds != null ? o.specialGroupIds : specialGroupIds,
-                o.start != null ? o.start : start,
-                o.end != null ? o.end : end,
+                clrStart ? null : (o.start != null ? o.start : start),
+                clrEnd ? null : (o.end != null ? o.end : end),
                 o.via != null ? o.via : via,
                 o.loop != null ? o.loop : loop,
                 o.days != null ? o.days : days,
                 o.kmPerDay != null ? o.kmPerDay : kmPerDay,
                 o.elevationPerDayM != null ? o.elevationPerDayM : elevationPerDayM,
-                o.profile != null ? o.profile : profile
+                o.profile != null ? o.profile : profile,
+                null, null
         );
     }
 

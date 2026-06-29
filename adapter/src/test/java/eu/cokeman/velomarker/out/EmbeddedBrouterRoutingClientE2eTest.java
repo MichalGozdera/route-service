@@ -42,9 +42,9 @@ class EmbeddedBrouterRoutingClientE2eTest {
 
     @Test
     void routesConnectedRoadInPoland() {
-        // Centrum Warszawy — gęsta, połączona sieć. Profil produkcyjny `ultra`.
+        // Centrum Warszawy — gęsta, połączona sieć. Profil produkcyjny `bike`.
         RouteCalculation r = realClient().calculate(
-                List.of(new double[]{21.0122, 52.2297}, new double[]{21.0177, 52.2370}), "ultra");
+                List.of(new double[]{21.0122, 52.2297}, new double[]{21.0177, 52.2370}), "bike");
 
         assertThat(r.coordinates()).hasSizeGreaterThan(1);
         assertThat(r.distanceKm()).isGreaterThan(0.0);
@@ -56,7 +56,7 @@ class EmbeddedBrouterRoutingClientE2eTest {
         // Regression marker: gdyby kiedyś zaczęło routować (odświeżony kafel / poprawka OSM),
         // ten test się wywali i zasygnalizuje, że island zniknął (wtedy zaktualizować/usunąć).
         assertThatThrownBy(() -> realClient().calculate(
-                List.of(new double[]{7.195314, 46.182554}, new double[]{7.196179, 46.173387}), "ultra"))
+                List.of(new double[]{7.195314, 46.182554}, new double[]{7.196179, 46.173387}), "bike"))
                 .isInstanceOf(BrouterUpstreamException.class)
                 .hasMessageContaining("island");
     }

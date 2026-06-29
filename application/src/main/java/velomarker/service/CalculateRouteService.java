@@ -167,7 +167,7 @@ public class CalculateRouteService implements CalculateRouteUseCase {
     private static double[] cumulativeMeters(List<double[]> coords) {
         double[] cum = new double[coords.size()];
         for (int k = 1; k < coords.size(); k++) {
-            cum[k] = cum[k - 1] + haversineM(coords.get(k - 1), coords.get(k));
+            cum[k] = cum[k - 1] + GeoMath.haversineM(coords.get(k - 1), coords.get(k));
         }
         return cum;
     }
@@ -196,15 +196,5 @@ public class CalculateRouteService implements CalculateRouteUseCase {
         double span = xs[hi] - xs[lo];
         double t = span <= 0 ? 0 : (x - xs[lo]) / span;
         return vs[lo] + t * (vs[hi] - vs[lo]);
-    }
-
-    private static double haversineM(double[] a, double[] b) {
-        double r = 6371000.0;
-        double dLat = Math.toRadians(b[1] - a[1]);
-        double dLng = Math.toRadians(b[0] - a[0]);
-        double s1 = Math.sin(dLat / 2);
-        double s2 = Math.sin(dLng / 2);
-        double x = s1 * s1 + Math.cos(Math.toRadians(a[1])) * Math.cos(Math.toRadians(b[1])) * s2 * s2;
-        return r * 2 * Math.asin(Math.sqrt(x));
     }
 }

@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import velomarker.entity.DemTileName;
 import velomarker.entity.ElevationProfile;
 import velomarker.port.out.ElevationDataSource;
+import velomarker.service.GeoMath;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -141,7 +142,7 @@ public class LocalHgtElevationClient implements ElevationDataSource {
             double[] cur = sampled.get(i);
             double ele = elevationAt(cur[1], cur[0]);   // coords = [lng,lat]
             if (i > 0) {
-                cumDist += haversineMeters(prev[0], prev[1], cur[0], cur[1]);
+                cumDist += GeoMath.haversineM(prev, cur);
                 double delta = ele - prevEle;
                 if (delta > 0) gain += delta;
                 else loss += -delta;
@@ -276,17 +277,6 @@ public class LocalHgtElevationClient implements ElevationDataSource {
             out.add(in.get(idx));
         }
         return out;
-    }
-
-    private static double haversineMeters(double lon1, double lat1, double lon2, double lat2) {
-        double r = 6371000.0;
-        double phi1 = Math.toRadians(lat1);
-        double phi2 = Math.toRadians(lat2);
-        double dphi = Math.toRadians(lat2 - lat1);
-        double dlmb = Math.toRadians(lon2 - lon1);
-        double a = Math.sin(dphi / 2) * Math.sin(dphi / 2)
-                + Math.cos(phi1) * Math.cos(phi2) * Math.sin(dlmb / 2) * Math.sin(dlmb / 2);
-        return r * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
     /**

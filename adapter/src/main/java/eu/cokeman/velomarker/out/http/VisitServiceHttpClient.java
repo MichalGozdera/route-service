@@ -173,6 +173,26 @@ public class VisitServiceHttpClient implements VisitServiceClient {
         return out;
     }
 
+    @Override
+    public Map<Integer, String> listLevelNames(String bearerToken) {
+        Object body = getJson("/countries/with-levels", bearerToken);
+        Map<Integer, String> out = new LinkedHashMap<>();
+        for (Map<?, ?> country : asListOfMaps(body)) {
+            if (country.get("levels") instanceof List<?> levels) {
+                for (Object lv : levels) {
+                    if (lv instanceof Map<?, ?> m) {
+                        Integer id = toInt(m.get("id"));
+                        String name = str(m.get("name"));
+                        if (id != null && name != null) {
+                            out.put(id, name);
+                        }
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
     // ===================== Helpery wewnętrzne =====================
 
     private Set<Integer> fetchVisitedIds(String bearerToken, int countryId, int levelId, String userId) {

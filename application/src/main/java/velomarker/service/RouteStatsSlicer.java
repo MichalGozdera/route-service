@@ -28,7 +28,7 @@ public final class RouteStatsSlicer {
         // Pre-compute cumulative meters dla [startIdx..endIdx] by szybko liczyć długość per span.
         double[] cum = new double[endIdx - startIdx + 1];
         for (int i = 1; i < cum.length; i++) {
-            cum[i] = cum[i - 1] + haversineM(coords.get(startIdx + i - 1), coords.get(startIdx + i));
+            cum[i] = cum[i - 1] + GeoMath.haversineM(coords.get(startIdx + i - 1), coords.get(startIdx + i));
         }
         long totalMeters = (long) Math.round(cum[cum.length - 1]);
         if (totalMeters == 0) return RouteStats.empty();
@@ -74,15 +74,5 @@ public final class RouteStatsSlicer {
                 .sorted(Map.Entry.<String, Long>comparingByValue(Comparator.reverseOrder()))
                 .forEach(e -> out.put(e.getKey(), e.getValue()));
         return out;
-    }
-
-    private static double haversineM(double[] a, double[] b) {
-        double r = 6_371_000.0;
-        double dLat = Math.toRadians(b[1] - a[1]);
-        double dLng = Math.toRadians(b[0] - a[0]);
-        double s1 = Math.sin(dLat / 2);
-        double s2 = Math.sin(dLng / 2);
-        double x = s1 * s1 + Math.cos(Math.toRadians(a[1])) * Math.cos(Math.toRadians(b[1])) * s2 * s2;
-        return r * 2 * Math.asin(Math.sqrt(x));
     }
 }

@@ -461,6 +461,53 @@ paths:
         '204':
           description: Deleted
 
+  # ===================== Manual session (ostatnia trasa rysowana ręcznie) =====================
+
+  /manual/session:
+    get:
+      summary: Get the user's last manually drawn route (one per user)
+      operationId: getManualSession
+      tags: [Manual]
+      responses:
+        '200':
+          description: Last manual route for authenticated user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManualSessionResponse'
+        '204':
+          description: No manual route saved yet
+        '401':
+          description: Unauthorized
+    put:
+      summary: Upsert the user's last manual route (front saves only when finishing planning)
+      operationId: upsertManualSession
+      tags: [Manual]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManualSessionUpsertRequest'
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManualSessionResponse'
+        '401':
+          description: Unauthorized
+    delete:
+      summary: Delete the user's last manual route (explicit clear)
+      operationId: deleteManualSession
+      tags: [Manual]
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          description: Unauthorized
+
   # ===================== Planning (asystent tras) =====================
 
   /planning/session:
@@ -1198,6 +1245,14 @@ components:
           type: string
           nullable: true
           description: Direct BRouter profile name (fastbike/trekking/safety/fastbike-lowtraffic)
+        clearStart:
+          type: boolean
+          nullable: true
+          description: PATCH command — when true, clears (nulls) start. Command-only, never stored.
+        clearEnd:
+          type: boolean
+          nullable: true
+          description: PATCH command — when true, clears (nulls) end. Command-only, never stored.
 
     PlanningSessionDay:
       type: object
@@ -1272,6 +1327,74 @@ components:
           type: string
           format: date-time
 
+    ManualSessionResponse:
+      type: object
+      description: Ostatnia trasa manualna usera (jedna per user). Geometria 3D = natychmiastowy profil wysokości.
+      required: [id, userId, geometryEncoded, waypoints, profile, editedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        geometryEncoded:
+          type: string
+          description: Polyline3DCodec encoded (lng,lat,z)
+        waypoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/Waypoint'
+        distanceKm:
+          type: number
+          format: double
+          nullable: true
+        elevationGain:
+          type: integer
+          nullable: true
+        elevationLoss:
+          type: integer
+          nullable: true
+        profile:
+          type: string
+        stats:
+          $ref: '#/components/schemas/RouteStats'
+          nullable: true
+          description: Scalony RouteStats całej trasy (spans zwykle puste — agregat z wielu legów).
+        editedAt:
+          type: string
+          format: date-time
+
+    ManualSessionUpsertRequest:
+      type: object
+      description: |
+        Snapshot trasy manualnej wysyłany przy KOŃCZENIU planowania. Front liczy geometrię 3D (z Z),
+        gain/loss i scalony stats — backend tylko przechowuje (bez re-routingu/próbkowania DEM).
+      required: [geometryEncoded, waypoints, profile]
+      properties:
+        geometryEncoded:
+          type: string
+          description: Polyline3DCodec encoded (lng,lat,z); 2D dopuszczalne (z=0) gdy brak profilu.
+        waypoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/Waypoint'
+        profile:
+          type: string
+        distanceKm:
+          type: number
+          format: double
+          nullable: true
+        elevationGain:
+          type: integer
+          nullable: true
+        elevationLoss:
+          type: integer
+          nullable: true
+        stats:
+          $ref: '#/components/schemas/RouteStats'
+          nullable: true
+
     SetPlanningIntentRequest:
       type: object
       required: [intent]
@@ -1322,27 +1445,13 @@ components:
 
     PlanningSummary:
       type: object
-      description: Podsumowanie policzonej wyprawy. Null gdy sesja jeszcze nie była policzona.
-      required: [totalDistanceKm, totalElevationGain, budgetKm, verdict, surplusKm, poolSize, initialPoolSize]
+      description: Dopasowanie policzonej wyprawy do budżetu effortu. Null gdy sesja jeszcze nie była policzona.
+      required: [budgetFit]
       properties:
-        totalDistanceKm:    { type: number, format: double }
-        totalElevationGain: { type: integer }
-        budgetKm:           { type: integer, description: "days × kmPerDay" }
-        verdict:
+        budgetFit:
           type: string
-          enum: [OK, SURPLUS, DEFICIT, BUDGET_IMPOSSIBLE]
-          description: "BUDGET_IMPOSSIBLE = sam baseline (start→via→meta) przekracza budżet — user musi poprawić parametry."
-        surplusKm:          { type: integer }
-        poolSize:           { type: integer, description: "Wybrana pula obszarów (finalna)" }
-        initialPoolSize:    { type: integer, description: "Pula kandydatów po scoringu (przed wyborem)" }
-        baselineKm:
-          type: number
-          format: double
-          nullable: true
-          description: "Baseline BRouter (start→via→meta bez gmin). Dolna granica trasy."
-        climbWarning:
-          type: boolean
-          description: "true gdy totalElevationGain > refClimbTotal × 1.10 — user-facing warning, nie blokuje verdict."
+          enum: [UNDER, OK, OVER]
+          description: "UNDER = trasa lekko za krótka (<95% budżetu), OVER = lekko za długa (>105%), OK = w paśmie."
 
     PlanTaskStatus:
       type: string

@@ -155,3 +155,36 @@ ALTER TABLE planning.session_day DROP COLUMN IF EXISTS covered_area_ids;
 -- RoadFactorCalibrator usunięty: road_areas był tylko raportowanym diagnostykiem (road/straight z baseline),
 -- zero wpływu na planowanie i niewyświetlany na froncie. Usuwamy kolumnę i kalibrator.
 ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_road_areas;
+
+-- changeset cokeman:25_06_2026_03_summary_budget_fit
+-- Rich summary (totalKm/elev/budget/verdict/surplus/pool/baseline/climbWarning) zastąpione jednym budgetFit
+-- (UNDER/OK/OVER) liczonym z effortu vs budżet. Front pokazuje jednolinijkę tylko gdy ≠OK. Drop starych kolumn + add.
+ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_total_distance_km;
+ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_total_elevation_gain;
+ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_budget_km;
+ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_verdict;
+ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_surplus_km;
+ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_pool_size;
+ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_initial_pool_size;
+ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_baseline_km;
+ALTER TABLE planning.session DROP COLUMN IF EXISTS summary_climb_warning;
+ALTER TABLE planning.session ADD COLUMN IF NOT EXISTS summary_budget_fit VARCHAR(16);
+
+-- changeset cokeman:26_06_2026_01_manual_session
+-- Ostatnia trasa rysowana RĘCZNIE — JEDNA per user (UNIQUE user_id). Zastępuje localStorage
+-- velomarker_last_planned_route: spójność + multi-device + natychmiastowy profil wysokości
+-- (geometry 3D Polyline3DCodec). Te same dane co session_day, ale bez session_id/day_number, z user_id.
+-- Commit robiony przez front dopiero gdy user kończy planowanie (nie per-punkt).
+CREATE TABLE IF NOT EXISTS planning.manual_session (
+    id             UUID PRIMARY KEY,
+    user_id        UUID NOT NULL UNIQUE,
+    geometry       TEXT NOT NULL,
+    waypoints      TEXT NOT NULL,
+    distance_km    DOUBLE PRECISION,
+    elevation_gain INTEGER,
+    elevation_loss INTEGER,
+    profile        VARCHAR(64) NOT NULL,
+    stats_json     TEXT,
+    edited_at      TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_manual_session_user ON planning.manual_session (user_id);

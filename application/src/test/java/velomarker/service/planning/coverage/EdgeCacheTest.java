@@ -1,5 +1,17 @@
 package velomarker.service.planning.coverage;
 
+import velomarker.service.planning.*;
+import velomarker.service.planning.route.*;
+import velomarker.service.planning.day.*;
+import velomarker.service.planning.coverage.*;
+import velomarker.service.planning.coverage.prep.*;
+import velomarker.service.planning.coverage.seed.*;
+import velomarker.service.planning.coverage.index.*;
+import velomarker.service.planning.coverage.metric.*;
+import velomarker.service.planning.coverage.geom.*;
+import velomarker.service.planning.coverage.scoring.*;
+import velomarker.service.planning.coverage.debug.*;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -10,13 +22,13 @@ class EdgeCacheTest {
     void miss_then_hit() {
         EdgeCache cache = new EdgeCache();
         int[] computeCount = {0};
-        EdgeCache.EdgeInfo info1 = cache.getOrCompute(14.5, 50.0, 15.5, 50.0, pts -> {
+        EdgeInfo info1 = cache.getOrCompute(14.5, 50.0, 15.5, 50.0, pts -> {
             computeCount[0]++;
-            return new EdgeCache.EdgeInfo(80.0, 100.0, 90.0);
+            return new EdgeInfo(80.0, 100.0, 90.0);
         });
-        EdgeCache.EdgeInfo info2 = cache.getOrCompute(14.5, 50.0, 15.5, 50.0, pts -> {
+        EdgeInfo info2 = cache.getOrCompute(14.5, 50.0, 15.5, 50.0, pts -> {
             computeCount[0]++;
-            return new EdgeCache.EdgeInfo(999.0, 999.0, 999.0); // shouldn't be called
+            return new EdgeInfo(999.0, 999.0, 999.0); // shouldn't be called
         });
         assertThat(computeCount[0]).isEqualTo(1);
         assertThat(info1.distanceKm()).isEqualTo(80.0);
@@ -28,8 +40,8 @@ class EdgeCacheTest {
     @Test
     void directional_key_distinct() {
         EdgeCache cache = new EdgeCache();
-        cache.getOrCompute(14.5, 50.0, 15.5, 50.0, pts -> new EdgeCache.EdgeInfo(80.0, 0, 80));
-        cache.getOrCompute(15.5, 50.0, 14.5, 50.0, pts -> new EdgeCache.EdgeInfo(82.0, 0, 82));
+        cache.getOrCompute(14.5, 50.0, 15.5, 50.0, pts -> new EdgeInfo(80.0, 0, 80));
+        cache.getOrCompute(15.5, 50.0, 14.5, 50.0, pts -> new EdgeInfo(82.0, 0, 82));
         // Odwrotny kierunek = osobny klucz → 2 osobne miss'y (zero trafień w cache).
         assertThat(cache.misses()).isEqualTo(2);
         assertThat(cache.hits()).isEqualTo(0);
@@ -39,7 +51,7 @@ class EdgeCacheTest {
     void hit_ratio() {
         EdgeCache cache = new EdgeCache();
         for (int i = 0; i < 5; i++) {
-            cache.getOrCompute(14, 50, 15, 50, pts -> new EdgeCache.EdgeInfo(10, 0, 10));
+            cache.getOrCompute(14, 50, 15, 50, pts -> new EdgeInfo(10, 0, 10));
         }
         assertThat(cache.hits()).isEqualTo(4);
         assertThat(cache.misses()).isEqualTo(1);
@@ -67,7 +79,7 @@ class EdgeCacheTest {
         // realCalls NIE rośnie (to było źródło zawyżania: misses ≠ realne strzały).
         EdgeCache cache = new EdgeCache();
         cache.setReason("grow");
-        cache.getOrCompute(14.0, 50.0, 14.1, 50.0, pts -> new EdgeCache.EdgeInfo(5, 0, 5)); // sliced-seed, brak onRealCall
+        cache.getOrCompute(14.0, 50.0, 14.1, 50.0, pts -> new EdgeInfo(5, 0, 5)); // sliced-seed, brak onRealCall
         assertThat(cache.misses()).isEqualTo(1);
         assertThat(cache.realCalls()).isZero();
         assertThat(cache.realCallsByReason()).isEmpty();

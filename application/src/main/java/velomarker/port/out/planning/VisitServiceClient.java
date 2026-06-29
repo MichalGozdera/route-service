@@ -28,4 +28,12 @@ public interface VisitServiceClient {
 
     /** Katalog grup specjalnych (spłaszczony per kraj). Cache catalogue. */
     List<SpecialGroupRef> listSpecialGroupsCatalog(String bearerToken);
+
+    /**
+     * Katalog poziomów administracyjnych: {@code levelId → nazwa} (np. „Powiat", „Bezirk"), spłaszczony
+     * ze wszystkich krajów ({@code GET /countries/with-levels}). levelId jest globalnie unikalny.
+     * Służy do nazwania RODZAJU obszaru w live-podglądzie (UnvisitedArea.levelName to numer poziomu, nie nazwa).
+     * Cache catalogue (1h).
+     */
+    java.util.Map<Integer, String> listLevelNames(String bearerToken);
 }

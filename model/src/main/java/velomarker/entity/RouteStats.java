@@ -7,8 +7,7 @@ import java.util.Map;
  * Stats trasy zagregowane per kategoria z {@code OsmTrack.messageList} BRoutera.
  * <p>
  * Klucze map są <b>znormalizowanymi kodami</b> (stable identifiers), NIE ludzkimi etykietami —
- * by tłumaczenia były zarządzane per-locale na poziomie klienta (frontend i18n) oraz backend log
- * (translacje w {@code RouteStatsFormatter}).
+ * by tłumaczenia były zarządzane per-locale na poziomie klienta (frontend i18n).
  *
  * <h2>Mapy agregatów</h2>
  *
@@ -47,9 +46,8 @@ import java.util.Map;
  *
  * <h2>Tłumaczenie</h2>
  *
- * <p><b>Backend</b>: {@code RouteStatsFormatter} ma mapy PL → formatuje log INFO.
- *
- * <p><b>Frontend</b>: powinien trzymać translation mapy per locale (PL/EN/DE/FR/...) w i18n.
+ * <p><b>Frontend</b>: trzyma translation mapy per locale (PL/EN/DE/FR/...) w i18n (blok
+ * {@code ROUTE_STATS} w assets/i18n) — backend nie tłumaczy, wysyła tylko kody.
  * Parsowanie ref code (po dwukropku) i suffixów (_with_cycleway_lane, _use_sidepath) jest
  * agnostyczne kraju.
  */

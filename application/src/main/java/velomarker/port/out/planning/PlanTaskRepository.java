@@ -2,6 +2,7 @@ package velomarker.port.out.planning;
 
 import velomarker.entity.planning.PlanTask;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -14,6 +15,9 @@ public interface PlanTaskRepository {
 
     /** Aktualny task usera (najnowszy non-terminal lub ostatni jakikolwiek). */
     Optional<PlanTask> findLatestForUser(UUID userId);
+
+    /** Wszystkie taski w stanie RUNNING — na starcie serwisu to osierocone (do recovery). */
+    List<PlanTask> findRunning();
 
     void deleteBySessionId(UUID sessionId);
 }

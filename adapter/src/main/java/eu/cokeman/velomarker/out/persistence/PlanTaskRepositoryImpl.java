@@ -8,6 +8,7 @@ import velomarker.entity.planning.PlanTask;
 import velomarker.entity.planning.PlanTaskStatus;
 import velomarker.port.out.planning.PlanTaskRepository;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -47,6 +48,13 @@ public class PlanTaskRepositoryImpl implements PlanTaskRepository {
     @Transactional(readOnly = true)
     public Optional<PlanTask> findLatestForUser(UUID userId) {
         return jpaRepository.findFirstByUserIdOrderByStartedAtDesc(userId).map(PlanTaskRepositoryImpl::toDomain);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<PlanTask> findRunning() {
+        return jpaRepository.findByStatus(PlanTaskStatus.RUNNING.name())
+                .stream().map(PlanTaskRepositoryImpl::toDomain).toList();
     }
 
     @Override

@@ -36,9 +36,9 @@ import velomarker.service.ProfileManagementService;
 import velomarker.service.RouteDraftManagementService;
 import velomarker.service.SegmentManagementService;
 import velomarker.service.planning.ComputationRegistry;
-import velomarker.service.planning.DaySplitter;
 import velomarker.service.planning.PlanTaskService;
 import velomarker.service.planning.PlanningOrchestrationService;
+import velomarker.service.planning.ManualSessionService;
 import velomarker.service.planning.PlanningSessionService;
 import velomarker.service.planning.WaypointSelector;
 
@@ -46,6 +46,14 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 @SpringBootApplication
+// route-service tylko PUBLIKUJE do RabbitMQ (live-podgląd planowania). common-amqp wnosi też stronę
+// konsumencką (inbox idempotency / listener dispatch / outbox poller) wymagającą tabel+repo, których
+// route-service nie ma. Skanujemy tylko publisher+config — resztę amqp wykluczamy.
+@org.springframework.context.annotation.ComponentScan(
+        basePackages = "eu.cokeman.velomarker",
+        excludeFilters = @org.springframework.context.annotation.ComponentScan.Filter(
+                type = org.springframework.context.annotation.FilterType.REGEX,
+                pattern = "eu\\.cokeman\\.velomarker\\.amqp\\.(inbox|listener|outbox)\\..*"))
 @EnableScheduling
 @EnableJpaRepositories(basePackages = "eu.cokeman.velomarker.out.persistence.jpa.repository")
 @EntityScan(basePackages = "eu.cokeman.velomarker.out.persistence.jpa.entity")
@@ -105,11 +113,6 @@ public class SpringAppConfig {
         return new ComputationRegistry();
     }
 
-    @Bean
-    DaySplitter daySplitter() {
-        return new DaySplitter();
-    }
-
     /** Parametry plannera pokrycia z `planning.coverage.*` (application.yml). */
     @Bean
     velomarker.service.planning.coverage.CoveragePlannerParameters coveragePlannerParameters(
@@ -145,10 +148,11 @@ public class SpringAppConfig {
             velomarker.port.out.planning.SpatialIndexFactory spatialIndexFactory,
             ElevationDataSource elevation,
             WaypointSelector waypointSelector,
-            DaySplitter daySplitter,
-            velomarker.service.planning.coverage.CoveragePlanner coveragePlanner) {
+            velomarker.service.planning.coverage.CoveragePlanner coveragePlanner,
+            velomarker.port.out.planning.PlanTracePublisher tracePublisher) {
         return new PlanningOrchestrationService(sessionRepository, dayRepository, visitClient, routeUseCase,
-                brouterClient, coverageIndexFactory, spatialIndexFactory, elevation, waypointSelector, daySplitter, coveragePlanner);
+                brouterClient, coverageIndexFactory, spatialIndexFactory, elevation, waypointSelector, coveragePlanner,
+                tracePublisher);
     }
 
     /** Virtual-thread executor — każde liczenie planu w osobnym wątku wirtualnym (tanio). */
@@ -163,6 +167,15 @@ public class SpringAppConfig {
     PlanTaskProgressPublisher noopPlanTaskProgressPublisher() {
         return task -> {
             // best-effort no-op (dev fallback)
+        };
+    }
+
+    /** Domyślny no-op live-trace publisher — zastąpiony przez AmqpPlanTracePublisher gdy AMQP dostępne. */
+    @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean(velomarker.port.out.planning.PlanTracePublisher.class)
+    velomarker.port.out.planning.PlanTracePublisher noopPlanTracePublisher() {
+        return (taskId, userId, frame) -> {
+            // best-effort no-op (dev fallback / AMQP wyłączone)
         };
     }
 
@@ -187,5 +200,10 @@ public class SpringAppConfig {
                                                   ElevationDataSource elevation,
                                                   RouteDraftUseCase routeDraftUseCase) {
         return new PlanningSessionService(sessionRepository, dayRepository, routeUseCase, elevation, routeDraftUseCase);
+    }
+
+    @Bean
+    ManualSessionService manualSessionService(velomarker.port.out.planning.ManualSessionRepository manualSessionRepository) {
+        return new ManualSessionService(manualSessionRepository);
     }
 }

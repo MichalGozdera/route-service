@@ -135,6 +135,20 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
         if (!empty) {
             tree.query(new Envelope(-360, 360, -180, 180)); // wymuś build (lazy build NIE jest thread-safe)
             buildAdjacency();
+            warmPreparedGeometries(); // prepared-geometry też ma leniwy, nie-thread-safe build indeksu — wygrzej jednowątkowo
+        }
+    }
+
+    /** {@link PreparedGeometry} buduje wewnętrzny indeks segmentów LENIWIE przy 1. predykacie ({@code contains}/
+     *  {@code intersects}) i NIE jest to thread-safe. Pierwsze WSPÓŁBIEŻNE użycie (parallelMap w Anchorer/Deepener/
+     *  SpurCutter) mogłoby wyścigowo uszkodzić indeks → błędne `contains` (kotwica gminy „wypada" w sąsiada). Wymuś
+     *  build jednowątkowo (analogicznie do STRtree powyżej), zanim ktokolwiek odpyta równolegle. */
+    private void warmPreparedGeometries() {
+        for (AreaGeom ag : byId.values()) {
+            Point rep = GF.createPoint(project(ag.area.lng(), ag.area.lat()));
+            try { ag.prepFull.contains(rep); } catch (RuntimeException ignored) { }
+            try { ag.prepCredit.contains(rep); } catch (RuntimeException ignored) { }
+            try { ag.prepCreditDeep.contains(rep); } catch (RuntimeException ignored) { }
         }
     }
 

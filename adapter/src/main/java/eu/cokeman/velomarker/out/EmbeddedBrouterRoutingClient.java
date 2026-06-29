@@ -17,6 +17,7 @@ import velomarker.exception.BrouterMissingTileException;
 import velomarker.exception.BrouterUnavailableException;
 import velomarker.exception.BrouterUpstreamException;
 import velomarker.port.out.BrouterRoutingClient;
+import velomarker.service.GeoMath;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -348,7 +349,6 @@ public class EmbeddedBrouterRoutingClient implements BrouterRoutingClient {
         // RouteStatsBuilder potrzebuje coords by przemapować endpointy z messageList (mikrostopnie)
         // na indeksy w geometrii — robi to dla spans per kategoria (surface/road/smoothness).
         RouteStats stats = RouteStatsBuilder.build(track, coordList);
-        HumanRouteStatsLogger.log(log, stats, profile);
         if (log.isDebugEnabled()) {
             RouteStatsLogger.log(log, track, profile);
         }
@@ -380,7 +380,7 @@ public class EmbeddedBrouterRoutingClient implements BrouterRoutingClient {
                 double[] proposed = waypoints.get(i);
                 double snapLng = microdegreesToLon(mw.crosspoint.getILon());
                 double snapLat = microdegreesToLat(mw.crosspoint.getILat());
-                double offsetM = haversineMeters(proposed[1], proposed[0], snapLat, snapLng);
+                double offsetM = GeoMath.haversineM(proposed, new double[]{snapLng, snapLat});
                 if (offsetM > SNAP_LOG_THRESHOLD_M) {
                     log.info("BRouter snap wp[{}] ({},{}) → ({},{}) offset={}m radius={}",
                             new Object[]{i,
@@ -395,17 +395,6 @@ public class EmbeddedBrouterRoutingClient implements BrouterRoutingClient {
     }
 
     private static final double SNAP_LOG_THRESHOLD_M = 25.0;
-
-    /** Haversine w metrach (proposed vs snapped) — diagnostyka offsetu dopasowania. */
-    private static double haversineMeters(double lat1, double lon1, double lat2, double lon2) {
-        double r = 6_371_000.0;
-        double dLat = Math.toRadians(lat2 - lat1);
-        double dLon = Math.toRadians(lon2 - lon1);
-        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
-                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
-                * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        return 2 * r * Math.asin(Math.min(1.0, Math.sqrt(a)));
-    }
 
     private RuntimeException mapBrouterError(String msg, Throwable cause) {
         Matcher m = RD5_NOT_FOUND.matcher(msg);

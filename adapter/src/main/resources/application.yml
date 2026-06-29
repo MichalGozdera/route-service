@@ -5,6 +5,7 @@ spring:
     import:
       - classpath:velomarker/velomarker-base.yml
       - classpath:velomarker/velomarker-persistence.yml
+      - classpath:velomarker/velomarker-messaging.yml   # RabbitMQ (publikacja live-podglądu planowania → notification-exchange)
   liquibase:
     enabled: true
     defaultSchema: routes
@@ -26,6 +27,11 @@ spring:
       resourceserver:
         jwt:
           issuer-uri: ${JWT_ISSUER_URI:http://localhost:8083}
+
+# Exchange docelowy live-podglądu planowania (notification-service routuje na SSE per-user).
+app:
+  exchange:
+    notification-exchange: ${NOTIFICATION_EXCHANGE:notification_exchange}
 
 # BRouter — gdzie żyją pliki segmentów (bind mount kontenera) i jak do niego stukać po HTTP
 brouter:
@@ -90,7 +96,7 @@ planning:
     alpha-km-per-meter: ${PLANNING_COVERAGE_ALPHA:0.1}
     # ADMIN DEBUG: loguj GeoJSON snapshot trasy na każdej fazie seeda (init/batch/prune/densify/reconcile/final)
     # do podglądu w mapie rysowania (panel 🐞 paste-to-map). UWAGA: per-batch zalewa log → włączaj tylko do debugowania.
-    debug-geojson: ${ROUTE_PLANNING_DEBUG_GEOJSON:true}
+    debug-geojson: ${ROUTE_PLANNING_DEBUG_GEOJSON:false}
 
 springdoc:
   swagger-ui:

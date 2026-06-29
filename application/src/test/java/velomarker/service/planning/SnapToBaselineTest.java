@@ -1,7 +1,18 @@
 package velomarker.service.planning;
 
+import velomarker.service.planning.*;
+import velomarker.service.planning.route.*;
+import velomarker.service.planning.day.*;
+import velomarker.service.planning.coverage.*;
+import velomarker.service.planning.coverage.prep.*;
+import velomarker.service.planning.coverage.seed.*;
+import velomarker.service.planning.coverage.index.*;
+import velomarker.service.planning.coverage.metric.*;
+import velomarker.service.planning.coverage.geom.*;
+import velomarker.service.planning.coverage.scoring.*;
+import velomarker.service.planning.coverage.debug.*;
+
 import org.junit.jupiter.api.Test;
-import velomarker.entity.planning.AreaPart;
 import velomarker.entity.planning.UnvisitedArea;
 
 import java.util.ArrayList;
@@ -12,7 +23,7 @@ import static org.assertj.core.api.Assertions.within;
 
 /**
  * Test pakietu snap-to-baseline (Faza 4) — bezpośrednia weryfikacja core'u nowego algorytmu:
- * scoreAreaAgainstBaseline / findNearestGeomIdx.
+ * scoreAreaAgainstBaseline.
  *
  * <p>Algorytm: zamiast TSP przez centroidy gmin, baseline BRouter (start→via→meta) JEST trasą,
  * a gminy są DOLEPIANE mini-detorami na granicę polygonu — wjazd ~50 m za granicę wystarczy
@@ -21,8 +32,6 @@ import static org.assertj.core.api.Assertions.within;
  *   <li>gmina PRZECIĘTA przez baseline → intersected=true, detour=0 (darmo)</li>
  *   <li>gmina BLISKO baseline (offset 5 km) → intersected=false, detour~10 km</li>
  *   <li>gmina DALEKO (offset 30 km) → intersected=false, detour~60 km</li>
- *   <li>insertionIdx zachowuje monotonię wzdłuż baseline</li>
- *   <li>entryLng/entryLat są WEWNĄTRZ ringa (nie na granicy ani poza)</li>
  * </ul>
  */
 class SnapToBaselineTest {
@@ -72,64 +81,6 @@ class SnapToBaselineTest {
         assertThat(c.isIntersected()).isFalse();
         // Detour > 50 km — drogi, trim wyrzuci.
         assertThat(c.getDetourStraightKm()).isGreaterThan(50.0);
-    }
-
-    @Test
-    void insertionIdx_increasesWithLngForAreasAlongLine() {
-        // 4 gminy przesunięte na N od bazowej, ułożone od zachodu na wschód → insertionIdx rosnie monotonicznie.
-        var baseline = straightBaseline();
-        var a1 = squareArea(1, 14.5, 50.05, 0.02);
-        var a2 = squareArea(2, 15.5, 50.05, 0.02);
-        var a3 = squareArea(3, 16.5, 50.05, 0.02);
-        var a4 = squareArea(4, 17.5, 50.05, 0.02);
-        var c1 = CoverageAreaSelection.scoreAreaAgainstBaseline(a1, baseline, false);
-        var c2 = CoverageAreaSelection.scoreAreaAgainstBaseline(a2, baseline, false);
-        var c3 = CoverageAreaSelection.scoreAreaAgainstBaseline(a3, baseline, false);
-        var c4 = CoverageAreaSelection.scoreAreaAgainstBaseline(a4, baseline, false);
-        assertThat(c1.getInsertionIdx()).isLessThan(c2.getInsertionIdx());
-        assertThat(c2.getInsertionIdx()).isLessThan(c3.getInsertionIdx());
-        assertThat(c3.getInsertionIdx()).isLessThan(c4.getInsertionIdx());
-    }
-
-    @Test
-    void entryPoint_isInsideRing_notAtCentroid() {
-        // Gmina 5 km na N od bazowej. Entry point powinien być NA POŁUDNIE od centroidu (bliżej bazowej)
-        // i wewnątrz ringa.
-        double lng = 16.0;
-        double lat = 50.045;
-        double half = 0.02;
-        var area = squareArea(1, lng, lat, half);
-        var c = CoverageAreaSelection.scoreAreaAgainstBaseline(area, straightBaseline(), false);
-        // Wewnątrz ringa:
-        assertThat(c.getEntryLng()).isBetween(lng - half, lng + half);
-        assertThat(c.getEntryLat()).isBetween(lat - half, lat + half);
-        // Bliżej południowej granicy (bazowa) niż centroid:
-        assertThat(c.getEntryLat()).isLessThan(lat);
-    }
-
-    @Test
-    void findNearestGeomIdx_returnsClosestIndex() {
-        var baseline = straightBaseline(); // od 14.0 do 17.96 co 0.04
-        int idx = PlanningGeom.findNearestGeomIdx(baseline, new double[]{16.0, 50.0});
-        // 16.0 = 14.0 + 0.04 × 50 → indeks 50
-        assertThat(idx).isEqualTo(50);
-    }
-
-    @Test
-    void findNearestGeomIdx_targetBeyondPolyline_returnsLast() {
-        var baseline = straightBaseline();
-        int idx = PlanningGeom.findNearestGeomIdx(baseline, new double[]{30.0, 50.0});
-        assertThat(idx).isEqualTo(baseline.size() - 1);
-    }
-
-    @Test
-    void scoreArea_nullRing_doesNotCrash() {
-        // Brak ring (UnvisitedArea bez geometrii) — kandidat z intersected=false, entry=centroid.
-        var area = UnvisitedArea.levelMulti(1, "noRing", 50.05, 16.0, List.of(new AreaPart(null, null)), 1, 1, "gmina");
-        var c = CoverageAreaSelection.scoreAreaAgainstBaseline(area, straightBaseline(), false);
-        assertThat(c.isIntersected()).isFalse();
-        assertThat(c.getEntryLng()).isEqualTo(16.0);
-        assertThat(c.getEntryLat()).isEqualTo(50.05);
     }
 
     @Test

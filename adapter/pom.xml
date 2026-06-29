@@ -31,6 +31,17 @@
             <artifactId>common-database</artifactId>
             <version>${common-version}</version>
         </dependency>
+        <!-- AMQP — publikacja live-podglądu planowania (PlanTraceEvent) do notification-exchange. -->
+        <dependency>
+            <groupId>eu.cokeman.velomarker</groupId>
+            <artifactId>common-amqp</artifactId>
+            <version>${common-version}</version>
+        </dependency>
+        <dependency>
+            <groupId>eu.cokeman.velomarker</groupId>
+            <artifactId>common-messaging</artifactId>
+            <version>${common-version}</version>
+        </dependency>
         <dependency>
             <groupId>${project.groupId}</groupId>
             <artifactId>application</artifactId>

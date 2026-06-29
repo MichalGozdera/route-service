@@ -70,6 +70,11 @@ public class CachingVisitServiceClient implements VisitServiceClient {
         return catalog("specialGroups", () -> delegate.listSpecialGroupsCatalog(bearer));
     }
 
+    @Override
+    public java.util.Map<Integer, String> listLevelNames(String bearer) {
+        return catalog("levelNames", () -> delegate.listLevelNames(bearer));
+    }
+
     /** Wyciąga subject (sub/user_id) z JWT do deterministycznego klucza cache (nie zmienia się przy refresh). */
     private static String subjectFromBearer(String bearer) {
         if (bearer == null || bearer.isBlank()) {

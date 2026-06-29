@@ -51,15 +51,7 @@ public class PlanningExternalMapper {
 
     public PlanningSummaryDto toDto(PlanningSummary s) {
         PlanningSummaryDto dto = new PlanningSummaryDto();
-        dto.setTotalDistanceKm(s.totalDistanceKm());
-        dto.setTotalElevationGain(s.totalElevationGain());
-        dto.setBudgetKm(s.budgetKm());
-        dto.setVerdict(PlanningSummaryDto.VerdictEnum.fromValue(s.verdict().name()));
-        dto.setSurplusKm(s.surplusKm());
-        dto.setPoolSize(s.poolSize());
-        dto.setInitialPoolSize(s.initialPoolSize());
-        if (s.baselineKm() != null) dto.setBaselineKm(s.baselineKm());
-        dto.setClimbWarning(s.climbWarning());
+        dto.setBudgetFit(PlanningSummaryDto.BudgetFitEnum.fromValue(s.budgetFit().name()));
         return dto;
     }
 
@@ -122,7 +114,9 @@ public class PlanningExternalMapper {
                 dto.getDays(),
                 dto.getKmPerDay(),
                 dto.getElevationPerDayM(),
-                dto.getProfile()
+                dto.getProfile(),
+                dto.getClearStart(),
+                dto.getClearEnd()
         );
     }
 
