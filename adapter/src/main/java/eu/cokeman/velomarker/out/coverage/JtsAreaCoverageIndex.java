@@ -30,8 +30,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * visit-service) geometrii — NIE na ręcznym ray-castingu po downsamplowanych ringach. Eliminuje
  * false-positives „ślad smyra po zewnętrznej stronie meandrującej granicy" (np. Gorzów Śląski/Prosna).
  *
- * <p><b>Kryterium zaliczenia (na trasie BRoutera) = wjazd ≥ {@value #CREDIT_DEPTH_M} m W GŁĄB</b>:
- * {@code gmina.buffer(-depth).intersects(line)}. Ujemny bufor kurczy gminę o 200m od KAŻDEJ krawędzi
+ * <p><b>Kryterium zaliczenia (na trasie BRoutera) = wjazd ≥ {@code creditDepthM} m W GŁĄB</b> (per-plan:
+ * gminy=200m, kafelki/TILES=50m): {@code gmina.buffer(-depth).intersects(line)}. Ujemny bufor kurczy gminę od KAŻDEJ krawędzi
  * (outer + dziury), więc przejazd po granicy / otarcie krawędzi / smyranie po peryferiach (jak
  * Kołobrzeg z trasy nad morzem, Grębów/Piotrków po krawędzi) NIE liczy — trasa musi realnie wejść do
  * środka. Bufor liczony jest w projekcji równoodległościowej (x = lng·cos(refLat)), żeby 200m był
@@ -45,14 +45,20 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 class JtsAreaCoverageIndex implements AreaCoverageIndex {
 
-    /** Górny próg głębokości wjazdu (m), by zaliczyć gminę na realnej trasie BRoutera. User: „dla pewności".
-     *  ADAPTACYJNY: per-gmina = min(tego, {@value #DEPTH_FRACTION} × osiągalnej głębi) — wąskie nadrzeczne
-     *  gminy (strip wzdłuż Wisły/Sanu) nie są nie-do-zaliczenia, grube wciąż wymagają pełnych 200m. */
-    static final double CREDIT_DEPTH_M = 200.0;
-    /** Ułamek osiągalnej głębi gminy wymagany do zaliczenia (cap = {@link #CREDIT_DEPTH_M}). */
+    /** Górny próg głębokości wjazdu (m), by zaliczyć obszar na realnej trasie BRoutera. PARAMETRYZOWANY
+     *  per-plan (konstruktor): gminy=200m (default), kafelki/TILES=50m. ADAPTACYJNY: per-obszar =
+     *  min(tego, {@value #DEPTH_FRACTION} × osiągalnej głębi) — wąskie nadrzeczne gminy nie są nie-do-zaliczenia. */
+    private final double creditDepthM;
+    /** Próg „głębokiego" wjazdu (m) — deeply/passages/entry/MIC. Per-plan: gminy=220m (default), kafelki=70m. */
+    private final double deepDepthM;
+    /** {@code creditDepthM} w jednostkach projekcji (cap adaptacyjnego progu) — liczony raz w konstruktorze. */
+    private final double creditDepthDegCap;
+    /** Domyślne progi gminowe (COVERAGE) — zachowanie bit-identyczne sprzed parametryzacji TILES. */
+    static final double DEFAULT_CREDIT_DEPTH_M = 200.0;
+    static final double DEFAULT_DEEP_DEPTH_M = 220.0;
+    /** Ułamek osiągalnej głębi obszaru wymagany do zaliczenia (cap = {@code creditDepthM}). */
     private static final double DEPTH_FRACTION = 0.6;
     private static final double METERS_PER_DEG = 111_320.0;
-    private static final double CREDIT_DEPTH_DEG = CREDIT_DEPTH_M / METERS_PER_DEG;
 
     private static final GeometryFactory GF = new GeometryFactory();
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(JtsAreaCoverageIndex.class);
@@ -81,9 +87,18 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
         this(areas, List.of());
     }
 
-    /** {@code areas} = kandydaci (liczą się jako pokrycie); {@code adjacencyAreas} = historycznie zaliczone
-     *  (tylko do sąsiedztwa). Oba wchodzą do byId/tree i grafu adjacency; adjacencyAreas wykluczone z zaliczeń. */
     JtsAreaCoverageIndex(List<UnvisitedArea> areas, List<UnvisitedArea> adjacencyAreas) {
+        this(areas, adjacencyAreas, DEFAULT_CREDIT_DEPTH_M, DEFAULT_DEEP_DEPTH_M);
+    }
+
+    /** {@code areas} = kandydaci (liczą się jako pokrycie); {@code adjacencyAreas} = historycznie zaliczone
+     *  (tylko do sąsiedztwa). Oba wchodzą do byId/tree i grafu adjacency; adjacencyAreas wykluczone z zaliczeń.
+     *  {@code creditDepthM}/{@code deepDepthM} = progi głębokości wjazdu (gminy 200/220, kafelki/TILES 50/70). */
+    JtsAreaCoverageIndex(List<UnvisitedArea> areas, List<UnvisitedArea> adjacencyAreas,
+                         double creditDepthM, double deepDepthM) {
+        this.creditDepthM = creditDepthM;
+        this.deepDepthM = deepDepthM;
+        this.creditDepthDegCap = creditDepthM / METERS_PER_DEG;
         List<UnvisitedArea> all = new ArrayList<>(areas);
         if (adjacencyAreas != null) {
             all.addAll(adjacencyAreas);
@@ -114,7 +129,7 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
             // kredytem −200, by cięcie zawsze widziało wp jako kredytujący). Fallback do prepCredit gdy gmina za mała.
             PreparedGeometry prepCreditDeep = prepCredit;
             try {
-                Geometry deep = g.buffer(-(DEEP_DEPTH_M / METERS_PER_DEG));
+                Geometry deep = g.buffer(-(deepDepthM / METERS_PER_DEG));
                 if (deep != null && !deep.isEmpty()) {
                     prepCreditDeep = PreparedGeometryFactory.prepare(deep);
                 }
@@ -245,7 +260,7 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
         if (achievable <= 0) {
             return 0;
         }
-        return Math.min(CREDIT_DEPTH_DEG, DEPTH_FRACTION * achievable);
+        return Math.min(creditDepthDegCap, DEPTH_FRACTION * achievable);
     }
 
     @Override
@@ -600,6 +615,38 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
     }
 
     @Override
+    public String debugAreaGeoJson(int areaId, double bufferMeters) {
+        AreaGeom ag = byId.get(areaId);
+        if (ag == null || ag.full() == null) {
+            return null;
+        }
+        Geometry g = ag.full();
+        if (bufferMeters != 0) {                                  // dodatni = POMNIEJSZ o X m (rdzeń); 0 = pełna granica
+            try {
+                Geometry shrunk = g.buffer(-bufferMeters / METERS_PER_DEG);
+                if (shrunk != null && !shrunk.isEmpty()) {
+                    g = shrunk;
+                }
+            } catch (RuntimeException ignored) {
+                // zdegenerowana geometria → pełna
+            }
+        }
+        Geometry lonLat = g.copy();                               // unproject in-place (NIE psuj ag.full)
+        lonLat.apply((org.locationtech.jts.geom.CoordinateFilter) c -> c.x = c.x / cosRef);
+        lonLat.geometryChanged();
+        org.locationtech.jts.io.geojson.GeoJsonWriter writer = new org.locationtech.jts.io.geojson.GeoJsonWriter();
+        writer.setEncodeCRS(false);
+        String geom = writer.write(lonLat);
+        return "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\",\"properties\":{\"areaId\":"
+                + areaId + ",\"name\":\"" + jsonEscape(ag.area().name()) + "\",\"bufferMeters\":" + bufferMeters
+                + "},\"geometry\":" + geom + "}]}";
+    }
+
+    private static String jsonEscape(String s) {
+        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    @Override
     public Map<Integer, double[]> deepestPointsOnTrack(List<double[]> track, Set<Integer> areaIds) {
         Map<Integer, double[]> result = new HashMap<>();
         if (empty || track == null || track.isEmpty() || areaIds == null || areaIds.isEmpty()) return result;
@@ -691,7 +738,7 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
         }
         return deepPointCache.computeIfAbsent(areaId, id -> {
             try {
-                Coordinate c = new MaximumInscribedCircle(ag.full, DEEP_DEPTH_M / METERS_PER_DEG).getCenter().getCoordinate();
+                Coordinate c = new MaximumInscribedCircle(ag.full, deepDepthM / METERS_PER_DEG).getCenter().getCoordinate();
                 return unproject(c);
             } catch (RuntimeException e) {
                 return new double[]{ag.area.lng(), ag.area.lat()};
@@ -699,12 +746,11 @@ class JtsAreaCoverageIndex implements AreaCoverageIndex {
         });
     }
 
-    /** RUNDA 26: o ile metrów ZA granicę rdzenia (−200m) cofnąć `entry` w głąb — żeby wp na pierwszym wejściu realnie
-     *  wjechał w rdzeń (granica = długość 0 = brak kredytu; +20m = ślad przez rdzeń = kredyt). Razem ~220m od granicy gminy. */
+    /** RUNDA 26: o ile metrów ZA granicę rdzenia kredytu (−creditDepthM) cofnąć `entry` w głąb — żeby wp na
+     *  pierwszym wejściu realnie wjechał w rdzeń. UNIWERSALNY offset: credit+20 = deep (gminy 200+20=220,
+     *  kafelki 50+20=70), więc próg „głębokiego" wjazdu wychodzi spójnie bez parametryzacji tej stałej. */
     private static final double FIRST_ENTRY_DEPTH_M = 20.0;
-    /** RUNDA 30: minimalna głębokość (m od granicy gminy) NAJGŁĘBSZEGO punktu śladu, by postawić tam wp; płycej → centroid. */
-    private static final double DEEP_DEPTH_M = 220.0;
-    /** Max odległość exit↔entry sąsiednich przejść, by uznać je za JEDEN przelot (wp musnął granicę −220, nie wyszedł). */
+    /** Max odległość exit↔entry sąsiednich przejść, by uznać je za JEDEN przelot (wp musnął granicę −deep, nie wyszedł). */
     private static final double PASSAGE_MERGE_TOL_KM = 0.03;
 
     @Override

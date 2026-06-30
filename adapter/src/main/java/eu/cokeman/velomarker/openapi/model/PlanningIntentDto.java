@@ -26,7 +26,9 @@ public enum PlanningIntentDto {
   
   AB("AB"),
   
-  FREESTYLE("FREESTYLE");
+  FREESTYLE("FREESTYLE"),
+  
+  TILES("TILES");
 
   private final String value;
 

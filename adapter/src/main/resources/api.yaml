@@ -1179,7 +1179,17 @@ components:
 
     PlanningIntent:
       type: string
-      enum: [COVERAGE, AB, FREESTYLE]
+      enum: [COVERAGE, AB, FREESTYLE, TILES]
+
+    TileXY:
+      type: object
+      description: Slippy-map tile coordinate (x,y) on the chosen zoom level.
+      required: [x, y]
+      properties:
+        x:
+          type: integer
+        y:
+          type: integer
 
     Waypoint:
       type: object
@@ -1253,6 +1263,23 @@ components:
           type: boolean
           nullable: true
           description: PATCH command — when true, clears (nulls) end. Command-only, never stored.
+        tileZoom:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 17
+          description: TILES — slippy-map grid zoom level (typically 14).
+        tileObjective:
+          type: string
+          nullable: true
+          enum: [COVERAGE, SQUARE, CLUSTER]
+          description: TILES — optimisation objective. E1 treats missing as COVERAGE.
+        tileOwned:
+          type: array
+          nullable: true
+          description: TILES — already-owned tiles (adjacency/hole context, excluded from candidates).
+          items:
+            $ref: '#/components/schemas/TileXY'
 
     PlanningSessionDay:
       type: object

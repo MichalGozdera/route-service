@@ -41,5 +41,6 @@ eu/cokeman/velomarker/openapi/model/SaveProfileRequestDto.java
 eu/cokeman/velomarker/openapi/model/SegmentResponseDto.java
 eu/cokeman/velomarker/openapi/model/SegmentTaskResponseDto.java
 eu/cokeman/velomarker/openapi/model/SetPlanningIntentRequestDto.java
+eu/cokeman/velomarker/openapi/model/TileXYDto.java
 eu/cokeman/velomarker/openapi/model/UpdatePlanningDayRequestDto.java
 eu/cokeman/velomarker/openapi/model/WaypointDto.java

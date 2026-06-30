@@ -1,4 +1,65 @@
-2026-06-29 07:04:12.030 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /v3/api-docs endpoint is enabled by default. To disable it in production, set the property 'springdoc.api-docs.enabled=false'
-2026-06-29 07:04:12.033 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /swagger-ui.html endpoint is enabled by default. To disable it in production, set the property 'springdoc.swagger-ui.enabled=false'
-2026-06-29 07:51:14.394 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /v3/api-docs endpoint is enabled by default. To disable it in production, set the property 'springdoc.api-docs.enabled=false'
-2026-06-29 07:51:14.394 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /swagger-ui.html endpoint is enabled by default. To disable it in production, set the property 'springdoc.swagger-ui.enabled=false'
+2026-06-30 06:51:26.765 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /v3/api-docs endpoint is enabled by default. To disable it in production, set the property 'springdoc.api-docs.enabled=false'
+2026-06-30 06:51:26.770 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /swagger-ui.html endpoint is enabled by default. To disable it in production, set the property 'springdoc.swagger-ui.enabled=false'
+2026-06-30 07:02:29.702 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /v3/api-docs endpoint is enabled by default. To disable it in production, set the property 'springdoc.api-docs.enabled=false'
+2026-06-30 07:02:29.702 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /swagger-ui.html endpoint is enabled by default. To disable it in production, set the property 'springdoc.swagger-ui.enabled=false'
+2026-06-30 07:28:35.663 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /v3/api-docs endpoint is enabled by default. To disable it in production, set the property 'springdoc.api-docs.enabled=false'
+2026-06-30 07:28:35.664 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /swagger-ui.html endpoint is enabled by default. To disable it in production, set the property 'springdoc.swagger-ui.enabled=false'
+2026-06-30 08:05:43.143 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=1m52s816ms355µs500ns).
+2026-06-30 08:07:01.123 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=1m17s979ms604µs900ns).
+2026-06-30 08:26:37.839 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /v3/api-docs endpoint is enabled by default. To disable it in production, set the property 'springdoc.api-docs.enabled=false'
+2026-06-30 08:26:37.840 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /swagger-ui.html endpoint is enabled by default. To disable it in production, set the property 'springdoc.swagger-ui.enabled=false'
+2026-06-30 08:36:21.777 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=52s51ms399µs400ns).
+2026-06-30 08:38:06.058 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=1m10s65ms83µs200ns).
+2026-06-30 08:39:29.867 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=50s384ms367µs800ns).
+2026-06-30 08:40:15.838 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=45s971ms818µs500ns).
+2026-06-30 08:41:53.068 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=53s635ms563µs900ns).
+2026-06-30 08:42:58.476 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=1m5s407ms240µs700ns).
+2026-06-30 08:47:32.248 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=4m2s446ms284µs300ns).
+2026-06-30 08:48:44.534 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /v3/api-docs endpoint is enabled by default. To disable it in production, set the property 'springdoc.api-docs.enabled=false'
+2026-06-30 08:48:44.534 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /swagger-ui.html endpoint is enabled by default. To disable it in production, set the property 'springdoc.swagger-ui.enabled=false'
+2026-06-30 08:51:45.493 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=2m42s981ms42µs200ns).
+2026-06-30 09:39:35.217 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /v3/api-docs endpoint is enabled by default. To disable it in production, set the property 'springdoc.api-docs.enabled=false'
+2026-06-30 09:39:35.218 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /swagger-ui.html endpoint is enabled by default. To disable it in production, set the property 'springdoc.swagger-ui.enabled=false'
+2026-06-30 10:02:59.007 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=1m8s709ms363µs200ns).
+2026-06-30 10:13:20.740 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=10m21s732ms918µs800ns).
+2026-06-30 10:18:37.622 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=46s825ms214µs600ns).
+2026-06-30 10:20:39.753 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=2m2s130ms898µs900ns).
+2026-06-30 10:21:21.469 ERROR [route-service] [,] e.c.v.amqp.config.RabbitBaseConfig:68 - RabbitMQ publisher NACK: correlationId=n/a, cause=clean channel shutdown; protocol method: #method<channel.close>(reply-code=200, reply-text=OK, class-id=0, method-id=0)
+2026-06-30 10:21:21.472 ERROR [route-service] [,] o.s.a.r.c.CachingConnectionFactory:723 - Could not configure the channel to receive publisher confirms
+java.io.IOException
+	at com.rabbitmq.client.impl.AMQChannel.wrap(AMQChannel.java:140)
+	at com.rabbitmq.client.impl.AMQChannel.wrap(AMQChannel.java:136)
+	at com.rabbitmq.client.impl.AMQChannel.exnWrappingRpc(AMQChannel.java:158)
+	at com.rabbitmq.client.impl.ChannelN.confirmSelect(ChannelN.java:1597)
+	at com.rabbitmq.client.impl.ChannelN.confirmSelect(ChannelN.java:48)
+	at org.springframework.amqp.rabbit.connection.CachingConnectionFactory.doCreateBareChannel(CachingConnectionFactory.java:720)
+	at org.springframework.amqp.rabbit.connection.CachingConnectionFactory.createBareChannel(CachingConnectionFactory.java:690)
+	at org.springframework.amqp.rabbit.connection.CachingConnectionFactory$CachedChannelInvocationHandler.invoke(CachingConnectionFactory.java:1247)
+	at jdk.proxy2/jdk.proxy2.$Proxy209.waitForConfirms(Unknown Source)
+	at org.springframework.amqp.rabbit.connection.CachingConnectionFactory$CachedChannelInvocationHandler.lambda$returnToCache$1(CachingConnectionFactory.java:1327)
+	at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1090)
+	at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:614)
+	at java.base/java.lang.Thread.run(Thread.java:1474)
+Caused by: com.rabbitmq.client.ShutdownSignalException: clean connection shutdown; protocol method: #method<connection.close>(reply-code=200, reply-text=OK, class-id=0, method-id=0)
+	at com.rabbitmq.utility.ValueOrException.getValue(ValueOrException.java:66)
+	at com.rabbitmq.utility.BlockingValueOrException.uninterruptibleGetValue(BlockingValueOrException.java:36)
+	at com.rabbitmq.client.impl.AMQChannel$BlockingRpcContinuation.getReply(AMQChannel.java:552)
+	at com.rabbitmq.client.impl.AMQChannel.privateRpc(AMQChannel.java:316)
+	at com.rabbitmq.client.impl.AMQChannel.exnWrappingRpc(AMQChannel.java:152)
+	... 10 common frames omitted
+2026-06-30 10:39:08.320 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /v3/api-docs endpoint is enabled by default. To disable it in production, set the property 'springdoc.api-docs.enabled=false'
+2026-06-30 10:39:08.320 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /swagger-ui.html endpoint is enabled by default. To disable it in production, set the property 'springdoc.swagger-ui.enabled=false'
+2026-06-30 10:41:11.100 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=47s632ms781µs700ns).
+2026-06-30 10:41:59.854 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=48s753ms853µs400ns).
+2026-06-30 10:44:29.248 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=52s545ms353µs100ns).
+2026-06-30 10:46:22.523 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=1m53s275ms482µs400ns).
+2026-06-30 10:48:27.583 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=2m5s59ms683µs).
+2026-06-30 10:59:29.700 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /v3/api-docs endpoint is enabled by default. To disable it in production, set the property 'springdoc.api-docs.enabled=false'
+2026-06-30 10:59:29.702 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /swagger-ui.html endpoint is enabled by default. To disable it in production, set the property 'springdoc.swagger-ui.enabled=false'
+2026-06-30 11:20:37.438 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=20m19s279ms782µs).
+2026-06-30 11:36:17.366 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /v3/api-docs endpoint is enabled by default. To disable it in production, set the property 'springdoc.api-docs.enabled=false'
+2026-06-30 11:36:17.367 WARN  [route-service] [,] o.s.c.events.SpringDocAppInitializer:83 - SpringDoc /swagger-ui.html endpoint is enabled by default. To disable it in production, set the property 'springdoc.swagger-ui.enabled=false'
+2026-06-30 11:39:41.307 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=1m8s381ms937µs900ns).
+2026-06-30 11:40:26.857 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=45s550ms450µs300ns).
+2026-06-30 11:42:55.168 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=56s421ms641µs900ns).
+2026-06-30 11:45:58.616 WARN  [route-service] [,] com.zaxxer.hikari.pool.HikariPool:825 - HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=3m3s448ms499µs100ns).

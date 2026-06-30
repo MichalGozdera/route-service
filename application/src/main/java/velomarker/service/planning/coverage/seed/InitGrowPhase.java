@@ -91,6 +91,7 @@ public final class InitGrowPhase {
         while (true) {
             boolean precise = metrics.haversineKm(route) * effortFactor >= targetEffort * 0.80;
             double gate = Math.max(CandidatePicker.JUMP_FLOOR_KM, CandidatePicker.JUMP_RATIO * frontier);
+            gate = Math.min(gate, ctx.effectiveReachCapKm()); // TILES: cap zasięgu „trzymaj się lokalnie" (COVERAGE: NO_REACH_CAP)
             PickResult pr = picker.pick(precise ? 6 : BATCH, gate);
             if (pr.inserted() == 0) {
                 if (pr.jumpAhead()) {

@@ -22,12 +22,16 @@ public record RoutePreferences(
         Integer elevationPerDayM,
         String profile,                  // jawny profil BRouter (fastbike/trekking/safety/fastbike-lowtraffic)
         Boolean clearStart,              // KOMENDA PATCH: true → wyczyść start (null). Nie jest stanem (nie persystowane).
-        Boolean clearEnd                 // KOMENDA PATCH: true → wyczyść end (null). Nie jest stanem (nie persystowane).
+        Boolean clearEnd,                // KOMENDA PATCH: true → wyczyść end (null). Nie jest stanem (nie persystowane).
+        Integer tileZoom,                // TILES: poziom zoomu siatki kafelków (1..17), typowo 14
+        String tileObjective,            // TILES: cel optymalizacji [COVERAGE|SQUARE|CLUSTER]; E1 traktuje brak jako COVERAGE
+        List<int[]> tileOwned            // TILES: kafelki już zdobyte przez usera jako pary [x,y] (adjacency/hole, spoza puli)
 ) {
 
     public static RoutePreferences empty() {
         return new RoutePreferences(List.of(), List.of(), List.of(), null, null, List.of(),
-                null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null,
+                null, null, null);
     }
 
     /**
@@ -52,7 +56,10 @@ public record RoutePreferences(
                 o.kmPerDay != null ? o.kmPerDay : kmPerDay,
                 o.elevationPerDayM != null ? o.elevationPerDayM : elevationPerDayM,
                 o.profile != null ? o.profile : profile,
-                null, null
+                null, null,
+                o.tileZoom != null ? o.tileZoom : tileZoom,
+                o.tileObjective != null ? o.tileObjective : tileObjective,
+                o.tileOwned != null ? o.tileOwned : tileOwned
         );
     }
 
@@ -70,6 +77,13 @@ public record RoutePreferences(
                     && days != null && days > 0
                     && kmPerDay != null && kmPerDay > 0;
             case FREESTYLE -> start != null
+                    && (loop == Boolean.TRUE || end != null)
+                    && days != null && days > 0
+                    && kmPerDay != null && kmPerDay > 0;
+            // tileZoom/tileOwned NIE są wymagane: zoom ma default (14) w builderze, a owned MOŻE być
+            // puste/null (user bez śladów albo poza korytarzem) — backend i tak generuje kandydatów.
+            // (Puste tileOwned nie jest persystowane → po odczycie null; wymaganie != null blokowałoby plan.)
+            case TILES -> start != null
                     && (loop == Boolean.TRUE || end != null)
                     && days != null && days > 0
                     && kmPerDay != null && kmPerDay > 0;

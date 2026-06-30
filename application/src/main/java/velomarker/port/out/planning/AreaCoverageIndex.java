@@ -128,4 +128,8 @@ public interface AreaCoverageIndex {
      * Do diagnostyki „jak głęboko siedzi wp/crosspoint". 0 BRouter (czysta geometria JTS).
      */
     double depthMeters(double[] point, int areaId);
+
+    /** DEBUG: GeoJSON FeatureCollection granicy obszaru {@code areaId} POMNIEJSZONEJ o {@code bufferMeters} (rdzeń;
+     *  0 = pełna granica). Do wklejenia w mapę debug. {@code null} gdy brak obszaru. */
+    String debugAreaGeoJson(int areaId, double bufferMeters);
 }

@@ -39,6 +39,8 @@ final class Deepener {
     private final Set<Integer> settledAreas;
     private final Map<Integer, double[]> origWp;
     private final Map<Integer, UnvisitedArea> idToArea;
+    /** Próg „głębokiego" wjazdu (m) dla probe pogłębiania — z SeedContext (gminy 220, kafelki 70). */
+    private final double deepDepthM;
 
     private final Map<Integer, Integer> deepenLevel = new HashMap<>();
     private Map<Integer, double[]> entryMap;
@@ -59,6 +61,7 @@ final class Deepener {
         this.settledAreas = settledAreas;
         this.origWp = origWp;
         this.idToArea = idToArea;
+        this.deepDepthM = ctx.deepDepthM();
     }
 
     void deepen(Map<Integer, double[]> entryMap) {
@@ -134,7 +137,7 @@ final class Deepener {
             List<double[]> seg = new ArrayList<>(in.size() + out.size());
             seg.addAll(in);
             seg.addAll(out);
-            double[] d = coverageAreaIndex.firstTrackPointAtDepth(seg, gid, 220.0);
+            double[] d = coverageAreaIndex.firstTrackPointAtDepth(seg, gid, deepDepthM);
             if (d != null) return d;
         }
         return null;

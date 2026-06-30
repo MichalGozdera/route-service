@@ -8,10 +8,13 @@ package velomarker.entity.planning;
  *   <li>{@link #COVERAGE} — zbieranie nieodwiedzonych obszarów (Kraje + Poziomy administracyjne).</li>
  *   <li>{@link #AB} — trasa z punktu A do punktu B (opcjonalne viapointy).</li>
  *   <li>{@link #FREESTYLE} — swobodna jazda w regionie (pętla z bazy lub A→B bez celu zaliczania).</li>
+ *   <li>{@link #TILES} — zbieranie kafelków siatki slippy-map (StatsHunters/VeloViewer „kwadraty")
+ *       w korytarzu start→meta; bez visit-service, kandydaci generowani z geometrii kafelków.</li>
  * </ul>
  */
 public enum PlanningIntent {
     COVERAGE,
     AB,
-    FREESTYLE
+    FREESTYLE,
+    TILES
 }

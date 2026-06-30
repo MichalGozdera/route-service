@@ -67,6 +67,7 @@ public final class FinalizePhase {
         refine("fin-init-pre-anchor");
         new Anchorer(ctx, seed, "fin-init").run();
         refine("fin-init-pre-cut");
+        if (debugGeoJson) debug.geometry("fin-init-pre-cut", metrics.realGeometry(route), route, metrics.realKm(route));
         realEffort = new SpurCutter(ctx, seed, targetEffort, 8, "fin-init-cut").run();
         debug.geometry("fin-init-real", metrics.realGeometry(route), route, metrics.realKm(route));
         if (debugGeoJson) debug.logShots("fin-init");
@@ -94,6 +95,7 @@ public final class FinalizePhase {
                 double frontier = selected.stream().mapToDouble(SeedSel::distBase).max().orElse(0.0);
                 while (realEffort < hiBand) {
                     double gate = Math.max(CandidatePicker.JUMP_FLOOR_KM, CandidatePicker.JUMP_RATIO * frontier);
+                    gate = Math.min(gate, ctx.effectiveReachCapKm()); // TILES: cap zasięgu (COVERAGE: NO_REACH_CAP)
                     PickResult pr = picker.pick(GROW_BATCH, gate);
                     if (pr.inserted() == 0) {
                         if (pr.jumpAhead()) {

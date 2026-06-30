@@ -46,6 +46,9 @@ public final class Anchorer {
     private final Set<Integer> deepAnchorAreaIds = new HashSet<>();
     private final Map<Integer, double[]> sampleAnchor = new HashMap<>();
     private static final double REACHABLE_KM = 0.15;
+    /** Progi głębokości kotwiczenia (m): bazowy {@code deepDepthM} z SeedContext (gminy 220, kafelki 70) +
+     *  pochodne {@code deep2}/{@code deep3} proporcjonalne do gminowych 250/300 (gminy → 250/300, kafelki → 79.5/95.5). */
+    private final double deepDepthM, deep2, deep3;
     private List<double[]> originalTrack;
     private Map<Integer, double[]> entryPointsFixed;
     private Set<Integer> touchedFixed;
@@ -63,6 +66,9 @@ public final class Anchorer {
         this.edgeRouter = ctx.edgeRouter();
         this.debug = ctx.debug();
         this.debugGeoJson = ctx.debugGeoJson();
+        this.deepDepthM = ctx.deepDepthM();
+        this.deep2 = deepDepthM * (250.0 / 220.0);
+        this.deep3 = deepDepthM * (300.0 / 220.0);
         this.route = seed.route();
         this.selected = seed.selected();
         this.anchors = seed.anchors();
@@ -102,7 +108,7 @@ public final class Anchorer {
         for (int gid : touchedFixed)
             if (deepenLevel.getOrDefault(gid, 0) == 1 && !deepAnchorAreaIds.contains(gid) && !sampleAnchor.containsKey(gid))
                 lvl1Gids.add(gid);
-        lvl1Map = coverageAreaIndex.firstTrackPointsAtDepth(originalTrack, lvl1Gids, 300.0);
+        lvl1Map = coverageAreaIndex.firstTrackPointsAtDepth(originalTrack, lvl1Gids, deep3);
         List<SeedSel> freshAnchors = edgeRouter.parallelMap(touchedFixed, this::computeAnchorFor);
         countSourcesAndLog(freshAnchors);
         Map<Integer, SeedSel> freshByGid = new HashMap<>();
@@ -213,7 +219,7 @@ public final class Anchorer {
             int gid = area.areaId();
             if (!shallowAreaIds.contains(gid)) continue;
             if (sampleAnchor.containsKey(gid)) continue;
-            if (coverageAreaIndex.firstTrackPointAtDepth(originalTrack, gid, 220.0) != null) continue;
+            if (coverageAreaIndex.firstTrackPointAtDepth(originalTrack, gid, deepDepthM) != null) continue;
             double[] best = bestSampleEntry(area, gid, route.get(i - 1), route.get(i + 1));
             if (best != null) {
                 sampleAnchor.put(gid, best);
@@ -236,10 +242,10 @@ public final class Anchorer {
             List<double[]> seg = new ArrayList<>(in.size() + out.size());
             seg.addAll(in);
             seg.addAll(out);
-            double[] d300 = coverageAreaIndex.firstTrackPointAtDepth(seg, gid, 300.0);
+            double[] d300 = coverageAreaIndex.firstTrackPointAtDepth(seg, gid, deep3);
             if (d300 != null) return d300;
-            if (best250 == null) best250 = coverageAreaIndex.firstTrackPointAtDepth(seg, gid, 250.0);
-            if (best250 == null && best220 == null) best220 = coverageAreaIndex.firstTrackPointAtDepth(seg, gid, 220.0);
+            if (best250 == null) best250 = coverageAreaIndex.firstTrackPointAtDepth(seg, gid, deep2);
+            if (best250 == null && best220 == null) best220 = coverageAreaIndex.firstTrackPointAtDepth(seg, gid, deepDepthM);
             if (fallbackReachable == null && !in.isEmpty()) {
                 double[] snap = in.get(in.size() - 1);
                 if (velomarker.service.planning.WaypointSelector.haversineKm(s, snap) <= REACHABLE_KM) fallbackReachable = s;

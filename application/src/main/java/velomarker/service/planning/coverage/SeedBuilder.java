@@ -40,6 +40,18 @@ public final class SeedBuilder {
 
     public void greedySeedRoute(List<double[]> route, List<double[]> anchors, double targetEffort, double alphaKmPerMeter,
                          List<double[]> baseline, PlanTimings timings) {
+        greedySeedRoute(route, anchors, targetEffort, alphaKmPerMeter, baseline, timings, false);
+    }
+
+    /**
+     * @param skipFinalize true → pomija FinalizePhase (Anchorer/SpurCutter/grow/peel). E1.6: tryb TILES
+     *        używa {@code false} — FinalizePhase jest UNIWERSALNA (kotwicz blisko granicy → przesuń wp na
+     *        pierwszy sensowny punkt śladu → grow → kotwicz → optimise), działa też dla kafelków, których
+     *        granice (bbox) są znane z matematyki. {@code skipFinalize} pozostaje dla ewentualnego toru
+     *        „tylko rdzeń greedy".
+     */
+    public void greedySeedRoute(List<double[]> route, List<double[]> anchors, double targetEffort, double alphaKmPerMeter,
+                         List<double[]> baseline, PlanTimings timings, boolean skipFinalize) {
         final double ROAD_FACTOR = 1.3;
         final double CLIMB_PER_KM_ESTIMATE = 3.0;
         final double EFFORT_MULTIPLIER = ROAD_FACTOR * (1.0 + CLIMB_PER_KM_ESTIMATE * alphaKmPerMeter);
@@ -70,18 +82,23 @@ public final class SeedBuilder {
         debug.resetShots();
         if (debugGeoJson) debug.logShots("init-grow");
 
-        long tFinal = System.currentTimeMillis();
-        FinalizeResult fr = new FinalizePhase(
-                ctx, seed, picker, targetEffort, hiBand, growCeiling, realEffort, ig.allCandidatesUsed()).run();
-        timings.addFinalizeMs(System.currentTimeMillis() - tFinal);
-        realEffort = fr.realEffort();
-        if (debugGeoJson) debug.logShots("seed-final");
-        int densified = fr.grown();
+        int densified = 0;
+        int trimmed = 0;
+        if (!skipFinalize) {
+            long tFinal = System.currentTimeMillis();
+            FinalizeResult fr = new FinalizePhase(
+                    ctx, seed, picker, targetEffort, hiBand, growCeiling, realEffort, ig.allCandidatesUsed()).run();
+            timings.addFinalizeMs(System.currentTimeMillis() - tFinal);
+            realEffort = fr.realEffort();
+            if (debugGeoJson) debug.logShots("seed-final");
+            densified = fr.grown();
+            trimmed = fr.trimmed();
+        }
         debug.skeleton("seed", route);
         debug.geometry("seed-real", metrics.realGeometry(route), route, metrics.realKm(route));
 
         SeedDiagnostics diag = new SeedDiagnostics(ctx);
-        diag.logSeedSummary(selected.size(), route.size(), totalPruned, fr.trimmed(), densified, totalRetried,
+        diag.logSeedSummary(selected.size(), route.size(), totalPruned, trimmed, densified, totalRetried,
                 realEffort, targetEffort, seedStartTs);
         diag.logTopLongLegs(route);
     }

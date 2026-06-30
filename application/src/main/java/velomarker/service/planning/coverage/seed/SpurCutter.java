@@ -56,6 +56,7 @@ public final class SpurCutter {
     private final SeedOps ops;
     private final CoverageDebug debug;
     private final boolean debugGeoJson;
+    private final double deepDepthM;
     private final SeedRoute seed;
     private final List<double[]> route;
     private final List<double[]> anchors;
@@ -75,7 +76,6 @@ public final class SpurCutter {
     private Map<Integer, Integer> wpCountInG;
     private Map<Integer, List<double[]>> wpByGid;
     private Map<Integer, double[]> entryMap;
-    private Set<Integer> deeplyNow;
     private List<double[]> pendingRemove;
     private List<double[]> oldRealForFallback;
     private Map<Integer, double[]> fallbackHearts;
@@ -93,6 +93,7 @@ public final class SpurCutter {
         this.ops = ctx.ops();
         this.debug = ctx.debug();
         this.debugGeoJson = ctx.debugGeoJson();
+        this.deepDepthM = ctx.deepDepthM();
         this.seed = seed;
         this.route = seed.route();
         this.anchors = seed.anchors();
@@ -132,7 +133,6 @@ public final class SpurCutter {
         List<double[]> refTrack = metrics.realGeometry(route);
         buildPassageMaps(refTrack);
         entryMap = coverageAreaIndex.firstBufferEntryPoints(refTrack);
-        deeplyNow = coverageAreaIndex.deeplyVisitedAreaIds(refTrack);
         wpByGid = buildWpByGid();
         trimmedThisRound = new HashSet<>();
         List<Decision> decisions = computeDecisions();
@@ -153,8 +153,13 @@ public final class SpurCutter {
         for (Map.Entry<Integer, List<AreaPassage>> e : passages.entrySet()) {
             List<AreaPassage> ps = e.getValue();
             if (ps.isEmpty()) continue;
+            // Cel = entry PIERWSZEGO passage-PRZELOTU (cięciwa ≥ EXIT_SEPARATION = wjeżdża/wyjeżdża GDZIE INDZIEJ,
+            // nie tą samą drogą). Zaułek/ślepy wjazd (entry≈exit, krótka cięciwa) pomijany. Brak przelotu →
+            // fallback entry pierwszego passage (i tak płytki próg, NIE głęboko). [reguła usera]
             AreaPassage firstPrzelot = null;
-            for (AreaPassage p : ps) if (p.chordKm() >= EXIT_SEPARATION_KM) { firstPrzelot = p; break; }
+            for (AreaPassage p : ps) {
+                if (p.chordKm() >= EXIT_SEPARATION_KM) { firstPrzelot = p; break; }
+            }
             if (firstPrzelot != null) przelotAnchor.put(e.getKey(), firstPrzelot.entry());
             anchorTarget.put(e.getKey(), (firstPrzelot != null ? firstPrzelot : ps.get(0)).entry());
         }
@@ -199,17 +204,20 @@ public final class SpurCutter {
         if (target != null && GeometryUtil.hav(keep, target) < KEEPER_EPS_KM) {
             return wps.size() >= 2 ? reanchor(gid, keep, keep, redundant, Source.KEPT) : keep(gid, keep, Source.KEPT);
         }
+        // Jest passage-PRZELOT (wjeżdża/wyjeżdża gdzie indziej) LUB ≥2 wp → przesuń wp na entry pierwszego
+        // przelotu (anchorTarget). NIGDY nie zostawiaj wp w głębi — wp poza granicą zawsze idzie na entry.
+        // applyReanchor wstawia wp na wjeździe głównej jazdy; stary (ślepy/spur) → pendingRemove → collapseRedundant
+        // zszywa prev→next, ślepy wjazd znika. Dotyczy gmin I kafelków.
         if (przelotAnchor.containsKey(gid) || wpCountInG.getOrDefault(gid, 0) >= 2) {
-            // Czysty przelot: JEDEN wp, który już zalicza gminę głęboko (≥220m) → zostaw go gdzie jest.
-            // Reanchor przelotu przerzuca wp na krawędź wjazdową −220 (druga strona gminy) — zbędne i myli marker.
-            if (wps.size() == 1 && deeplyNow.contains(gid)) return keep(gid, keep, Source.KEPT);
             double[] cel = (target != null) ? target.clone() : null;
             Source src = przelotAnchor.containsKey(gid) ? Source.PRZELOT : Source.MULTI_ZAULEK;
             return reanchor(gid, cel, keep, redundant, src);
         }
+        // Brak przelotu (tylko ślepy/zaułek) → przesuń wp na entry = PIERWSZY punkt przekraczający próg deep
+        // (firstBufferEntryPoints). Skraca ślepy wjazd do płytkiego progu, NIGDY nie zostawia głęboko.
         if (settledAreas.contains(gid)) return keep(gid, keep, Source.KEPT);
         double[] entry = entryMap.get(gid);
-        if (entry == null) return keepLog(gid, keep, "brak wejścia −220 (gmina za wąska)");
+        if (entry == null) return keepLog(gid, keep, "brak wejścia −deep (obszar za wąski)");
         return innerTrim(gid, entry.clone(), keep);
     }
 
@@ -222,10 +230,10 @@ public final class SpurCutter {
         for (Decision d : decisions) {
             switch (d.kind()) {
                 case REANCHOR -> {
-                    if (applyReanchor(d)) { cut++; if (d.src() == Source.PRZELOT) fromPrzelot++; else fromZaulek++; }
+                    if (applyReanchor(d)) { cut++; if (d.src() == Source.PRZELOT) fromPrzelot++; else fromZaulek++; debugAreaCore(d.gid()); }
                 }
                 case INNER_TRIM -> {
-                    if (applyInnerTrim(d)) { cut++; trimCount++; trimmedThisRound.add(d.gid()); logTrim(d.gid(), d.target()); }
+                    if (applyInnerTrim(d)) { cut++; trimCount++; trimmedThisRound.add(d.gid()); logTrim(d.gid(), d.target()); debugAreaCore(d.gid()); }
                     else keptCount++;
                 }
                 case KEEP -> keptCount++;
@@ -335,6 +343,12 @@ public final class SpurCutter {
     private void logTrim(int gid, double[] entry) {
         if (debugGeoJson) log.info("Coverage TAIL-PRUNE [{}] palec {} → TRIM @{}m w głąb",
                 new Object[]{debugPhase, areaName(gid), Math.round(coverageAreaIndex.depthMeters(entry, gid))});
+    }
+    /** DEBUG (debugGeoJson): GeoJSON rdzenia (−deepDepthM) przesuniętego obszaru — do wklejenia w mapę debug (pole „Gmina"). */
+    private void debugAreaCore(int gid) {
+        if (!debugGeoJson) return;
+        log.info("Coverage TAIL-PRUNE [{}] area {} rdzeń −{}m GeoJSON: {}",
+                new Object[]{debugPhase, gid, Math.round(deepDepthM), coverageAreaIndex.debugAreaGeoJson(gid, deepDepthM)});
     }
     private String areaName(int gid) {
         UnvisitedArea a = idToArea.get(gid);

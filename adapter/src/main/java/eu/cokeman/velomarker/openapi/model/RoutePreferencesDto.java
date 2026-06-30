@@ -5,6 +5,8 @@ import java.util.Objects;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonTypeName;
+import com.fasterxml.jackson.annotation.JsonValue;
+import eu.cokeman.velomarker.openapi.model.TileXYDto;
 import eu.cokeman.velomarker.openapi.model.WaypointDto;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -57,6 +59,50 @@ public class RoutePreferencesDto {
   private @Nullable Boolean clearStart = null;
 
   private @Nullable Boolean clearEnd = null;
+
+  private @Nullable Integer tileZoom = null;
+
+  /**
+   * TILES — optimisation objective. E1 treats missing as COVERAGE.
+   */
+  public enum TileObjectiveEnum {
+    COVERAGE("COVERAGE"),
+    
+    SQUARE("SQUARE"),
+    
+    CLUSTER("CLUSTER");
+
+    private final String value;
+
+    TileObjectiveEnum(String value) {
+      this.value = value;
+    }
+
+    @JsonValue
+    public String getValue() {
+      return value;
+    }
+
+    @Override
+    public String toString() {
+      return String.valueOf(value);
+    }
+
+    @JsonCreator
+    public static TileObjectiveEnum fromValue(String value) {
+      for (TileObjectiveEnum b : TileObjectiveEnum.values()) {
+        if (b.value.equals(value)) {
+          return b;
+        }
+      }
+      return null;
+    }
+  }
+
+  private @Nullable TileObjectiveEnum tileObjective = null;
+
+  @Valid
+  private @Nullable List<@Valid TileXYDto> tileOwned;
 
   public RoutePreferencesDto countryIds(@Nullable List<Integer> countryIds) {
     this.countryIds = countryIds;
@@ -369,6 +415,79 @@ public class RoutePreferencesDto {
     this.clearEnd = clearEnd;
   }
 
+  public RoutePreferencesDto tileZoom(@Nullable Integer tileZoom) {
+    this.tileZoom = tileZoom;
+    return this;
+  }
+
+  /**
+   * TILES — slippy-map grid zoom level (typically 14).
+   * minimum: 1
+   * maximum: 17
+   * @return tileZoom
+   */
+  @Min(value = 1) @Max(value = 17) 
+  @Schema(name = "tileZoom", description = "TILES — slippy-map grid zoom level (typically 14).", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
+  @JsonProperty("tileZoom")
+  public @Nullable Integer getTileZoom() {
+    return tileZoom;
+  }
+
+  @JsonProperty("tileZoom")
+  public void setTileZoom(@Nullable Integer tileZoom) {
+    this.tileZoom = tileZoom;
+  }
+
+  public RoutePreferencesDto tileObjective(@Nullable TileObjectiveEnum tileObjective) {
+    this.tileObjective = tileObjective;
+    return this;
+  }
+
+  /**
+   * TILES — optimisation objective. E1 treats missing as COVERAGE.
+   * @return tileObjective
+   */
+  
+  @Schema(name = "tileObjective", description = "TILES — optimisation objective. E1 treats missing as COVERAGE.", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
+  @JsonProperty("tileObjective")
+  public @Nullable TileObjectiveEnum getTileObjective() {
+    return tileObjective;
+  }
+
+  @JsonProperty("tileObjective")
+  public void setTileObjective(@Nullable TileObjectiveEnum tileObjective) {
+    this.tileObjective = tileObjective;
+  }
+
+  public RoutePreferencesDto tileOwned(@Nullable List<@Valid TileXYDto> tileOwned) {
+    this.tileOwned = tileOwned;
+    return this;
+  }
+
+  public RoutePreferencesDto addTileOwnedItem(TileXYDto tileOwnedItem) {
+    if (this.tileOwned == null) {
+      this.tileOwned = new ArrayList<>();
+    }
+    this.tileOwned.add(tileOwnedItem);
+    return this;
+  }
+
+  /**
+   * TILES — already-owned tiles (adjacency/hole context, excluded from candidates).
+   * @return tileOwned
+   */
+  @Valid 
+  @Schema(name = "tileOwned", description = "TILES — already-owned tiles (adjacency/hole context, excluded from candidates).", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
+  @JsonProperty("tileOwned")
+  public @Nullable List<@Valid TileXYDto> getTileOwned() {
+    return tileOwned;
+  }
+
+  @JsonProperty("tileOwned")
+  public void setTileOwned(@Nullable List<@Valid TileXYDto> tileOwned) {
+    this.tileOwned = tileOwned;
+  }
+
   @Override
   public boolean equals(Object o) {
     if (this == o) {
@@ -390,12 +509,15 @@ public class RoutePreferencesDto {
         Objects.equals(this.elevationPerDayM, routePreferences.elevationPerDayM) &&
         Objects.equals(this.profile, routePreferences.profile) &&
         Objects.equals(this.clearStart, routePreferences.clearStart) &&
-        Objects.equals(this.clearEnd, routePreferences.clearEnd);
+        Objects.equals(this.clearEnd, routePreferences.clearEnd) &&
+        Objects.equals(this.tileZoom, routePreferences.tileZoom) &&
+        Objects.equals(this.tileObjective, routePreferences.tileObjective) &&
+        Objects.equals(this.tileOwned, routePreferences.tileOwned);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(countryIds, levelIds, specialGroupIds, start, end, via, loop, days, kmPerDay, elevationPerDayM, profile, clearStart, clearEnd);
+    return Objects.hash(countryIds, levelIds, specialGroupIds, start, end, via, loop, days, kmPerDay, elevationPerDayM, profile, clearStart, clearEnd, tileZoom, tileObjective, tileOwned);
   }
 
   @Override
@@ -415,6 +537,9 @@ public class RoutePreferencesDto {
     sb.append("    profile: ").append(toIndentedString(profile)).append("\n");
     sb.append("    clearStart: ").append(toIndentedString(clearStart)).append("\n");
     sb.append("    clearEnd: ").append(toIndentedString(clearEnd)).append("\n");
+    sb.append("    tileZoom: ").append(toIndentedString(tileZoom)).append("\n");
+    sb.append("    tileObjective: ").append(toIndentedString(tileObjective)).append("\n");
+    sb.append("    tileOwned: ").append(toIndentedString(tileOwned)).append("\n");
     sb.append("}");
     return sb.toString();
   }

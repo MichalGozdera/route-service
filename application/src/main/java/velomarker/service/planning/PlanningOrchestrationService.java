@@ -267,6 +267,23 @@ public class PlanningOrchestrationService {
                         }
                     }
                 }
+                case TILES -> {
+                    velomarker.service.planning.PlanTraceSink traceSink =
+                            frame -> tracePublisher.publish(taskId, session.userId(), frame);
+                    BrouterFn brouter =
+                            (wps, prof, stats) -> chunkedRouter().route(taskId,
+                                    wps.stream().map(Waypoint::toLngLat).toList(), prof, stats);
+                    coverageResult = new TileWaypointBuilder(coveragePlanner, this::checkCancel, this::setPhase)
+                            .build(taskId, prefs, profile, brouter, brouterClient::setSnapLogging, traceSink, timings);
+                    if (coverageResult != null) {
+                        log.info("TILES planner: visited(tiles)={} brouterCalls={}",
+                                new Object[]{coverageResult.visited().size(), coverageResult.brouterCalls()});
+                        allWaypoints = coverageResult.finalWaypoints();
+                    } else {
+                        log.warn("TILES planner returned null -- fallback do anchor-only (start/via/meta)");
+                        allWaypoints = buildFreestyleWaypoints(prefs);
+                    }
+                }
                 default -> throw new IllegalStateException("Unknown intent: " + session.intent());
             }
         return new WaypointBuild(allWaypoints, coverageInfo, coverageResult);

@@ -162,6 +162,17 @@ public final class PlanningJpaMapper {
             if (p.kmPerDay() != null) n.put("kmPerDay", p.kmPerDay());
             if (p.elevationPerDayM() != null) n.put("elevationPerDayM", p.elevationPerDayM());
             if (p.profile() != null) n.put("profile", p.profile());
+            if (p.tileZoom() != null) n.put("tileZoom", p.tileZoom());
+            if (p.tileObjective() != null) n.put("tileObjective", p.tileObjective());
+            if (p.tileOwned() != null && !p.tileOwned().isEmpty()) {
+                ArrayNode arr = n.putArray("tileOwned");
+                for (int[] xy : p.tileOwned()) {
+                    if (xy == null || xy.length < 2) continue;
+                    ObjectNode t = arr.addObject();
+                    t.put("x", xy[0]);
+                    t.put("y", xy[1]);
+                }
+            }
             return objectMapper.writeValueAsString(n);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Failed to serialize preferences", e);
@@ -186,7 +197,10 @@ public final class PlanningJpaMapper {
                     n.has("kmPerDay") ? n.get("kmPerDay").asInt() : null,
                     n.has("elevationPerDayM") ? n.get("elevationPerDayM").asInt() : null,
                     n.has("profile") ? n.get("profile").asText() : null,
-                    null, null   // clearStart/clearEnd — komendy PATCH, nigdy nie persystowane
+                    null, null,   // clearStart/clearEnd — komendy PATCH, nigdy nie persystowane
+                    n.has("tileZoom") ? n.get("tileZoom").asInt() : null,
+                    n.has("tileObjective") ? n.get("tileObjective").asText() : null,
+                    readTileOwned(n)
             );
         } catch (Exception e) {
             throw new IllegalStateException("Failed to deserialize preferences: " + json, e);
@@ -217,6 +231,17 @@ public final class PlanningJpaMapper {
         ArrayNode arr = (ArrayNode) n.get(field);
         List<Integer> out = new ArrayList<>(arr.size());
         arr.forEach(v -> out.add(v.asInt()));
+        return out;
+    }
+
+    private static List<int[]> readTileOwned(ObjectNode n) {
+        if (!n.has("tileOwned")) return null;
+        ArrayNode arr = (ArrayNode) n.get("tileOwned");
+        List<int[]> out = new ArrayList<>(arr.size());
+        arr.forEach(v -> {
+            ObjectNode t = (ObjectNode) v;
+            if (t.has("x") && t.has("y")) out.add(new int[]{t.get("x").asInt(), t.get("y").asInt()});
+        });
         return out;
     }
 

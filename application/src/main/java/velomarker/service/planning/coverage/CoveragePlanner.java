@@ -20,6 +20,7 @@ import velomarker.entity.planning.RoutePreferences;
 import velomarker.entity.planning.UnvisitedArea;
 import velomarker.entity.planning.Waypoint;
 import velomarker.port.out.ElevationDataSource;
+import velomarker.port.out.planning.AreaCoverageIndex;
 import velomarker.port.out.planning.AreaCoverageIndexFactory;
 import velomarker.port.out.planning.SpatialIndexFactory;
 
@@ -60,6 +61,12 @@ public class CoveragePlanner {
         this.debugGeoJson = debugGeoJson;
     }
 
+    /** Domyślny cap zasięgu (km) dla toru TILES — „trzymaj się lokalnie", nie rób dalekiego wypadu. */
+    public static final double TILE_REACH_CAP_KM = 22.0;
+
+    /** Próg głębokości wjazdu (m) zaliczenia dla COVERAGE (gminy). Bit-identyczne sprzed parametryzacji TILES. */
+    public static final double GMINA_CREDIT_DEPTH_M = 200.0;
+
     public CoverageResult plan(List<UnvisitedArea> candidatePool,
                              List<UnvisitedArea> historicallyVisited,
                              List<double[]> baselineGeom,
@@ -70,14 +77,47 @@ public class CoveragePlanner {
                              Map<Integer, String> areaRodzajName,
                              velomarker.service.planning.PlanTraceSink traceSink,
                              PlanTimings timings) {
+        return plan(candidatePool, historicallyVisited, baselineGeom, prefs, profile, brouter, snapToggle,
+                areaRodzajName, traceSink, timings, null, false, SeedContext.NO_REACH_CAP, SeedContext.NO_DETOUR_LIMIT,
+                GMINA_CREDIT_DEPTH_M, SeedContext.DEFAULT_DEEP_DEPTH_M);
+    }
+
+    /**
+     * @param portOverride gdy != null, używa tej implementacji portu pokrycia zamiast {@code coverageFactory}
+     *        (zwykle null — także tryb TILES używa wstrzykniętego coverageFactory/JTS, podając kafelki jako poligony).
+     * @param skipFinalize gdy true → pomija FinalizePhase. E1.6: tryb TILES używa {@code false} (FinalizePhase
+     *        = Anchorer + SpurCutter + grow/peel działa też dla kafelków, granice znane z matematyki).
+     * @param reachCapKm miękki cap zasięgu bramki skoku (km). {@link SeedContext#NO_REACH_CAP} = brak capu
+     *        (COVERAGE, bit-identycznie); TILES = {@link #TILE_REACH_CAP_KM}.
+     * @param creditDepthM próg głębokości wjazdu (m) zaliczenia. COVERAGE = {@link #GMINA_CREDIT_DEPTH_M} (200);
+     *        TILES = 50 (kafelek mały → lekki wjazd). Idzie do JTS-index (bufor zaliczenia).
+     * @param deepDepthM próg „głębokiego" wjazdu (m) — kotwiczenie/passages/pogłębianie. COVERAGE =
+     *        {@link SeedContext#DEFAULT_DEEP_DEPTH_M} (220); TILES = 70. Idzie do JTS-index ORAZ SeedContext (Anchorer/Deepener).
+     */
+    public CoverageResult plan(List<UnvisitedArea> candidatePool,
+                             List<UnvisitedArea> historicallyVisited,
+                             List<double[]> baselineGeom,
+                             RoutePreferences prefs,
+                             String profile,
+                             BrouterFn brouter,
+                             Consumer<Boolean> snapToggle,
+                             Map<Integer, String> areaRodzajName,
+                             velomarker.service.planning.PlanTraceSink traceSink,
+                             PlanTimings timings,
+                             AreaCoverageIndex portOverride,
+                             boolean skipFinalize,
+                             double reachCapKm,
+                             double tileMaxDetourKm,
+                             double creditDepthM,
+                             double deepDepthM) {
         long startTs = System.currentTimeMillis();
-        CoverageEngine eng = buildEngine(candidatePool, historicallyVisited, prefs, profile, brouter, snapToggle, areaRodzajName, traceSink);
+        CoverageEngine eng = buildEngine(candidatePool, historicallyVisited, prefs, profile, brouter, snapToggle, areaRodzajName, traceSink, portOverride, reachCapKm, tileMaxDetourKm, creditDepthM, deepDepthM);
 
         SeedStart start = buildInitialRoute(prefs, baselineGeom, brouter, profile);
         List<double[]> route = start.route();
 
         log.info("Coverage greedy seed: budget effort={}", Math.round(eng.totalLimit()));
-        eng.seedBuilder().greedySeedRoute(route, start.anchors(), eng.totalLimit(), params.alphaKmPerMeter(), start.baseline(), timings);
+        eng.seedBuilder().greedySeedRoute(route, start.anchors(), eng.totalLimit(), params.alphaKmPerMeter(), start.baseline(), timings, skipFinalize);
 
         return assembleResult(eng, candidatePool, prefs, profile, brouter, route, start.brouterCalls(), startTs);
     }
@@ -85,14 +125,18 @@ public class CoveragePlanner {
     private CoverageEngine buildEngine(List<UnvisitedArea> candidatePool, List<UnvisitedArea> historicallyVisited,
                                        RoutePreferences prefs, String profile, BrouterFn brouter, Consumer<Boolean> snapToggle,
                                        Map<Integer, String> areaRodzajName,
-                                       velomarker.service.planning.PlanTraceSink traceSink) {
+                                       velomarker.service.planning.PlanTraceSink traceSink,
+                                       AreaCoverageIndex portOverride, double reachCapKm, double tileMaxDetourKm,
+                                       double creditDepthM, double deepDepthM) {
         List<UnvisitedArea> histVisited = historicallyVisited != null ? historicallyVisited : List.of();
         double totalLimit = computeBudgetAndLog(prefs, candidatePool.size());
 
         Set<Integer> histVisitedIds = new HashSet<>();
         for (UnvisitedArea a : histVisited) histVisitedIds.add(a.areaId());
+        AreaCoverageIndex port = portOverride != null ? portOverride
+                : coverageFactory.build(candidatePool, histVisited, creditDepthM, deepDepthM);
         CoverageAreaIndex coverageAreaIndex = new CoverageAreaIndex(candidatePool,
-                coverageFactory.build(candidatePool, histVisited), spatialIndexFactory, histVisitedIds);
+                port, spatialIndexFactory, histVisitedIds);
         log.info("Coverage init: candidates={} + historycznie zaliczone (sąsiedztwo)={}",
                 new Object[]{candidatePool.size(), histVisited.size()});
         HilbertOrdering ordering = new HilbertOrdering();
@@ -109,7 +153,7 @@ public class CoveragePlanner {
         CoverageDebug debug = new CoverageDebug(debugGeoJson, edgeRouter, metrics, coverageAreaIndex, params, totalLimit,
                 areaCat, areaRodzajName != null ? areaRodzajName : Map.of(), traceSink);
         SeedContext ctx = new SeedContext(edgeRouter, metrics, coverageAreaIndex, ordering, candidatePool, rewards,
-                debug, ops, debugGeoJson, snapToggle);
+                debug, ops, debugGeoJson, snapToggle, reachCapKm, tileMaxDetourKm, deepDepthM);
         SeedBuilder seedBuilder = new SeedBuilder(ctx);
         return new CoverageEngine(coverageAreaIndex, edgeRouter, metrics, seedBuilder, areaCat, totalLimit);
     }

@@ -120,6 +120,11 @@ public class CoverageAreaIndex {
         return coverage.depthMeters(point, areaId);
     }
 
+    /** DEBUG: GeoJSON granicy obszaru pomniejszonej o {@code bufferMeters} (0 = pełna). Do wklejenia w mapę debug. */
+    public String debugAreaGeoJson(int areaId, double bufferMeters) {
+        return coverage.debugAreaGeoJson(areaId, bufferMeters);
+    }
+
     public Map<Integer, double[]> deepestPointsOnTrack(List<double[]> track, Set<Integer> areaIds) {
         return coverage.deepestPointsOnTrack(track, areaIds);
     }

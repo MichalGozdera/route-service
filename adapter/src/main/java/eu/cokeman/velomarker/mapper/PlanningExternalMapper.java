@@ -7,6 +7,7 @@ import eu.cokeman.velomarker.openapi.model.PlanningSessionDayDto;
 import eu.cokeman.velomarker.openapi.model.PlanningSessionResponseDto;
 import eu.cokeman.velomarker.openapi.model.PlanningSummaryDto;
 import eu.cokeman.velomarker.openapi.model.RoutePreferencesDto;
+import eu.cokeman.velomarker.openapi.model.TileXYDto;
 import eu.cokeman.velomarker.openapi.model.WaypointDto;
 import org.springframework.stereotype.Component;
 import velomarker.entity.planning.PlanTask;
@@ -98,6 +99,21 @@ public class PlanningExternalMapper {
         if (p.kmPerDay() != null) dto.setKmPerDay(p.kmPerDay());
         if (p.elevationPerDayM() != null) dto.setElevationPerDayM(p.elevationPerDayM());
         if (p.profile() != null) dto.setProfile(p.profile());
+        if (p.tileZoom() != null) dto.setTileZoom(p.tileZoom());
+        if (p.tileObjective() != null) {
+            dto.setTileObjective(RoutePreferencesDto.TileObjectiveEnum.fromValue(p.tileObjective()));
+        }
+        if (p.tileOwned() != null && !p.tileOwned().isEmpty()) {
+            List<TileXYDto> owned = new java.util.ArrayList<>(p.tileOwned().size());
+            for (int[] xy : p.tileOwned()) {
+                if (xy == null || xy.length < 2) continue;
+                TileXYDto t = new TileXYDto();
+                t.setX(xy[0]);
+                t.setY(xy[1]);
+                owned.add(t);
+            }
+            dto.setTileOwned(owned);
+        }
         return dto;
     }
 
@@ -116,8 +132,21 @@ public class PlanningExternalMapper {
                 dto.getElevationPerDayM(),
                 dto.getProfile(),
                 dto.getClearStart(),
-                dto.getClearEnd()
+                dto.getClearEnd(),
+                dto.getTileZoom(),
+                dto.getTileObjective() != null ? dto.getTileObjective().getValue() : null,
+                tileOwnedFromDto(dto.getTileOwned())
         );
+    }
+
+    private static List<int[]> tileOwnedFromDto(List<TileXYDto> owned) {
+        if (owned == null) return null;
+        List<int[]> out = new java.util.ArrayList<>(owned.size());
+        for (TileXYDto t : owned) {
+            if (t == null || t.getX() == null || t.getY() == null) continue;
+            out.add(new int[]{t.getX(), t.getY()});
+        }
+        return out;
     }
 
     public PlanTaskDto toTaskDto(PlanTask task) {

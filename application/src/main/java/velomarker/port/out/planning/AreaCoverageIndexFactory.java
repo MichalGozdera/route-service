@@ -18,4 +18,13 @@ public interface AreaCoverageIndexFactory {
      * {@code findAreaForPoint} itp.) — wchodzą wyłącznie w adjacency.
      */
     AreaCoverageIndex build(List<UnvisitedArea> areas, List<UnvisitedArea> adjacencyAreas);
+
+    /**
+     * Jak {@link #build(List, List)}, ale z parametryzowanymi progami głębokości wjazdu (m):
+     * {@code creditDepthM} = zaliczenie (visited), {@code deepDepthM} = głęboki rdzeń (deeply/passages/entry/MIC).
+     * Gminy (COVERAGE) używają 200/220 (domyślne przeciążenia); kafelki (TILES) 50/70 — mniejszy obszar,
+     * „lekki wjazd" zamiast głębokiego. Pozostałe metody bez zmian.
+     */
+    AreaCoverageIndex build(List<UnvisitedArea> areas, List<UnvisitedArea> adjacencyAreas,
+                            double creditDepthM, double deepDepthM);
 }

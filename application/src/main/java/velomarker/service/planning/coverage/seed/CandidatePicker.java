@@ -40,6 +40,8 @@ public final class CandidatePicker {
     private final Map<String, Double> rewards;
     private final SeedRoute seed;
     private final Map<Integer, Double> distBaseCache;
+    /** TILES: max koszt wcięcia (detour) kandydata; {@code MAX_VALUE} = filtr wyłączony (COVERAGE). */
+    private final double maxDetourKm;
 
     public CandidatePicker(SeedContext ctx, SeedRoute seed) {
         this.coverageAreaIndex = ctx.coverageAreaIndex();
@@ -47,6 +49,7 @@ public final class CandidatePicker {
         this.pool = ctx.pool();
         this.rewards = ctx.rewards();
         this.seed = seed;
+        this.maxDetourKm = ctx.detourFilterActive() ? ctx.tileMaxDetourKm() : Double.MAX_VALUE;
         this.distBaseCache = new java.util.HashMap<>(pool.size() * 2);
         for (UnvisitedArea a : pool) {
             distBaseCache.put(a.areaId(), GeometryUtil.minDistToBaselineKm(entryPoint(a), seed.baseline()));
@@ -93,18 +96,29 @@ public final class CandidatePicker {
         }
         ranked.sort(Comparator.comparingDouble((Cand c) -> c.score()).reversed());
 
-        int available = ranked.size();
-        int toInsert = Math.min(count, available);
-        for (int i = 0; i < toInsert; i++) {
-            Cand c = ranked.get(i);
-            route.add(GeometryUtil.cheapestInsertPos(route, c.point()), c.point());
+        // Wstawiaj wg score do `count`. TILES: pomiń kandydata, którego WCIĘCIE (detour cheapest-insert)
+        // przekracza `maxDetourKm` — to eliminuje boczne palce i daleki wypad (Łowicz) jednym kryterium.
+        int inserted = 0;
+        for (Cand c : ranked) {
+            if (inserted >= count) break;
+            int pos = GeometryUtil.cheapestInsertPos(route, c.point());
+            if (maxDetourKm < Double.MAX_VALUE) {
+                double[] prev = route.get(pos - 1);
+                double[] next = route.get(pos);
+                double detour = GeometryUtil.hav(prev, c.point()) + GeometryUtil.hav(c.point(), next)
+                        - GeometryUtil.hav(prev, next);
+                if (detour > maxDetourKm) continue; // zbyt drogi objazd → nie bierz (palec/Łowicz)
+            }
+            route.add(pos, c.point());
             selected.add(new SeedSel(c.area(), c.point(), ordering.orderKey(c.point()), c.score(), c.distBase()));
+            inserted++;
         }
-        boolean withinGateExhausted = available <= toInsert;
+        // inserted < count → ranked wyczerpane (wszyscy wzięci LUB odrzuceni przez detour).
+        boolean withinGateExhausted = inserted < count;
         boolean poolExhausted = withinGateExhausted && beyondGate == 0;
-        boolean jumpAhead = available == 0 && beyondGate > 0;
+        boolean jumpAhead = inserted == 0 && beyondGate > 0;
         double nextDistKm = beyondGate > 0 ? nextBeyondDist : Double.NaN;
-        return new PickResult(toInsert, poolExhausted, jumpAhead, nextDistKm);
+        return new PickResult(inserted, poolExhausted, jumpAhead, nextDistKm);
     }
 
     private double[] entryPoint(UnvisitedArea a) {
