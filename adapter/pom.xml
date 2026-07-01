@@ -23,6 +23,11 @@
         </dependency>
         <dependency>
             <groupId>eu.cokeman.velomarker</groupId>
+            <artifactId>common-security</artifactId>
+            <version>${common-version}</version>
+        </dependency>
+        <dependency>
+            <groupId>eu.cokeman.velomarker</groupId>
             <artifactId>common-observability</artifactId>
             <version>${common-version}</version>
         </dependency>

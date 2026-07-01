@@ -35,15 +35,8 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http, @Lazy JwtDecoder jwtDecoder) throws Exception {
         http
-                .cors(cors -> cors.configurationSource(request -> {
-                    var corsConfig = new org.springframework.web.cors.CorsConfiguration();
-                    corsConfig.setAllowedOriginPatterns(java.util.Arrays.asList("*"));
-                    corsConfig.setAllowedMethods(java.util.Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
-                    corsConfig.setAllowedHeaders(java.util.Arrays.asList("*"));
-                    corsConfig.setAllowCredentials(true);
-                    corsConfig.setMaxAge(3600L);
-                    return corsConfig;
-                }))
+                // CORS wyłączony: serwis wołany wyłącznie server-to-server przez BFF (bez Origin). Patrz BFF ProxyController.
+                .cors(cors -> cors.disable())
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(authorize -> authorize
@@ -65,12 +58,7 @@ public class SecurityConfig {
     @Bean
     @Lazy
     public JwtDecoder jwtDecoder() {
-        byte[] keyBytes = jwtSecretKey.getBytes(StandardCharsets.UTF_8);
-        if (keyBytes.length < 32) {
-            throw new IllegalArgumentException("JWT secret key must be at least 256 bits (32 bytes) for HS256");
-        }
-        SecretKey secretKey = new SecretKeySpec(keyBytes, "HmacSHA256");
-        return NimbusJwtDecoder.withSecretKey(secretKey).macAlgorithm(MacAlgorithm.HS256).build();
+        return JwtDecoderFactory.hs256(jwtSecretKey);
     }
 
     @Bean

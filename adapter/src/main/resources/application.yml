@@ -96,7 +96,7 @@ planning:
     alpha-km-per-meter: ${PLANNING_COVERAGE_ALPHA:0.1}
     # ADMIN DEBUG: loguj GeoJSON snapshot trasy na każdej fazie seeda (init/batch/prune/densify/reconcile/final)
     # do podglądu w mapie rysowania (panel 🐞 paste-to-map). UWAGA: per-batch zalewa log → włączaj tylko do debugowania.
-    debug-geojson: ${ROUTE_PLANNING_DEBUG_GEOJSON:true}
+    debug-geojson: ${ROUTE_PLANNING_DEBUG_GEOJSON:false}
 
 springdoc:
   swagger-ui:
